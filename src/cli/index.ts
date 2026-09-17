@@ -265,6 +265,7 @@ function initialConfig(): HostSpanConfig {
     server: {
       listen_host: "127.0.0.1",
       listen_port: 39393,
+      allowed_hosts: [],
       data_dir: join(homedir(), ".local", "state", "hostspan"),
     },
     retention: {
@@ -325,6 +326,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const app = createHostSpanHttpServer({
       listen_host: runtime.config.server.listen_host,
       listen_port: runtime.config.server.listen_port,
+      ...(runtime.config.server.allowed_hosts ? { allowed_hosts: runtime.config.server.allowed_hosts } : {}),
       handlers: runtime.handlers,
       responseContext: () => ({ toolset_hash: TOOLSET_HASH, policy_epoch: runtime.config.policy_epoch }),
       status: {
@@ -334,7 +336,15 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       trace: (event, metadata) => runtime.logger.info(event, metadata),
     });
     const address = await listenHostSpan(app, runtime.config.server.listen_host, runtime.config.server.listen_port);
-    print({ ok: true, address, mcp: `${address}/mcp`, native_execution: true, sandboxed: false });
+    print({
+      ok: true,
+      address,
+      mcp: `${address}/mcp`,
+      listen_host: runtime.config.server.listen_host,
+      allowed_hosts: runtime.config.server.allowed_hosts ?? [],
+      native_execution: true,
+      sandboxed: false,
+    });
     const shutdown = async () => {
       await runtime.supervisor.shutdown();
       await app.close();
@@ -357,6 +367,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         protocol_version: PROTOCOL_VERSION,
         toolset_hash: TOOLSET_HASH,
         policy_epoch: runtime.config.policy_epoch,
+        listen_host: runtime.config.server.listen_host,
+        allowed_hosts: runtime.config.server.allowed_hosts ?? [],
         native_execution: true,
         sandboxed: false,
         targets: runtime.targets.list().map((target) => ({

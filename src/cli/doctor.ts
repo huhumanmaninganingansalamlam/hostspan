@@ -84,6 +84,14 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
   }
 
   const targets = new TargetRegistry(config);
+  const nonLoopback = !["127.0.0.1", "localhost", "::1"].includes(config.server.listen_host.toLowerCase());
+  checks.push({
+    name: "network_bind",
+    status: nonLoopback ? "warn" : "pass",
+    details: nonLoopback
+      ? `listen_host=${config.server.listen_host}; allowed_hosts=${(config.server.allowed_hosts ?? []).join(",") || "<derived>"}; protect non-loopback access with firewall/TLS/authentication as appropriate`
+      : `listen_host=${config.server.listen_host}; loopback-only`,
+  });
   for (const target of targets.list()) {
     checks.push({
       name: `target:${target.target_id}`,

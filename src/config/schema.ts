@@ -1,4 +1,37 @@
+import { isIP } from "node:net";
 import { z } from "zod";
+
+function validHostname(value: string): boolean {
+  if (value.length > 253 || value.endsWith(".")) return false;
+  return value.split(".").every((label) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(label));
+}
+
+function validBindHost(value: string): boolean {
+  if (value.includes("://") || value.includes("/") || /\s/.test(value)) return false;
+  return isIP(value) !== 0 || validHostname(value);
+}
+
+function validAllowedHost(value: string): boolean {
+  if (value.includes("://") || value.includes("/") || /\s/.test(value)) return false;
+  if (value.startsWith("[") && value.endsWith("]")) return isIP(value.slice(1, -1)) === 6;
+  return isIP(value) !== 0 || validHostname(value);
+}
+
+const BindHostSchema = z
+  .string()
+  .min(1)
+  .max(255)
+  .refine(validBindHost, {
+    message: "listen_host must be a hostname or IP address without scheme, path, or whitespace",
+  });
+
+const AllowedHostSchema = z
+  .string()
+  .min(1)
+  .max(255)
+  .refine(validAllowedHost, {
+    message: "allowed_hosts entries must be hostnames or IP addresses without scheme, path, or port",
+  });
 
 export const CapabilitySchema = z.enum(["read", "write", "exec", "git"]);
 
@@ -33,11 +66,21 @@ export const HostSpanConfigSchema = z
     policy_epoch: z.number().int().nonnegative(),
     server: z
       .object({
-        listen_host: z.literal("127.0.0.1").default("127.0.0.1"),
+        listen_host: BindHostSchema.default("127.0.0.1"),
         listen_port: z.number().int().min(1).max(65535).default(39393),
+        allowed_hosts: z.array(AllowedHostSchema).max(64).optional(),
         data_dir: z.string().min(1),
       })
-      .strict(),
+      .strict()
+      .superRefine((server, context) => {
+        if (["0.0.0.0", "::"].includes(server.listen_host) && !(server.allowed_hosts?.length)) {
+          context.addIssue({
+            code: "custom",
+            path: ["allowed_hosts"],
+            message: "wildcard listen_host requires at least one allowed_hosts entry",
+          });
+        }
+      }),
     retention: z
       .object({
         completed_process_output_ttl_minutes: z.number().int().positive().default(60),

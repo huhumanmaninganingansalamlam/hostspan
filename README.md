@@ -69,9 +69,34 @@ Health    http://127.0.0.1:39393/healthz
 Readiness http://127.0.0.1:39393/readyz
 ```
 
-The server is loopback-only and validates Host headers. `readyz` represents server/database readiness; missing ripgrep is reported as degraded so non-search tools stay usable, while `file_search` returns `SEARCH_BACKEND_UNAVAILABLE`.
+The default bind is loopback-only, but `server.listen_host` is configurable for LAN/container/reverse-proxy deployments. Host header validation remains enabled for every bind. `readyz` represents server/database readiness; missing ripgrep is reported as degraded so non-search tools stay usable, while `file_search` returns `SEARCH_BACKEND_UNAVAILABLE`.
 
-If you want a normal public MCP endpoint instead of Secure MCP Tunnel, run your own reverse proxy in front of HostSpan. HostSpan itself stays on loopback:
+To listen on a specific interface:
+
+```yaml
+server:
+  listen_host: 192.168.10.20
+  listen_port: 39393
+  data_dir: ~/.local/state/hostspan
+```
+
+When binding a specific IP/hostname and `allowed_hosts` is omitted or empty, HostSpan accepts that bound host as the HTTP `Host` value. If clients use a different DNS name, list it explicitly.
+
+To listen on all IPv4 interfaces, an explicit Host allowlist is required:
+
+```yaml
+server:
+  listen_host: 0.0.0.0
+  listen_port: 39393
+  allowed_hosts:
+    - mcp.example.com
+    - 192.168.10.20
+  data_dir: ~/.local/state/hostspan
+```
+
+`listen_host: ::` works the same way for all IPv6 interfaces and also requires non-empty `allowed_hosts`. Entries are hostname/IP values only—no scheme, path, or port.
+
+If you want a normal public MCP endpoint instead of Secure MCP Tunnel, run your own reverse proxy in front of HostSpan. A same-host proxy can keep HostSpan on loopback:
 
 ```text
 MCP client
@@ -80,7 +105,7 @@ MCP client
   -> http://127.0.0.1:39393/mcp
 ```
 
-The proxy must rewrite the upstream `Host` header to the loopback HostSpan endpoint so HostSpan's localhost Host validation stays enabled. Do not weaken HostSpan to bind publicly just to make a proxy work.
+The proxy may rewrite the upstream `Host` header to the loopback HostSpan endpoint as below. If your proxy runs in another container/VM/host, bind HostSpan to a reachable private IP or `0.0.0.0`/`::` and put the hostname preserved by the proxy in `allowed_hosts`.
 
 Example Caddy upstream:
 

@@ -50,9 +50,11 @@ Use restrictive OS permissions on the config/state directories and avoid expandi
 
 ## Network exposure
 
-Alpha binds only to `127.0.0.1`. Host headers are validated by the MCP Fastify adapter and HostSpan fallback validation. Do not expose the local MCP port directly to a LAN or the public Internet.
+Alpha defaults to `127.0.0.1`, but may bind to a specific interface, `0.0.0.0`, or `::` when the deployment requires LAN/container/reverse-proxy reachability. Host headers are always validated by the MCP Fastify adapter.
 
-The recommended remote path remains outbound-only OpenAI Secure MCP Tunnel. If you instead operate a reverse proxy/ingress/tunnel gateway yourself, HostSpan still stays loopback-only. The proxy rewrites the upstream `Host` header to the loopback HostSpan endpoint and supplies the public TLS/authentication boundary.
+For wildcard binds, `allowed_hosts` is mandatory and configuration fails closed when it is empty. For a specific bind address, HostSpan derives the allowed Host from that address unless an explicit allowlist is configured. This is DNS-rebinding protection, not client authentication.
+
+The recommended remote path remains outbound-only OpenAI Secure MCP Tunnel. If you instead operate a reverse proxy/ingress/tunnel gateway yourself, keep HostSpan on loopback when the proxy is local; otherwise bind HostSpan deliberately to a reachable private/specific/wildcard interface and restrict `allowed_hosts`. The proxy supplies the public TLS/authentication boundary.
 
 Security requirements for a user-managed proxy:
 
@@ -61,7 +63,9 @@ Security requirements for a user-managed proxy:
 - terminate HTTPS at a trusted proxy/gateway;
 - require client authentication/authorization appropriate to the MCP client before forwarding to HostSpan;
 - rate-limit and apply WAF/network policy where appropriate;
-- do not disable HostSpan's localhost Host validation or change HostSpan to a public bind;
+- keep `allowed_hosts` narrow and aligned with the hostname/IP actually used by the proxy/client;
+- prefer a private/LAN bind for an off-host proxy; use wildcard binds only when routing/firewall rules require them;
+- do not mistake Host validation for authentication—protect non-loopback/public access with firewall rules and a TLS/authentication boundary;
 - treat forwarded MCP calls as untrusted even after proxy authentication: HostSpan target/file/exec policy is still the final local capability boundary.
 
 Reverse proxy transport does not make native execution safer. Any authenticated caller that reaches HostSpan can invoke the read/write/exec capabilities permitted by the configured target policy.

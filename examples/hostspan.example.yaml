@@ -4,6 +4,7 @@ policy_epoch: 1
 server:
   listen_host: 127.0.0.1
   listen_port: 39393
+  allowed_hosts: []
   data_dir: ~/.local/state/hostspan
 
 retention:

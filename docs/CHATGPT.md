@@ -13,7 +13,7 @@ hostspan print-toolset
 hostspan serve
 ```
 
-Confirm these loopback endpoints from the same host:
+With the default config, confirm these loopback endpoints from the same host:
 
 ```text
 http://127.0.0.1:39393/healthz
@@ -31,7 +31,7 @@ Use the current OpenAI Secure MCP Tunnel instructions to create an outbound tunn
 http://127.0.0.1:39393/mcp
 ```
 
-Do not bind HostSpan to a public interface and do not treat the tunnel as file/exec authorization. The HostSpan policy remains the final authority.
+Secure MCP Tunnel normally uses the loopback bind. Do not treat the tunnel as file/exec authorization. The HostSpan policy remains the final authority.
 
 OpenAI reference: <https://developers.openai.com/api/docs/guides/secure-mcp-tunnels>
 
@@ -45,7 +45,21 @@ https://mcp.example.com/mcp
   -> http://127.0.0.1:39393/mcp
 ```
 
-HostSpan remains bound to `127.0.0.1`; do not change it to `0.0.0.0`. The proxy must rewrite the upstream `Host` header to the loopback upstream value, for example `127.0.0.1:39393`, because HostSpan deliberately keeps localhost Host validation enabled.
+For a proxy on the same host, keep the default `127.0.0.1` bind and rewrite upstream `Host` to `127.0.0.1:39393` as in the examples below.
+
+For a proxy in another container, VM, or host, bind HostSpan to a reachable interface instead:
+
+```yaml
+server:
+  listen_host: 0.0.0.0
+  listen_port: 39393
+  allowed_hosts:
+    - mcp.example.com
+    - 192.168.10.20
+  data_dir: ~/.local/state/hostspan
+```
+
+Wildcard binds (`0.0.0.0` or `::`) fail configuration validation unless `allowed_hosts` is non-empty. A specific bind such as `192.168.10.20` automatically permits that Host value when no explicit allowlist is supplied. If the proxy preserves `Host: mcp.example.com`, add `mcp.example.com` to `allowed_hosts`.
 
 Minimal Caddy example:
 
@@ -102,7 +116,7 @@ HostSpan records transport requests and accepted tool calls. If there is no corr
 
 If a request arrived but failed, use `request_id`, `idempotency_key`, `process_id`, and structured error code to identify the stage.
 
-For a user-managed reverse proxy, first verify local `http://127.0.0.1:39393/mcp`, then the proxy's upstream reachability, upstream `Host` rewrite, TLS/auth layer, and finally the external URL. If the local HostSpan trace has no request, the problem is before HostSpan.
+For a user-managed reverse proxy, first verify the configured private HostSpan endpoint, then the proxy's upstream reachability, allowed `Host` value, TLS/auth layer, and finally the external URL. If the HostSpan trace has no request, the problem is before HostSpan.
 
 ## Inspector validation
 

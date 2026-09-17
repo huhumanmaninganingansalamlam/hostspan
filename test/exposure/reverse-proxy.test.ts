@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRuntime } from "../../src/cli/index.js";
-import type { HostSpanConfig } from "../../src/config/schema.js";
+import { HostSpanConfigSchema, type HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
 import { TOOL_NAMES, TOOLSET_HASH } from "../../src/mcp/registry.js";
-import { createHostSpanHttpServer } from "../../src/mcp/server.js";
+import { createHostSpanHttpServer, listenHostSpan, resolveAllowedHosts } from "../../src/mcp/server.js";
 
 const roots: string[] = [];
 
@@ -85,7 +85,86 @@ async function listenProxy(upstream: URL): Promise<{ origin: string; close(): Pr
   };
 }
 
+async function requestStatus(port: string, host: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path: "/healthz",
+        method: "GET",
+        headers: { host },
+      },
+      (response) => {
+        response.resume();
+        response.once("end", () => resolve(response.statusCode ?? 0));
+      },
+    );
+    request.once("error", reject);
+    request.end();
+  });
+}
+
 describe("user-managed reverse proxy", () => {
+  it("requires an explicit Host allowlist for wildcard binds", () => {
+    const base = {
+      schema_version: 1 as const,
+      policy_epoch: 1,
+      retention: {
+        completed_process_output_ttl_minutes: 60,
+        operation_result_days: 14,
+        audit_days: 30,
+        max_total_spool_bytes: 1024,
+      },
+      targets: {},
+      exec_profiles: {},
+    };
+    expect(
+      HostSpanConfigSchema.safeParse({
+        ...base,
+        server: { listen_host: "0.0.0.0", listen_port: 39393, data_dir: "/tmp/hostspan" },
+      }).success,
+    ).toBe(false);
+    expect(
+      HostSpanConfigSchema.safeParse({
+        ...base,
+        server: {
+          listen_host: "0.0.0.0",
+          listen_port: 39393,
+          allowed_hosts: ["mcp.example.com", "192.168.10.20"],
+          data_dir: "/tmp/hostspan",
+        },
+      }).success,
+    ).toBe(true);
+    expect(resolveAllowedHosts("192.168.10.20")).toEqual(["192.168.10.20"]);
+    expect(() => resolveAllowedHosts("::")).toThrow(/allowed_hosts/);
+  });
+
+  it("binds on all interfaces while accepting only configured Host values", async () => {
+    const { configPath } = fixture();
+    const runtime = createRuntime(configPath);
+    const app = createHostSpanHttpServer({
+      listen_host: "0.0.0.0",
+      listen_port: 0,
+      allowed_hosts: ["mcp.example.com"],
+      handlers: runtime.handlers,
+      responseContext: () => ({ toolset_hash: TOOLSET_HASH, policy_epoch: runtime.config.policy_epoch }),
+      status: {
+        health: () => ({ server_version: "test" }),
+        readiness: () => ({ ready: true, degraded: false }),
+      },
+    });
+    try {
+      const address = await listenHostSpan(app, "0.0.0.0", 0);
+      const port = new URL(address).port;
+      expect(await requestStatus(port, "mcp.example.com")).toBe(200);
+      expect(await requestStatus(port, "evil.example.com")).toBe(403);
+    } finally {
+      await app.close();
+      runtime.close();
+    }
+  });
+
   it("passes MCP 2026-07-28 stateless calls when the proxy rewrites the upstream Host", async () => {
     const { configPath } = fixture();
     const runtime = createRuntime(configPath);
