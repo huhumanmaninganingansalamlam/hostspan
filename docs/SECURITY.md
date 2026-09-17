@@ -2,7 +2,7 @@
 
 ## Trust boundaries
 
-HostSpan treats model output and repository content as untrusted input. The local HostSpan configuration and policy are administrator-controlled authority. OpenAI Secure MCP Tunnel and the optional Cloudflare Quick Tunnel exposure mode are transports only; neither replaces HostSpan target/file/exec authorization.
+HostSpan treats model output and repository content as untrusted input. The local HostSpan configuration and policy are administrator-controlled authority. OpenAI Secure MCP Tunnel or a user-managed reverse proxy is transport only; neither replaces HostSpan target/file/exec authorization.
 
 Every tool call is revalidated against the configured `target_id`, target capability, canonical target-relative path, file policy, exec profile, program/environment limits, deadlines/output limits, and idempotency ledger.
 
@@ -52,22 +52,19 @@ Use restrictive OS permissions on the config/state directories and avoid expandi
 
 Alpha binds only to `127.0.0.1`. Host headers are validated by the MCP Fastify adapter and HostSpan fallback validation. Do not expose the local MCP port directly to a LAN or the public Internet.
 
-The recommended remote path remains outbound-only OpenAI Secure MCP Tunnel. `hostspan expose` is a development convenience that launches an outbound Cloudflare Quick Tunnel to a **separate** loopback-only HostSpan instance. That instance exposes only a random capability path such as:
+The recommended remote path remains outbound-only OpenAI Secure MCP Tunnel. If you instead operate a reverse proxy/ingress/tunnel gateway yourself, HostSpan still stays loopback-only. The proxy rewrites the upstream `Host` header to the loopback HostSpan endpoint and supplies the public TLS/authentication boundary.
 
-```text
-https://random.trycloudflare.com/mcp/<256-bit-random-capability>
-```
+Security requirements for a user-managed proxy:
 
-Security properties of this mode:
+- expose only `/mcp` unless there is a concrete operational need for diagnostics;
+- keep `/healthz` and `/readyz` private by default;
+- terminate HTTPS at a trusted proxy/gateway;
+- require client authentication/authorization appropriate to the MCP client before forwarding to HostSpan;
+- rate-limit and apply WAF/network policy where appropriate;
+- do not disable HostSpan's localhost Host validation or change HostSpan to a public bind;
+- treat forwarded MCP calls as untrusted even after proxy authentication: HostSpan target/file/exec policy is still the final local capability boundary.
 
-- the default `/mcp`, `/healthz`, and `/readyz` routes are not registered on the exposure instance;
-- the full generated URL is a bearer capability and must be treated as a secret;
-- the capability path is not written to HostSpan transport logs/support exports;
-- restarting `hostspan expose` rotates both the Quick Tunnel hostname and the capability;
-- this is not OAuth and is not intended as a production identity/access-control system;
-- Cloudflare Quick Tunnel is a development/testing transport; production or stable deployments should use Secure MCP Tunnel or a separately administered authenticated tunnel.
-
-Quick Tunnel transport does not make native execution safer. A caller that possesses the capability URL can invoke whatever read/write/exec capabilities the configured target policy already allows.
+Reverse proxy transport does not make native execution safer. Any authenticated caller that reaches HostSpan can invoke the read/write/exec capabilities permitted by the configured target policy.
 
 ## Reporting
 

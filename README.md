@@ -22,7 +22,6 @@ Alpha supports Ubuntu 24.04 LTS or WSL2 on Linux x64. PTY/stdin sessions, SSH, n
 - `ripgrep` (`rg`) for `file_search`
 - systemd user services only if using `hostspan service ...`
 - OpenAI Secure MCP Tunnel for the standard ChatGPT Web connection path
-- `cloudflared` only if using the optional one-command `hostspan expose` development path
 
 ## Build
 
@@ -72,15 +71,39 @@ Readiness http://127.0.0.1:39393/readyz
 
 The server is loopback-only and validates Host headers. `readyz` represents server/database readiness; missing ripgrep is reported as degraded so non-search tools stay usable, while `file_search` returns `SEARCH_BACKEND_UNAVAILABLE`.
 
-For a DevSpace-style temporary public endpoint without changing the loopback bind, install `cloudflared` and run:
+If you want a normal public MCP endpoint instead of Secure MCP Tunnel, run your own reverse proxy in front of HostSpan. HostSpan itself stays on loopback:
 
-```bash
-hostspan expose
+```text
+MCP client
+  -> https://mcp.example.com/mcp
+  -> your nginx/Caddy/Traefik/ingress/reverse tunnel
+  -> http://127.0.0.1:39393/mcp
 ```
 
-HostSpan starts a separate loopback-only exposure instance on an ephemeral local port and launches a Cloudflare Quick Tunnel. It prints one HTTPS MCP URL containing a random 256-bit capability path. The exposure instance does **not** publish the ordinary `/mcp`, `/healthz`, or `/readyz` paths, and the capability path is normalized out of HostSpan transport logs. Treat the full URL as a secret and restart `hostspan expose` to rotate it.
+The proxy must rewrite the upstream `Host` header to the loopback HostSpan endpoint so HostSpan's localhost Host validation stays enabled. Do not weaken HostSpan to bind publicly just to make a proxy work.
 
-Cloudflare Quick Tunnels are for development/testing and their hostname changes between runs. For the standard ChatGPT path or longer-lived deployments, use OpenAI Secure MCP Tunnel. See [ChatGPT connection](docs/CHATGPT.md) for the trade-offs.
+Example Caddy upstream:
+
+```caddyfile
+mcp.example.com {
+    reverse_proxy /mcp 127.0.0.1:39393 {
+        header_up Host 127.0.0.1:39393
+    }
+}
+```
+
+Example nginx upstream:
+
+```nginx
+location = /mcp {
+    proxy_pass http://127.0.0.1:39393/mcp;
+    proxy_set_header Host 127.0.0.1:39393;
+    proxy_http_version 1.1;
+    proxy_buffering off;
+}
+```
+
+TLS, client authentication/authorization, rate limits, WAF rules, and public DNS belong at your proxy/gateway. **Do not put write/exec-capable HostSpan on the public Internet without an authentication boundary.** Prefer exposing only `/mcp`; keep `/healthz` and `/readyz` private.
 
 Useful local commands:
 
@@ -108,7 +131,7 @@ ChatGPT Web Developer Mode
 
 Start HostSpan, verify `hostspan doctor` and `hostspan smoke`, then configure the current OpenAI Secure MCP Tunnel to forward to the loopback MCP endpoint. Add the resulting tunnel endpoint to ChatGPT Developer Mode and run `system_status` first. If the HostSpan version/toolset changes, use the ChatGPT app's MCP Refresh flow before treating stale tool metadata as a server defect.
 
-For local development, `hostspan expose` is an optional alternate transport. Paste the generated `https://...trycloudflare.com/mcp/<capability>` URL into the MCP client. The toolset and server policy are identical; only the transport path changes.
+Alternatively, point ChatGPT at the HTTPS URL of a reverse proxy you operate. The proxy only transports MCP HTTP; HostSpan still enforces the same target/file/exec policy. See [ChatGPT connection](docs/CHATGPT.md) for concrete proxy requirements.
 
 Detailed setup and trace-based troubleshooting are in [ChatGPT connection](docs/CHATGPT.md) and [Troubleshooting](docs/TROUBLESHOOTING.md).
 
@@ -128,7 +151,7 @@ The contract suite reconnects and lists the fixed toolset 100 times. The Alpha a
 ## Security and support
 
 - [Security model](docs/SECURITY.md)
-- [ChatGPT Web / Secure MCP Tunnel / Quick Tunnel](docs/CHATGPT.md)
+- [ChatGPT Web / Secure MCP Tunnel / reverse proxy](docs/CHATGPT.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Alpha release and migration notes](docs/RELEASE.md)
 

@@ -125,15 +125,6 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
     status: tunnel.status === 0 ? "pass" : "warn",
     details: tunnel.status === 0 ? tunnel.stdout.trim().split("\n")[0] ?? "available" : "optional check: tunnel-client not found on PATH",
   });
-  const cloudflared = spawnSync("cloudflared", ["--version"], { encoding: "utf8" });
-  checks.push({
-    name: "cloudflared",
-    status: cloudflared.status === 0 ? "pass" : "warn",
-    details:
-      cloudflared.status === 0
-        ? cloudflared.stdout.trim().split("\n")[0] ?? "available"
-        : "optional check: cloudflared not found; required only for `hostspan expose` Quick Tunnel mode",
-  });
   return {
     ok: checks.every((check) => check.status !== "fail"),
     server_version: SERVER_VERSION,

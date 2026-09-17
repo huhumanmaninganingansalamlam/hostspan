@@ -2,7 +2,7 @@
 
 HostSpan Alpha is designed for ChatGPT Web Developer Mode through OpenAI Secure MCP Tunnel.
 
-It also provides an optional one-command development transport, `hostspan expose`, that creates an outbound Cloudflare Quick Tunnel while keeping HostSpan itself loopback-only.
+As an alternative, you can operate any ordinary HTTPS reverse proxy or tunnel gateway yourself. HostSpan does not create or manage provider-specific public endpoints.
 
 ## 1. Verify HostSpan locally
 
@@ -35,36 +35,46 @@ Do not bind HostSpan to a public interface and do not treat the tunnel as file/e
 
 OpenAI reference: <https://developers.openai.com/api/docs/guides/secure-mcp-tunnels>
 
-## Alternative: one-command Quick Tunnel exposure
+## Alternative: user-managed reverse proxy
 
-Install the official `cloudflared` binary, then run:
+Run `hostspan serve` normally and put your own HTTPS endpoint in front of it:
 
-```bash
-hostspan expose
+```text
+https://mcp.example.com/mcp
+  -> reverse proxy / ingress / reverse tunnel you operate
+  -> http://127.0.0.1:39393/mcp
 ```
 
-The command prints a value like:
+HostSpan remains bound to `127.0.0.1`; do not change it to `0.0.0.0`. The proxy must rewrite the upstream `Host` header to the loopback upstream value, for example `127.0.0.1:39393`, because HostSpan deliberately keeps localhost Host validation enabled.
 
-```json
-{
-  "provider": "cloudflare_quick",
-  "public_mcp_url": "https://random.trycloudflare.com/mcp/<random-capability>",
-  "authorization": "capability_url",
-  "ephemeral": true
+Minimal Caddy example:
+
+```caddyfile
+mcp.example.com {
+    reverse_proxy /mcp 127.0.0.1:39393 {
+        header_up Host 127.0.0.1:39393
+    }
 }
 ```
 
-Paste the complete `public_mcp_url` into the MCP client. Do not remove the capability suffix and do not share the URL: possession of the URL grants access to the HostSpan tool surface permitted by local target policy.
+Minimal nginx example:
 
-This mode intentionally uses a separate ephemeral loopback listener. Plain `/mcp`, `/healthz`, and `/readyz` are not available through that listener. HostSpan keeps the fixed 10-tool contract unchanged and normalizes the secret route to `/mcp` before writing transport traces.
+```nginx
+location = /mcp {
+    proxy_pass http://127.0.0.1:39393/mcp;
+    proxy_set_header Host 127.0.0.1:39393;
+    proxy_http_version 1.1;
+    proxy_buffering off;
+}
+```
 
-Cloudflare documents Quick Tunnels as development/testing only. They use a random `trycloudflare.com` hostname and do not support SSE. HostSpan's MCP 2026-07-28 stateless request path works without relying on a long-lived SSE connection, but use OpenAI Secure MCP Tunnel when you need the standard supported ChatGPT topology or broader legacy-client compatibility.
+The public side of the proxy must provide HTTPS and a client authentication/authorization boundary appropriate for your MCP client. Add rate limiting/WAF controls as appropriate. Do not expose write/exec-capable HostSpan through an unauthenticated public proxy. Prefer routing only `/mcp`; leave `/healthz` and `/readyz` reachable only locally/private-network-side.
 
-Cloudflare reference: <https://developers.cloudflare.com/tunnel/get-started/#quick-tunnels-development>
+MCP `2026-07-28` is stateless at the protocol core, so ordinary reverse proxies and load balancers do not need sticky MCP sessions for modern requests. The proxy should preserve the `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`, content type, and request body headers/data.
 
 ## 3. Add the app in ChatGPT Developer Mode
 
-In ChatGPT Developer Mode, add the MCP endpoint issued by Secure MCP Tunnel. After the app is visible, invoke `system_status` and verify:
+In ChatGPT Developer Mode, add the MCP endpoint issued by Secure MCP Tunnel or the authenticated HTTPS reverse proxy endpoint you operate. After the app is visible, invoke `system_status` and verify:
 
 - `toolset_version` is `hostspan-v1`
 - the toolset has exactly 10 tools
@@ -92,7 +102,7 @@ HostSpan records transport requests and accepted tool calls. If there is no corr
 
 If a request arrived but failed, use `request_id`, `idempotency_key`, `process_id`, and structured error code to identify the stage.
 
-For `hostspan expose`, if the public URL stops responding, first check whether the `hostspan expose` process is still running. The Quick Tunnel URL is ephemeral and changes on every restart; update/refresh the MCP app with the newly printed URL.
+For a user-managed reverse proxy, first verify local `http://127.0.0.1:39393/mcp`, then the proxy's upstream reachability, upstream `Host` rewrite, TLS/auth layer, and finally the external URL. If the local HostSpan trace has no request, the problem is before HostSpan.
 
 ## Inspector validation
 

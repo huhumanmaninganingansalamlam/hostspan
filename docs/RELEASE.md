@@ -2,12 +2,12 @@
 
 ## Release contract
 
-- Version: `0.2.0-alpha.2`
+- Version: `0.2.0-alpha.3`
 - Toolset: `hostspan-v1`
 - MCP protocol target: `2026-07-28`
 - Platform: Linux x64 (Ubuntu 24.04 LTS / WSL2)
 - Client target: ChatGPT Web Developer Mode
-- Transport: loopback HostSpan + OpenAI Secure MCP Tunnel; optional Cloudflare Quick Tunnel development exposure
+- Transport: loopback HostSpan + OpenAI Secure MCP Tunnel; optional user-managed HTTPS reverse proxy/ingress
 
 ## Included
 
@@ -24,7 +24,7 @@
 - JSONL logging, redaction, short output retention, support export
 - doctor/smoke/status/admin/service commands
 - ChatGPT Refresh/tunnel/troubleshooting documentation
-- `hostspan expose` one-command outbound Quick Tunnel mode with an ephemeral 256-bit capability MCP path and no exposed diagnostic/default MCP routes
+- ordinary reverse-proxy compatibility while HostSpan remains loopback-only and keeps Host validation enabled
 
 ## Explicitly excluded
 
@@ -34,7 +34,7 @@ PTY/stdin, SSH/multi-host execution, native Windows/macOS adapters, GUI/browser 
 
 `hostspan-v1` tool names and input schemas are fixed for Alpha. A breaking tool-contract change requires a new toolset version and migration notes. Description/schema metadata changes alter `toolset_hash`; refresh the ChatGPT app after upgrading.
 
-`0.2.0-alpha.2` does not change the `hostspan-v1` tool contract. It adds an admin-plane transport command only. The generated Quick Tunnel URL is ephemeral, is not OAuth, and must be treated as a bearer secret. OpenAI Secure MCP Tunnel remains the standard ChatGPT transport.
+`0.2.0-alpha.3` does not change the `hostspan-v1` tool contract. It removes the provider-specific `hostspan expose` command introduced in alpha.2. HostSpan now stays transport-provider-neutral: OpenAI Secure MCP Tunnel remains the standard ChatGPT transport, and users who want another external path operate their own authenticated HTTPS reverse proxy/ingress in front of loopback `/mcp`.
 
 Config and database both carry schema version 1. HostSpan fails closed if it encounters a newer database schema than the binary supports. Database initialization uses WAL; future migrations must back up the database before mutation.
 
