@@ -8,7 +8,7 @@ import { createRuntime } from "../../src/cli/index.js";
 import { HostSpanConfigSchema, type HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
 import { TOOL_NAMES, TOOLSET_HASH } from "../../src/mcp/registry.js";
-import { createHostSpanHttpServer, listenHostSpan, resolveAllowedHosts } from "../../src/mcp/server.js";
+import { createHostSpanHttpServer, resolveAllowedHosts } from "../../src/mcp/server.js";
 
 const roots: string[] = [];
 
@@ -85,26 +85,6 @@ async function listenProxy(upstream: URL): Promise<{ origin: string; close(): Pr
   };
 }
 
-async function requestStatus(port: string, host: string): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const request = httpRequest(
-      {
-        hostname: "127.0.0.1",
-        port,
-        path: "/healthz",
-        method: "GET",
-        headers: { host },
-      },
-      (response) => {
-        response.resume();
-        response.once("end", () => resolve(response.statusCode ?? 0));
-      },
-    );
-    request.once("error", reject);
-    request.end();
-  });
-}
-
 describe("user-managed reverse proxy", () => {
   it("requires an explicit Host allowlist for wildcard binds", () => {
     const base = {
@@ -140,27 +120,24 @@ describe("user-managed reverse proxy", () => {
     expect(() => resolveAllowedHosts("::")).toThrow(/allowed_hosts/);
   });
 
-  it("binds on all interfaces while accepting only configured Host values", async () => {
+  it("requires OAuth before serving on non-loopback interfaces", () => {
     const { configPath } = fixture();
     const runtime = createRuntime(configPath);
-    const app = createHostSpanHttpServer({
-      listen_host: "0.0.0.0",
-      listen_port: 0,
-      allowed_hosts: ["mcp.example.com"],
-      handlers: runtime.handlers,
-      responseContext: () => ({ toolset_hash: TOOLSET_HASH, policy_epoch: runtime.config.policy_epoch }),
-      status: {
-        health: () => ({ server_version: "test" }),
-        readiness: () => ({ ready: true, degraded: false }),
-      },
-    });
     try {
-      const address = await listenHostSpan(app, "0.0.0.0", 0);
-      const port = new URL(address).port;
-      expect(await requestStatus(port, "mcp.example.com")).toBe(200);
-      expect(await requestStatus(port, "evil.example.com")).toBe(403);
+      expect(() =>
+        createHostSpanHttpServer({
+          listen_host: "0.0.0.0",
+          listen_port: 0,
+          allowed_hosts: ["mcp.example.com"],
+          handlers: runtime.handlers,
+          responseContext: () => ({ toolset_hash: TOOLSET_HASH, policy_epoch: runtime.config.policy_epoch }),
+          status: {
+            health: () => ({ server_version: "test" }),
+            readiness: () => ({ ready: true, degraded: false }),
+          },
+        }),
+      ).toThrow(/requires OAuth/);
     } finally {
-      await app.close();
       runtime.close();
     }
   });

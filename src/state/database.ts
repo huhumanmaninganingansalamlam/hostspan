@@ -5,7 +5,7 @@ import Database from "better-sqlite3";
 import type { HostSpanConfig } from "../config/schema.js";
 import type { TargetRegistry } from "../targets/registry.js";
 
-export const DB_SCHEMA_VERSION = 1;
+export const DB_SCHEMA_VERSION = 2;
 
 export type HostSpanDatabase = Database.Database;
 
@@ -47,6 +47,27 @@ export function openDatabase(path: string): HostSpanDatabase {
       CREATE TABLE IF NOT EXISTS audit_events (
         event_id TEXT PRIMARY KEY, request_id TEXT NOT NULL, idempotency_key TEXT, process_id TEXT,
         event_type TEXT NOT NULL, metadata_json TEXT NOT NULL, timestamp TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS oauth_clients (
+        client_id TEXT PRIMARY KEY, metadata_json TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS oauth_authorization_requests (
+        request_id TEXT PRIMARY KEY, client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL,
+        scope TEXT NOT NULL, state TEXT, code_challenge TEXT NOT NULL, resource TEXT NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+        code_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL,
+        scope TEXT NOT NULL, code_challenge TEXT NOT NULL, resource TEXT NOT NULL,
+        expires_at INTEGER NOT NULL, used_at INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS oauth_access_tokens (
+        token_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, scope TEXT NOT NULL,
+        resource TEXT NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+        token_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, scope TEXT NOT NULL,
+        resource TEXT NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER
       );
     `);
     db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)").run(String(DB_SCHEMA_VERSION));

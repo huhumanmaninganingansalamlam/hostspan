@@ -87,11 +87,30 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
   const nonLoopback = !["127.0.0.1", "localhost", "::1"].includes(config.server.listen_host.toLowerCase());
   checks.push({
     name: "network_bind",
-    status: nonLoopback ? "warn" : "pass",
+    status: nonLoopback && !config.oauth ? "fail" : nonLoopback ? "warn" : "pass",
     details: nonLoopback
       ? `listen_host=${config.server.listen_host}; allowed_hosts=${(config.server.allowed_hosts ?? []).join(",") || "<derived>"}; protect non-loopback access with firewall/TLS/authentication as appropriate`
       : `listen_host=${config.server.listen_host}; loopback-only`,
   });
+  if (config.oauth) {
+    const publicUrl = new URL(config.oauth.public_mcp_url);
+    const publicHostAllowed = (config.server.allowed_hosts ?? []).includes(publicUrl.hostname);
+    checks.push({
+      name: "oauth",
+      status: publicHostAllowed ? "pass" : "fail",
+      details: publicHostAllowed
+        ? `issuer=${publicUrl.origin}; resource=${config.oauth.public_mcp_url}`
+        : `public OAuth host ${publicUrl.hostname} is missing from server.allowed_hosts`,
+    });
+  } else {
+    checks.push({
+      name: "oauth",
+      status: nonLoopback ? "fail" : "warn",
+      details: nonLoopback
+        ? "OAuth is required for non-loopback HostSpan."
+        : "OAuth is not configured; acceptable only for local loopback use.",
+    });
+  }
   for (const target of targets.list()) {
     checks.push({
       name: `target:${target.target_id}`,

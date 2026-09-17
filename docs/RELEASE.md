@@ -2,7 +2,7 @@
 
 ## Release contract
 
-- Version: `0.2.0-alpha.4`
+- Version: `0.2.0-alpha.5`
 - Toolset: `hostspan-v1`
 - MCP protocol target: `2026-07-28`
 - Platform: Linux x64 (Ubuntu 24.04 LTS / WSL2)
@@ -25,6 +25,9 @@
 - doctor/smoke/status/admin/service commands
 - ChatGPT Refresh/tunnel/troubleshooting documentation
 - configurable loopback/specific-IP/wildcard bind with fail-closed Host allowlists for reverse-proxy/LAN/container deployments
+- built-in OAuth authorization-code + PKCE S256 for all non-loopback serving
+- RFC 9728 protected-resource metadata, authorization-server discovery, and public-client registration compatibility
+- hashed durable OAuth codes/tokens, short access-token TTL, rotating refresh tokens, approval-secret rotation/revocation
 
 ## Explicitly excluded
 
@@ -34,9 +37,9 @@ PTY/stdin, SSH/multi-host execution, native Windows/macOS adapters, GUI/browser 
 
 `hostspan-v1` tool names and input schemas are fixed for Alpha. A breaking tool-contract change requires a new toolset version and migration notes. Description/schema metadata changes alter `toolset_hash`; refresh the ChatGPT app after upgrading.
 
-`0.2.0-alpha.4` does not change the `hostspan-v1` tool contract. It makes `server.listen_host` configurable. A wildcard bind (`0.0.0.0` or `::`) requires explicit `server.allowed_hosts`; a specific IP/hostname derives its Host allowlist when none is supplied. HostSpan remains transport-provider-neutral: OpenAI Secure MCP Tunnel is the standard ChatGPT transport, while user-managed reverse proxies/ingress may reach HostSpan over loopback or a deliberately configured private/wildcard bind.
+`0.2.0-alpha.5` does not change the `hostspan-v1` tool contract. It closes unauthenticated remote MCP exposure: any non-loopback HostSpan server now fails closed until `hostspan oauth init --public-url https://.../mcp` configures OAuth. Existing loopback-only local workflows remain usable without OAuth.
 
-Config and database both carry schema version 1. HostSpan fails closed if it encounters a newer database schema than the binary supports. Database initialization uses WAL; future migrations must back up the database before mutation.
+Config schema remains version 1. The durable database schema is version 2 and adds hashed OAuth client/code/token state. HostSpan fails closed if it encounters a newer database schema than the binary supports. Database initialization uses WAL and backs up an existing database before migration.
 
 ## Release gates
 

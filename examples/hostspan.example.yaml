@@ -7,6 +7,12 @@ server:
   allowed_hosts: []
   data_dir: ~/.local/state/hostspan
 
+# For any non-loopback listen_host, do not hand-write OAuth secrets here.
+# Run:
+#   hostspan oauth init --public-url https://mcp.example.com/mcp
+# HostSpan generates the oauth section, adds the public hostname to
+# allowed_hosts, and prints the approval secret exactly once.
+
 retention:
   completed_process_output_ttl_minutes: 60
   operation_result_days: 14

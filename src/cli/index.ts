@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, unwatchFile, watchFile } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createOAuthSetup, OAuthService, rotateOAuthApprovalSecret } from "../auth/oauth-service.js";
 import type { HostSpanConfig } from "../config/schema.js";
 import { loadConfig } from "../config/loader.js";
 import { writeConfigAtomic } from "../config/writer.js";
@@ -37,6 +38,7 @@ import { ProcessSupervisor } from "../processes/supervisor.js";
 import { AuditRepo } from "../state/audit-repo.js";
 import { databaseHealthy, openDatabase, syncTargetSnapshots, type HostSpanDatabase } from "../state/database.js";
 import { argumentHash, OperationsRepo } from "../state/operations-repo.js";
+import { OAuthRepo } from "../state/oauth-repo.js";
 import { ProcessesRepo } from "../state/processes-repo.js";
 import { TransactionsRepo } from "../state/transactions-repo.js";
 import { TargetRegistry } from "../targets/registry.js";
@@ -57,6 +59,8 @@ export interface HostSpanRuntime {
   audit: AuditRepo;
   logger: HostSpanLogger;
   supervisor: ProcessSupervisor;
+  oauthRepo: OAuthRepo;
+  oauth?: OAuthService;
   handlers: HostSpanToolHandlers;
   close(): void;
 }
@@ -104,6 +108,30 @@ function executableReady(command: string): boolean {
   return spawnSync(command, ["--version"], { stdio: "ignore" }).status === 0;
 }
 
+function oauthApprovalSecretPath(configPath: string): string {
+  return join(dirname(configPath), "oauth-approval-secret");
+}
+
+function writeOAuthApprovalSecret(configPath: string, secret: string): string {
+  const path = oauthApprovalSecretPath(configPath);
+  const dir = dirname(path);
+  const temp = `${path}.tmp-${process.pid}`;
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    writeFileSync(temp, `${secret}\n`, { mode: 0o600 });
+    chmodSync(temp, 0o600);
+    renameSync(temp, path);
+    chmodSync(path, 0o600);
+  } finally {
+    rmSync(temp, { force: true });
+  }
+  return path;
+}
+
+function isLoopbackHost(host: string): boolean {
+  return ["127.0.0.1", "localhost", "::1"].includes(host.toLowerCase());
+}
+
 export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime {
   const resolvedConfigPath = resolve(configPath);
   const config = loadConfig(resolvedConfigPath);
@@ -113,8 +141,13 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
   const processes = new ProcessesRepo(db);
   const transactions = new TransactionsRepo(db);
   const audit = new AuditRepo(db);
+  const oauthRepo = new OAuthRepo(db);
   const logger = new HostSpanLogger(config.server.data_dir);
-  const policy = new PolicyEvaluator(config, [resolvedConfigPath, `${resolvedConfigPath}.bak`]);
+  const policy = new PolicyEvaluator(config, [
+    resolvedConfigPath,
+    `${resolvedConfigPath}.bak`,
+    oauthApprovalSecretPath(resolvedConfigPath),
+  ]);
   syncTargetSnapshots(db, config, targets);
   recoverPatchTransactions(targets, operations, transactions);
   const recoveredProcesses = recoverProcesses(processes, operations);
@@ -128,6 +161,7 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
 
   const patchService = new FilePatchService({ data_dir: config.server.data_dir, operations, transactions, policy });
   const supervisor = new ProcessSupervisor({ config, targets, policy, operations, processes, logger });
+  const oauth = config.oauth ? new OAuthService(config.oauth, oauthRepo) : undefined;
 
   const traced = async <T extends Record<string, unknown>>(
     tool: string,
@@ -185,6 +219,9 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
           },
           active_process_count: processes.activeCount(),
           degraded: !searchReady,
+          oauth: oauth
+            ? { enabled: true, issuer: oauth.issuer, resource: oauth.publicMcpUrl }
+            : { enabled: false },
           native_execution: true,
           sandboxed: false,
         };
@@ -253,6 +290,8 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
     audit,
     logger,
     supervisor,
+    oauthRepo,
+    ...(oauth ? { oauth } : {}),
     handlers,
     close: () => db.close(),
   };
@@ -291,7 +330,7 @@ function initialConfig(): HostSpanConfig {
 }
 
 function usage(): string {
-  return `HostSpan ${SERVER_VERSION}\n\nCommands:\n  init [--config PATH]\n  serve [--config PATH]\n  doctor [--config PATH]\n  smoke --target TARGET [--config PATH]\n  status [--verbose] [--config PATH]\n  targets list|add|remove ... [--config PATH]\n  policy validate [--config PATH]\n  print-toolset\n  logs [--follow] [--config PATH]\n  support-export [PATH] [--config PATH]\n  service install|start|stop|restart|status [--config PATH]\n  --version\n`;
+  return `HostSpan ${SERVER_VERSION}\n\nCommands:\n  init [--config PATH]\n  serve [--config PATH]\n  doctor [--config PATH]\n  smoke --target TARGET [--config PATH]\n  status [--verbose] [--config PATH]\n  targets list|add|remove ... [--config PATH]\n  oauth init --public-url https://host/mcp [--config PATH]\n  oauth status [--config PATH]\n  oauth rotate-secret [--config PATH]\n  policy validate [--config PATH]\n  print-toolset\n  logs [--follow] [--config PATH]\n  support-export [PATH] [--config PATH]\n  service install|start|stop|restart|status [--config PATH]\n  --version\n`;
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
@@ -321,12 +360,80 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     print(report);
     return report.ok ? 0 : 1;
   }
+  if (command === "oauth") {
+    const action = argv[1];
+    const config = loadConfig(configPath);
+    if (action === "init") {
+      if (config.oauth) throw new Error("OAuth is already configured. Use hostspan oauth rotate-secret to rotate credentials.");
+      const publicUrl = flag(argv, "--public-url");
+      if (!publicUrl) throw new Error("oauth init requires --public-url https://host/mcp");
+      const setup = createOAuthSetup(publicUrl);
+      const hostname = new URL(setup.config.public_mcp_url).hostname;
+      const allowedHosts = new Set(config.server.allowed_hosts ?? []);
+      allowedHosts.add(hostname);
+      config.server.allowed_hosts = [...allowedHosts];
+      config.oauth = setup.config;
+      config.policy_epoch += 1;
+      writeConfigAtomic(configPath, config);
+      const approvalSecretFile = writeOAuthApprovalSecret(configPath, setup.approval_secret);
+      print({
+        ok: true,
+        public_mcp_url: setup.config.public_mcp_url,
+        issuer: new URL(setup.config.public_mcp_url).origin,
+        approval_secret_file: approvalSecretFile,
+        warning: "The OAuth approval secret is stored only in the local mode-0600 file. Do not copy it into logs or chat messages.",
+      });
+      return 0;
+    }
+    if (action === "status") {
+      print({
+        enabled: Boolean(config.oauth),
+        ...(config.oauth
+          ? {
+              public_mcp_url: config.oauth.public_mcp_url,
+              issuer: new URL(config.oauth.public_mcp_url).origin,
+              approval_secret_file: oauthApprovalSecretPath(configPath),
+              access_token_ttl_minutes: config.oauth.access_token_ttl_minutes,
+              refresh_token_ttl_days: config.oauth.refresh_token_ttl_days,
+            }
+          : {}),
+      });
+      return 0;
+    }
+    if (action === "rotate-secret") {
+      if (!config.oauth) throw new Error("OAuth is not configured. Run hostspan oauth init first.");
+      const rotated = rotateOAuthApprovalSecret(config.oauth);
+      config.oauth = rotated.config;
+      config.policy_epoch += 1;
+      writeConfigAtomic(configPath, config);
+      const approvalSecretFile = writeOAuthApprovalSecret(configPath, rotated.approval_secret);
+      const db = openDatabase(join(config.server.data_dir, "state.db"));
+      try {
+        new OAuthRepo(db).revokeAll(Math.floor(Date.now() / 1000));
+      } finally {
+        db.close();
+      }
+      print({
+        ok: true,
+        approval_secret_file: approvalSecretFile,
+        tokens_revoked: true,
+        warning: "The new OAuth approval secret is stored only in the local mode-0600 file. Existing access and refresh tokens were revoked.",
+      });
+      return 0;
+    }
+    throw new Error("oauth requires init, status, or rotate-secret");
+  }
   if (command === "serve") {
     const runtime = createRuntime(configPath);
+    if (!isLoopbackHost(runtime.config.server.listen_host) && !runtime.oauth) {
+      runtime.close();
+      throw new Error("Non-loopback listen_host requires OAuth. Run hostspan oauth init --public-url https://<host>/mcp first.");
+    }
     const app = createHostSpanHttpServer({
       listen_host: runtime.config.server.listen_host,
       listen_port: runtime.config.server.listen_port,
       ...(runtime.config.server.allowed_hosts ? { allowed_hosts: runtime.config.server.allowed_hosts } : {}),
+      ...(runtime.oauth ? { oauth: runtime.oauth } : {}),
       handlers: runtime.handlers,
       responseContext: () => ({ toolset_hash: TOOLSET_HASH, policy_epoch: runtime.config.policy_epoch }),
       status: {
@@ -342,6 +449,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       mcp: `${address}/mcp`,
       listen_host: runtime.config.server.listen_host,
       allowed_hosts: runtime.config.server.allowed_hosts ?? [],
+      oauth: runtime.oauth
+        ? { enabled: true, public_mcp_url: runtime.oauth.publicMcpUrl, issuer: runtime.oauth.issuer }
+        : { enabled: false },
       native_execution: true,
       sandboxed: false,
     });
@@ -369,6 +479,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         policy_epoch: runtime.config.policy_epoch,
         listen_host: runtime.config.server.listen_host,
         allowed_hosts: runtime.config.server.allowed_hosts ?? [],
+        oauth: runtime.oauth
+          ? { enabled: true, public_mcp_url: runtime.oauth.publicMcpUrl, issuer: runtime.oauth.issuer }
+          : { enabled: false },
         native_execution: true,
         sandboxed: false,
         targets: runtime.targets.list().map((target) => ({

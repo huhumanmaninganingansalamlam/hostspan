@@ -2,7 +2,7 @@
 
 HostSpan Alpha is designed for ChatGPT Web Developer Mode through OpenAI Secure MCP Tunnel.
 
-As an alternative, you can operate any ordinary HTTPS reverse proxy or tunnel gateway yourself. HostSpan does not create or manage provider-specific public endpoints.
+As an alternative, you can operate any ordinary HTTPS reverse proxy or tunnel gateway yourself. HostSpan does not create or manage provider-specific public endpoints. Non-loopback HostSpan requires its built-in OAuth layer.
 
 ## 1. Verify HostSpan locally
 
@@ -35,9 +35,15 @@ Secure MCP Tunnel normally uses the loopback bind. Do not treat the tunnel as fi
 
 OpenAI reference: <https://developers.openai.com/api/docs/guides/secure-mcp-tunnels>
 
-## Alternative: user-managed reverse proxy
+## Alternative: user-managed reverse proxy + HostSpan OAuth
 
-Run `hostspan serve` normally and put your own HTTPS endpoint in front of it:
+Initialize OAuth with the exact public MCP URL first:
+
+```bash
+hostspan oauth init --public-url https://mcp.example.com/mcp
+```
+
+HostSpan stores only a salted scrypt hash in config and writes the generated approval credential to the local mode-`0600` file reported as `approval_secret_file`. Read that file locally when the authorization page asks for approval. Then run `hostspan serve` and put your HTTPS endpoint in front of it:
 
 ```text
 https://mcp.example.com/mcp
@@ -45,7 +51,7 @@ https://mcp.example.com/mcp
   -> http://127.0.0.1:39393/mcp
 ```
 
-For a proxy on the same host, keep the default `127.0.0.1` bind and rewrite upstream `Host` to `127.0.0.1:39393` as in the examples below.
+For a proxy on the same host, keep the default `127.0.0.1` bind but preserve the public `Host` value. `hostspan oauth init` adds that public hostname to `allowed_hosts`.
 
 For a proxy in another container, VM, or host, bind HostSpan to a reachable interface instead:
 
@@ -59,36 +65,50 @@ server:
   data_dir: ~/.local/state/hostspan
 ```
 
-Wildcard binds (`0.0.0.0` or `::`) fail configuration validation unless `allowed_hosts` is non-empty. A specific bind such as `192.168.10.20` automatically permits that Host value when no explicit allowlist is supplied. If the proxy preserves `Host: mcp.example.com`, add `mcp.example.com` to `allowed_hosts`.
+Wildcard binds (`0.0.0.0` or `::`) fail configuration validation unless `allowed_hosts` is non-empty. A specific bind such as `192.168.10.20` automatically permits that Host value when no explicit allowlist is supplied. `hostspan oauth init` automatically adds the public OAuth hostname to `allowed_hosts`. Non-loopback `serve` fails when OAuth is absent.
 
 Minimal Caddy example:
 
 ```caddyfile
 mcp.example.com {
-    reverse_proxy /mcp 127.0.0.1:39393 {
-        header_up Host 127.0.0.1:39393
-    }
+    @hostspan path /mcp /.well-known/oauth-* /oauth/*
+    reverse_proxy @hostspan 127.0.0.1:39393
 }
 ```
 
 Minimal nginx example:
 
 ```nginx
-location = /mcp {
-    proxy_pass http://127.0.0.1:39393/mcp;
-    proxy_set_header Host 127.0.0.1:39393;
+location ~ ^/(mcp|oauth/|\.well-known/) {
+    proxy_pass http://127.0.0.1:39393;
+    proxy_set_header Host $host;
     proxy_http_version 1.1;
     proxy_buffering off;
 }
 ```
 
-The public side of the proxy must provide HTTPS and a client authentication/authorization boundary appropriate for your MCP client. Add rate limiting/WAF controls as appropriate. Do not expose write/exec-capable HostSpan through an unauthenticated public proxy. Prefer routing only `/mcp`; leave `/healthz` and `/readyz` reachable only locally/private-network-side.
+The public side of the proxy must provide HTTPS. Add rate limiting/WAF controls as appropriate, especially for the unauthenticated OAuth registration and authorization entrypoints. HostSpan performs the client OAuth authorization itself.
+
+Forward these paths to the same HostSpan upstream:
+
+```text
+/mcp
+/.well-known/oauth-authorization-server
+/.well-known/oauth-protected-resource
+/.well-known/oauth-protected-resource/mcp
+/oauth/register
+/oauth/authorize
+/oauth/token
+/oauth/revoke
+```
+
+Keep `/healthz` and `/readyz` private unless you have an explicit operational reason to publish them. HostSpan advertises `mcp offline_access`, requires PKCE S256, and issues rotating refresh tokens so ChatGPT can maintain OAuth connectivity.
 
 MCP `2026-07-28` is stateless at the protocol core, so ordinary reverse proxies and load balancers do not need sticky MCP sessions for modern requests. The proxy should preserve the `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`, content type, and request body headers/data.
 
 ## 3. Add the app in ChatGPT Developer Mode
 
-In ChatGPT Developer Mode, add the MCP endpoint issued by Secure MCP Tunnel or the authenticated HTTPS reverse proxy endpoint you operate. After the app is visible, invoke `system_status` and verify:
+In ChatGPT Developer Mode, add the MCP endpoint issued by Secure MCP Tunnel or the OAuth-protected HTTPS reverse proxy endpoint you operate. For the latter, choose OAuth. ChatGPT should open the HostSpan authorization page; enter the credential from the local `approval_secret_file` created by `hostspan oauth init`. After authorization/tool scan, invoke `system_status` and verify:
 
 - `toolset_version` is `hostspan-v1`
 - the toolset has exactly 10 tools
@@ -116,7 +136,17 @@ HostSpan records transport requests and accepted tool calls. If there is no corr
 
 If a request arrived but failed, use `request_id`, `idempotency_key`, `process_id`, and structured error code to identify the stage.
 
-For a user-managed reverse proxy, first verify the configured private HostSpan endpoint, then the proxy's upstream reachability, allowed `Host` value, TLS/auth layer, and finally the external URL. If the HostSpan trace has no request, the problem is before HostSpan.
+For a user-managed reverse proxy, first verify the configured private HostSpan endpoint, then the proxy's upstream reachability, allowed `Host` value, TLS, OAuth discovery routes, and finally the external URL. If the HostSpan trace has no request, the problem is before HostSpan.
+
+Useful OAuth checks:
+
+```bash
+hostspan oauth status
+curl https://mcp.example.com/.well-known/oauth-protected-resource/mcp
+curl https://mcp.example.com/.well-known/oauth-authorization-server
+```
+
+If the approval credential is lost or suspected compromised, run `hostspan oauth rotate-secret`. This revokes all existing access/refresh tokens and replaces the local mode-`0600` approval file.
 
 ## Inspector validation
 
