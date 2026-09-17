@@ -264,6 +264,18 @@ describe("OAuth protected MCP", () => {
       const requestId = /name="request_id" value="([^"]+)"/.exec(authorize.body)?.[1];
       expect(requestId).toMatch(/^hs_authreq_/);
 
+      const secondAuthorizeQuery = new URLSearchParams(authorizeQuery);
+      secondAuthorizeQuery.set("state", "state-parallel");
+      const secondAuthorize = await app.inject({
+        method: "GET",
+        url: `/oauth/authorize?${secondAuthorizeQuery.toString()}`,
+        headers: host,
+      });
+      expect(secondAuthorize.statusCode).toBe(200);
+      const secondRequestId = /name="request_id" value="([^"]+)"/.exec(secondAuthorize.body)?.[1];
+      expect(secondRequestId).toMatch(/^hs_authreq_/);
+      expect(secondRequestId).not.toBe(requestId);
+
       const wrongApproval = await app.inject({
         method: "POST",
         url: "/oauth/authorize",
@@ -283,7 +295,29 @@ describe("OAuth protected MCP", () => {
       expect(callback.origin + callback.pathname).toBe("https://client.example/callback");
       expect(callback.searchParams.get("state")).toBe("state-123");
       expect(callback.searchParams.get("iss")).toBe("https://mcp.example.com");
-      const code = callback.searchParams.get("code") ?? "";
+      const firstCode = callback.searchParams.get("code") ?? "";
+
+      const duplicateApproval = await app.inject({
+        method: "POST",
+        url: "/oauth/authorize",
+        headers: { ...host, "content-type": "application/x-www-form-urlencoded" },
+        payload: form({ request_id: requestId ?? "", approval_secret: approvalSecret }),
+      });
+      expect(duplicateApproval.statusCode).toBe(302);
+      const duplicateCallback = new URL(String(duplicateApproval.headers.location));
+      expect(duplicateCallback.searchParams.get("state")).toBe("state-123");
+      expect(duplicateCallback.searchParams.get("iss")).toBe("https://mcp.example.com");
+      const code = duplicateCallback.searchParams.get("code") ?? "";
+      expect(code).not.toBe(firstCode);
+
+      const parallelApproval = await app.inject({
+        method: "POST",
+        url: "/oauth/authorize",
+        headers: { ...host, "content-type": "application/x-www-form-urlencoded" },
+        payload: form({ request_id: secondRequestId ?? "", approval_secret: approvalSecret }),
+      });
+      expect(parallelApproval.statusCode).toBe(302);
+      expect(new URL(String(parallelApproval.headers.location)).searchParams.get("state")).toBe("state-parallel");
 
       const wrongPkce = await app.inject({
         method: "POST",

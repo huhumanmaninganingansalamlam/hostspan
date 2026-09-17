@@ -296,7 +296,6 @@ export class OAuthService implements OAuthTokenVerifier {
       expires_at: now + this.config.authorization_code_ttl_seconds,
       used_at: null,
     });
-    this.repo.deleteAuthorizationRequest(requestId);
     const redirect = new URL(pending.redirect_uri);
     redirect.searchParams.set("code", code);
     if (pending.state) redirect.searchParams.set("state", pending.state);

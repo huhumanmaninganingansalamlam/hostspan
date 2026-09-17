@@ -82,7 +82,6 @@ export class OAuthRepo {
 
   saveAuthorizationRequest(record: OAuthAuthorizationRequestRecord): void {
     this.db.transaction(() => {
-      this.db.prepare("DELETE FROM oauth_authorization_requests WHERE client_id=?").run(record.client_id);
       this.db
         .prepare(
           "INSERT INTO oauth_authorization_requests(request_id,client_id,redirect_uri,scope,state,code_challenge,resource,expires_at) VALUES(?,?,?,?,?,?,?,?)",
@@ -97,6 +96,19 @@ export class OAuthRepo {
           record.resource,
           record.expires_at,
         );
+      this.db
+        .prepare(
+          `DELETE FROM oauth_authorization_requests
+           WHERE client_id=?
+             AND request_id NOT IN (
+               SELECT request_id
+               FROM oauth_authorization_requests
+               WHERE client_id=?
+               ORDER BY expires_at DESC, request_id DESC
+               LIMIT 8
+             )`,
+        )
+        .run(record.client_id, record.client_id);
     })();
   }
 
@@ -104,10 +116,6 @@ export class OAuthRepo {
     return this.db
       .prepare("SELECT * FROM oauth_authorization_requests WHERE request_id=? AND expires_at>?")
       .get(requestId, now) as OAuthAuthorizationRequestRecord | undefined;
-  }
-
-  deleteAuthorizationRequest(requestId: string): void {
-    this.db.prepare("DELETE FROM oauth_authorization_requests WHERE request_id=?").run(requestId);
   }
 
   saveAuthorizationCode(record: OAuthAuthorizationCodeRecord): void {
