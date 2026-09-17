@@ -2,6 +2,8 @@
 
 HostSpan Alpha is designed for ChatGPT Web Developer Mode through OpenAI Secure MCP Tunnel.
 
+It also provides an optional one-command development transport, `hostspan expose`, that creates an outbound Cloudflare Quick Tunnel while keeping HostSpan itself loopback-only.
+
 ## 1. Verify HostSpan locally
 
 ```bash
@@ -33,6 +35,33 @@ Do not bind HostSpan to a public interface and do not treat the tunnel as file/e
 
 OpenAI reference: <https://developers.openai.com/api/docs/guides/secure-mcp-tunnels>
 
+## Alternative: one-command Quick Tunnel exposure
+
+Install the official `cloudflared` binary, then run:
+
+```bash
+hostspan expose
+```
+
+The command prints a value like:
+
+```json
+{
+  "provider": "cloudflare_quick",
+  "public_mcp_url": "https://random.trycloudflare.com/mcp/<random-capability>",
+  "authorization": "capability_url",
+  "ephemeral": true
+}
+```
+
+Paste the complete `public_mcp_url` into the MCP client. Do not remove the capability suffix and do not share the URL: possession of the URL grants access to the HostSpan tool surface permitted by local target policy.
+
+This mode intentionally uses a separate ephemeral loopback listener. Plain `/mcp`, `/healthz`, and `/readyz` are not available through that listener. HostSpan keeps the fixed 10-tool contract unchanged and normalizes the secret route to `/mcp` before writing transport traces.
+
+Cloudflare documents Quick Tunnels as development/testing only. They use a random `trycloudflare.com` hostname and do not support SSE. HostSpan's MCP 2026-07-28 stateless request path works without relying on a long-lived SSE connection, but use OpenAI Secure MCP Tunnel when you need the standard supported ChatGPT topology or broader legacy-client compatibility.
+
+Cloudflare reference: <https://developers.cloudflare.com/tunnel/get-started/#quick-tunnels-development>
+
 ## 3. Add the app in ChatGPT Developer Mode
 
 In ChatGPT Developer Mode, add the MCP endpoint issued by Secure MCP Tunnel. After the app is visible, invoke `system_status` and verify:
@@ -62,6 +91,8 @@ hostspan support-export ./hostspan-support.json
 HostSpan records transport requests and accepted tool calls. If there is no corresponding transport/request event, the failure occurred before HostSpan and is a client/tunnel compatibility incident, not a HostSpan handler failure. Do not fabricate a successful tool result for a request that never arrived.
 
 If a request arrived but failed, use `request_id`, `idempotency_key`, `process_id`, and structured error code to identify the stage.
+
+For `hostspan expose`, if the public URL stops responding, first check whether the `hostspan expose` process is still running. The Quick Tunnel URL is ephemeral and changes on every restart; update/refresh the MCP app with the newly printed URL.
 
 ## Inspector validation
 

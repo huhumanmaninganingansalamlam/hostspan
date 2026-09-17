@@ -42,6 +42,7 @@ import { TransactionsRepo } from "../state/transactions-repo.js";
 import { TargetRegistry } from "../targets/registry.js";
 import { PROTOCOL_VERSION, SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
 import { runDoctor } from "./doctor.js";
+import { startExposure } from "./expose.js";
 import { installSystemdService, runServiceCommand } from "./service.js";
 import { runSmoke } from "./smoke.js";
 
@@ -290,7 +291,7 @@ function initialConfig(): HostSpanConfig {
 }
 
 function usage(): string {
-  return `HostSpan ${SERVER_VERSION}\n\nCommands:\n  init [--config PATH]\n  serve [--config PATH]\n  doctor [--config PATH]\n  smoke --target TARGET [--config PATH]\n  status [--verbose] [--config PATH]\n  targets list|add|remove ... [--config PATH]\n  policy validate [--config PATH]\n  print-toolset\n  logs [--follow] [--config PATH]\n  support-export [PATH] [--config PATH]\n  service install|start|stop|restart|status [--config PATH]\n  --version\n`;
+  return `HostSpan ${SERVER_VERSION}\n\nCommands:\n  init [--config PATH]\n  serve [--config PATH]\n  expose [--cloudflared PATH] [--config PATH]\n  doctor [--config PATH]\n  smoke --target TARGET [--config PATH]\n  status [--verbose] [--config PATH]\n  targets list|add|remove ... [--config PATH]\n  policy validate [--config PATH]\n  print-toolset\n  logs [--follow] [--config PATH]\n  support-export [PATH] [--config PATH]\n  service install|start|stop|restart|status [--config PATH]\n  --version\n`;
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
@@ -348,6 +349,43 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       process.once("SIGTERM", onSignal);
     });
     return 0;
+  }
+  if (command === "expose") {
+    const runtime = createRuntime(configPath);
+    let session: Awaited<ReturnType<typeof startExposure>> | undefined;
+    try {
+      const cloudflared = flag(argv, "--cloudflared");
+      session = await startExposure(runtime, { ...(cloudflared ? { cloudflared } : {}) });
+      print({
+        ok: true,
+        provider: session.provider,
+        public_mcp_url: session.public_mcp_url,
+        toolset_hash: TOOLSET_HASH,
+        ephemeral: true,
+        authorization: "capability_url",
+        native_execution: true,
+        sandboxed: false,
+        warning: "Cloudflare Quick Tunnel is for development/testing. Keep the full MCP URL secret and rotate it by restarting expose.",
+      });
+      const signal = new Promise<"signal">((resolveSignal) => {
+        process.once("SIGINT", () => resolveSignal("signal"));
+        process.once("SIGTERM", () => resolveSignal("signal"));
+      });
+      const ended = await Promise.race([
+        signal,
+        session.closed.then((result) => ({ tunnel_exit: result })),
+      ]);
+      if (ended !== "signal") {
+        throw new Error(
+          `cloudflared exited while exposure was active (code=${ended.tunnel_exit.code ?? "null"}, signal=${ended.tunnel_exit.signal ?? "null"}).`,
+        );
+      }
+      return 0;
+    } finally {
+      if (session) await session.close();
+      await runtime.supervisor.shutdown();
+      runtime.close();
+    }
   }
   if (command === "status") {
     const runtime = createRuntime(configPath);

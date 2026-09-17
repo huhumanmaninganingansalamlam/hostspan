@@ -13,6 +13,8 @@ export interface ServerStatusProvider {
 export interface HostSpanHttpServerOptions {
   listen_host: "127.0.0.1";
   listen_port: number;
+  mcp_path?: string;
+  diagnostic_routes?: boolean;
   handlers: HostSpanToolHandlers;
   responseContext: ResponseContextProvider;
   status: ServerStatusProvider;
@@ -33,6 +35,11 @@ export function createMcpServer(handlers: HostSpanToolHandlers, responseContext:
 
 export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): FastifyInstance {
   const app = createMcpFastifyApp({ host: options.listen_host });
+  const mcpPath = options.mcp_path ?? "/mcp";
+  const diagnosticRoutes = options.diagnostic_routes ?? true;
+  if (!mcpPath.startsWith("/") || mcpPath.includes("?") || mcpPath.includes("#")) {
+    throw new Error("mcp_path must be an absolute URL path without query or fragment components");
+  }
   const reportTransportError = (error: Error) => {
     options.trace?.("transport.error", { message: error.message });
   };
@@ -46,28 +53,35 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
   );
   const nodeHandler = toNodeHandler(mcpHandler, { onerror: reportTransportError });
   app.addHook("onRequest", async (request, reply) => {
+    const traceUrl = request.url.split("?", 1)[0] === mcpPath ? "/mcp" : request.url;
     const hostHeader = request.headers.host ?? "";
     const hostname = hostHeader.startsWith("[") ? hostHeader.slice(1, hostHeader.indexOf("]")) : hostHeader.split(":")[0];
     if (hostname && !["127.0.0.1", "localhost", "::1"].includes(hostname.toLowerCase())) {
-      options.trace?.("transport.host_rejected", { method: request.method, url: request.url, host: hostname });
+      options.trace?.("transport.host_rejected", {
+        method: request.method,
+        url: traceUrl,
+        host: hostname,
+      });
       return reply.code(421).send({ error: "Host header is not allowed; HostSpan Alpha is loopback-only." });
     }
     options.trace?.("transport.request", {
       method: request.method,
-      url: request.url,
+      url: traceUrl,
       rpc_method:
         request.body && typeof request.body === "object" && "method" in request.body
           ? String((request.body as Record<string, unknown>).method)
           : undefined,
     });
   });
-  app.get("/healthz", async () => ({ status: "ok", ...options.status.health() }));
-  app.get("/readyz", async (_request, reply) => {
-    const readiness = options.status.readiness();
-    if (!readiness.ready) reply.code(503);
-    return readiness;
-  });
-  app.all("/mcp", async (request, reply) => {
+  if (diagnosticRoutes) {
+    app.get("/healthz", async () => ({ status: "ok", ...options.status.health() }));
+    app.get("/readyz", async (_request, reply) => {
+      const readiness = options.status.readiness();
+      if (!readiness.ready) reply.code(503);
+      return readiness;
+    });
+  }
+  app.all(mcpPath, async (request, reply) => {
     reply.hijack();
     await nodeHandler(request.raw as unknown as NodeIncomingMessageLike, reply.raw, request.body);
   });

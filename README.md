@@ -22,6 +22,7 @@ Alpha supports Ubuntu 24.04 LTS or WSL2 on Linux x64. PTY/stdin sessions, SSH, n
 - `ripgrep` (`rg`) for `file_search`
 - systemd user services only if using `hostspan service ...`
 - OpenAI Secure MCP Tunnel for the standard ChatGPT Web connection path
+- `cloudflared` only if using the optional one-command `hostspan expose` development path
 
 ## Build
 
@@ -71,6 +72,16 @@ Readiness http://127.0.0.1:39393/readyz
 
 The server is loopback-only and validates Host headers. `readyz` represents server/database readiness; missing ripgrep is reported as degraded so non-search tools stay usable, while `file_search` returns `SEARCH_BACKEND_UNAVAILABLE`.
 
+For a DevSpace-style temporary public endpoint without changing the loopback bind, install `cloudflared` and run:
+
+```bash
+hostspan expose
+```
+
+HostSpan starts a separate loopback-only exposure instance on an ephemeral local port and launches a Cloudflare Quick Tunnel. It prints one HTTPS MCP URL containing a random 256-bit capability path. The exposure instance does **not** publish the ordinary `/mcp`, `/healthz`, or `/readyz` paths, and the capability path is normalized out of HostSpan transport logs. Treat the full URL as a secret and restart `hostspan expose` to rotate it.
+
+Cloudflare Quick Tunnels are for development/testing and their hostname changes between runs. For the standard ChatGPT path or longer-lived deployments, use OpenAI Secure MCP Tunnel. See [ChatGPT connection](docs/CHATGPT.md) for the trade-offs.
+
 Useful local commands:
 
 ```bash
@@ -86,7 +97,7 @@ hostspan service status
 
 ## ChatGPT Web
 
-The supported Alpha topology is:
+The standard Alpha topology is:
 
 ```text
 ChatGPT Web Developer Mode
@@ -96,6 +107,8 @@ ChatGPT Web Developer Mode
 ```
 
 Start HostSpan, verify `hostspan doctor` and `hostspan smoke`, then configure the current OpenAI Secure MCP Tunnel to forward to the loopback MCP endpoint. Add the resulting tunnel endpoint to ChatGPT Developer Mode and run `system_status` first. If the HostSpan version/toolset changes, use the ChatGPT app's MCP Refresh flow before treating stale tool metadata as a server defect.
+
+For local development, `hostspan expose` is an optional alternate transport. Paste the generated `https://...trycloudflare.com/mcp/<capability>` URL into the MCP client. The toolset and server policy are identical; only the transport path changes.
 
 Detailed setup and trace-based troubleshooting are in [ChatGPT connection](docs/CHATGPT.md) and [Troubleshooting](docs/TROUBLESHOOTING.md).
 
@@ -115,7 +128,7 @@ The contract suite reconnects and lists the fixed toolset 100 times. The Alpha a
 ## Security and support
 
 - [Security model](docs/SECURITY.md)
-- [ChatGPT Web / Secure MCP Tunnel](docs/CHATGPT.md)
+- [ChatGPT Web / Secure MCP Tunnel / Quick Tunnel](docs/CHATGPT.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Alpha release and migration notes](docs/RELEASE.md)
 

@@ -2,7 +2,7 @@
 
 ## Trust boundaries
 
-HostSpan treats model output and repository content as untrusted input. The local HostSpan configuration and policy are administrator-controlled authority. OpenAI Secure MCP Tunnel is transport only; it does not replace HostSpan authorization.
+HostSpan treats model output and repository content as untrusted input. The local HostSpan configuration and policy are administrator-controlled authority. OpenAI Secure MCP Tunnel and the optional Cloudflare Quick Tunnel exposure mode are transports only; neither replaces HostSpan target/file/exec authorization.
 
 Every tool call is revalidated against the configured `target_id`, target capability, canonical target-relative path, file policy, exec profile, program/environment limits, deadlines/output limits, and idempotency ledger.
 
@@ -50,7 +50,24 @@ Use restrictive OS permissions on the config/state directories and avoid expandi
 
 ## Network exposure
 
-Alpha binds only to `127.0.0.1`. Host headers are validated by the MCP Fastify adapter and HostSpan fallback validation. The recommended remote path is outbound-only OpenAI Secure MCP Tunnel; do not expose the local MCP port directly to a LAN or the public Internet.
+Alpha binds only to `127.0.0.1`. Host headers are validated by the MCP Fastify adapter and HostSpan fallback validation. Do not expose the local MCP port directly to a LAN or the public Internet.
+
+The recommended remote path remains outbound-only OpenAI Secure MCP Tunnel. `hostspan expose` is a development convenience that launches an outbound Cloudflare Quick Tunnel to a **separate** loopback-only HostSpan instance. That instance exposes only a random capability path such as:
+
+```text
+https://random.trycloudflare.com/mcp/<256-bit-random-capability>
+```
+
+Security properties of this mode:
+
+- the default `/mcp`, `/healthz`, and `/readyz` routes are not registered on the exposure instance;
+- the full generated URL is a bearer capability and must be treated as a secret;
+- the capability path is not written to HostSpan transport logs/support exports;
+- restarting `hostspan expose` rotates both the Quick Tunnel hostname and the capability;
+- this is not OAuth and is not intended as a production identity/access-control system;
+- Cloudflare Quick Tunnel is a development/testing transport; production or stable deployments should use Secure MCP Tunnel or a separately administered authenticated tunnel.
+
+Quick Tunnel transport does not make native execution safer. A caller that possesses the capability URL can invoke whatever read/write/exec capabilities the configured target policy already allows.
 
 ## Reporting
 
