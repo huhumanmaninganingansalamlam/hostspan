@@ -25,6 +25,13 @@ export class OAuthHttpError extends Error {
   }
 }
 
+export class OAuthAuthorizationRedirectError extends Error {
+  constructor(readonly redirect: string) {
+    super("OAuth authorization response redirect");
+    this.name = "OAuthAuthorizationRedirectError";
+  }
+}
+
 export interface OAuthSetupResult {
   config: OAuthConfig;
   approval_secret: string;
@@ -125,6 +132,7 @@ export function createOAuthSetup(publicMcpUrl: string): OAuthSetupResult {
   return {
     config: {
       public_mcp_url: normalizePublicMcpUrl(publicMcpUrl),
+      issuer_identification: true,
       approval_secret_salt: salt,
       approval_secret_hash: hashApprovalSecret(approvalSecret, salt).toString("base64url"),
       access_token_ttl_minutes: 15,
@@ -176,7 +184,8 @@ export class OAuthService implements OAuthTokenVerifier {
       code_challenge_methods_supported: ["S256"],
       scopes_supported: ["mcp", "offline_access"],
       resource_indicators_supported: true,
-      authorization_response_iss_parameter_supported: true,
+      protected_resources: [this.publicMcpUrl],
+      ...(this.config.issuer_identification ? { authorization_response_iss_parameter_supported: true } : {}),
     };
   }
 
@@ -241,21 +250,37 @@ export class OAuthService implements OAuthTokenVerifier {
     this.repo.pruneExpired(now);
     const clientId = required(params.get("client_id"), "client_id");
     const redirectUri = required(params.get("redirect_uri"), "redirect_uri");
-    const responseType = required(params.get("response_type"), "response_type");
-    const codeChallenge = required(params.get("code_challenge"), "code_challenge");
-    const codeChallengeMethod = required(params.get("code_challenge_method"), "code_challenge_method");
-    if (responseType !== "code") throw new OAuthHttpError(400, "unsupported_response_type", "Only response_type=code is supported.");
-    if (codeChallengeMethod !== "S256" || !/^[A-Za-z0-9_-]{43,128}$/.test(codeChallenge)) {
-      throw new OAuthHttpError(400, "invalid_request", "PKCE S256 is required.");
-    }
     const record = this.repo.getClient(clientId);
     if (!record) throw new OAuthHttpError(400, "unauthorized_client", "Unknown OAuth client.");
     const client = clientMetadata(record);
     if (!client.redirect_uris.includes(redirectUri)) {
       throw new OAuthHttpError(400, "invalid_request", "redirect_uri is not registered for this client.");
     }
-    const scope = normalizeScope(params.get("scope") ?? undefined);
-    const resource = normalizeResource(params.get("resource") ?? this.publicMcpUrl, this.publicMcpUrl);
+    let responseType: string;
+    let codeChallenge: string;
+    let codeChallengeMethod: string;
+    let scope: string;
+    let resource: string;
+    try {
+      responseType = required(params.get("response_type"), "response_type");
+      codeChallenge = required(params.get("code_challenge"), "code_challenge");
+      codeChallengeMethod = required(params.get("code_challenge_method"), "code_challenge_method");
+      if (responseType !== "code") {
+        throw new OAuthHttpError(400, "unsupported_response_type", "Only response_type=code is supported.");
+      }
+      if (codeChallengeMethod !== "S256" || !/^[A-Za-z0-9_-]{43,128}$/.test(codeChallenge)) {
+        throw new OAuthHttpError(400, "invalid_request", "PKCE S256 is required.");
+      }
+      scope = normalizeScope(params.get("scope") ?? undefined);
+      resource = normalizeResource(params.get("resource") ?? this.publicMcpUrl, this.publicMcpUrl);
+    } catch (error) {
+      if (error instanceof OAuthHttpError) {
+        throw new OAuthAuthorizationRedirectError(
+          this.authorizationErrorRedirect(redirectUri, params.get("state"), error.code, error.message),
+        );
+      }
+      throw error;
+    }
     const requestId = `hs_authreq_${randomToken(24)}`;
     const pending: OAuthAuthorizationRequestRecord = {
       request_id: requestId,
@@ -283,7 +308,9 @@ export class OAuthService implements OAuthTokenVerifier {
     const pending = this.repo.getAuthorizationRequest(requestId, now);
     if (!pending) throw new OAuthHttpError(400, "invalid_request", "Authorization request expired or does not exist.");
     if (!this.verifyApprovalSecret(approvalSecret)) {
-      throw new OAuthHttpError(403, "access_denied", "Approval secret is incorrect.");
+      throw new OAuthAuthorizationRedirectError(
+        this.authorizationErrorRedirect(pending.redirect_uri, pending.state, "access_denied", "Approval secret is incorrect."),
+      );
     }
     const code = `hs_code_${randomToken(32)}`;
     this.repo.saveAuthorizationCode({
@@ -299,7 +326,21 @@ export class OAuthService implements OAuthTokenVerifier {
     const redirect = new URL(pending.redirect_uri);
     redirect.searchParams.set("code", code);
     if (pending.state) redirect.searchParams.set("state", pending.state);
-    redirect.searchParams.set("iss", this.issuer);
+    if (this.config.issuer_identification) redirect.searchParams.set("iss", this.issuer);
+    return redirect.toString();
+  }
+
+  private authorizationErrorRedirect(
+    redirectUri: string,
+    state: string | null,
+    code: string,
+    description: string,
+  ): string {
+    const redirect = new URL(redirectUri);
+    redirect.searchParams.set("error", code);
+    redirect.searchParams.set("error_description", description);
+    if (state) redirect.searchParams.set("state", state);
+    if (this.config.issuer_identification) redirect.searchParams.set("iss", this.issuer);
     return redirect.toString();
   }
 

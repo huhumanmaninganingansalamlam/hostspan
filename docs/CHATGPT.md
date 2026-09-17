@@ -134,6 +134,15 @@ hostspan support-export ./hostspan-support.json
 
 HostSpan records transport requests and accepted tool calls. If there is no corresponding transport/request event, the failure occurred before HostSpan and is a client/tunnel compatibility incident, not a HostSpan handler failure. Do not fabricate a successful tool result for a request that never arrived.
 
+If the trace shows `GET /oauth/authorize` and a successful `POST /oauth/authorize`, an authorization code exists, but ChatGPT never sends `POST /oauth/token`, the failure is after HostSpan's authorization redirect. HostSpan normally advertises RFC 9207 issuer identification, so ChatGPT may use its shared stable callback. For a callback-compatibility test, set only this existing OAuth field to `false` in the local config:
+
+```yaml
+oauth:
+  issuer_identification: false
+```
+
+Restart HostSpan and create a **new** ChatGPT app/connector rather than refreshing the failed one. ChatGPT can cache the dynamically registered client for an existing connection; a new connection forces fresh registration and allows the client to select its callback-specific redirect mode. After the platform issue is resolved, restore `issuer_identification: true` and recreate the connection again.
+
 If a request arrived but failed, use `request_id`, `idempotency_key`, `process_id`, and structured error code to identify the stage.
 
 For a user-managed reverse proxy, first verify the configured private HostSpan endpoint, then the proxy's upstream reachability, allowed `Host` value, TLS, OAuth discovery routes, and finally the external URL. If the HostSpan trace has no request, the problem is before HostSpan.

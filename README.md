@@ -104,6 +104,8 @@ hostspan oauth init --public-url https://mcp.example.com/mcp
 
 The command adds the public hostname to `allowed_hosts`, persists only a salted scrypt hash of the approval credential, and writes the recoverable credential to a local mode-`0600` `approval_secret_file`. Access tokens are short-lived, refresh tokens rotate, and authorization-code/access/refresh token values are stored in SQLite only as hashes.
 
+By default HostSpan advertises RFC 9207 issuer identification and includes `iss` in authorization responses. If a ChatGPT registration reaches HostSpan authorization successfully but the ChatGPT callback stalls before any `/oauth/token` request reaches HostSpan, a temporary interoperability mode is available: set `oauth.issuer_identification: false`, restart HostSpan, and create a **new** ChatGPT app/connector so ChatGPT performs a fresh client registration. This makes HostSpan omit the RFC 9207 capability/parameter, allowing ChatGPT to choose its documented callback-specific redirect URI instead of the shared stable callback. Keep the default `true` when that workaround is not needed.
+
 If you want a normal public MCP endpoint instead of Secure MCP Tunnel, run your own reverse proxy in front of HostSpan. A same-host proxy can keep HostSpan on loopback:
 
 ```text

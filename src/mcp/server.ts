@@ -8,7 +8,11 @@ import {
 } from "@modelcontextprotocol/server";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { isIP } from "node:net";
-import { OAuthHttpError, type OAuthService } from "../auth/oauth-service.js";
+import {
+  OAuthAuthorizationRedirectError,
+  OAuthHttpError,
+  type OAuthService,
+} from "../auth/oauth-service.js";
 import { SERVER_VERSION } from "../version.js";
 import { registerHostSpanTools, type HostSpanToolHandlers, type ResponseContextProvider } from "./registry.js";
 
@@ -184,7 +188,11 @@ function registerOAuthRoutes(app: FastifyInstance, oauth: OAuthService): void {
   );
   app.post("/oauth/register", async (request, reply) => {
     try {
-      return reply.code(201).header("cache-control", "no-store").send(oauth.registerClient(request.body));
+      return reply
+        .code(201)
+        .header("cache-control", "no-store")
+        .header("pragma", "no-cache")
+        .send(oauth.registerClient(request.body));
     } catch (error) {
       const result = oauthErrorPayload(error);
       return reply.code(result.status).send(result.payload);
@@ -201,6 +209,9 @@ function registerOAuthRoutes(app: FastifyInstance, oauth: OAuthService): void {
         .header("x-frame-options", "DENY")
         .send(authorizationPage(prompt));
     } catch (error) {
+      if (error instanceof OAuthAuthorizationRedirectError) {
+        return reply.header("cache-control", "no-store").redirect(error.redirect, 302);
+      }
       const result = oauthErrorPayload(error);
       return reply.code(result.status).send(result.payload);
     }
@@ -209,18 +220,28 @@ function registerOAuthRoutes(app: FastifyInstance, oauth: OAuthService): void {
     try {
       const form = requestForm(request.body);
       const redirect = oauth.approveAuthorization(form.get("request_id") ?? "", form.get("approval_secret") ?? "");
-      return reply.redirect(redirect, 302);
+      return reply.header("cache-control", "no-store").redirect(redirect, 302);
     } catch (error) {
+      if (error instanceof OAuthAuthorizationRedirectError) {
+        return reply.header("cache-control", "no-store").redirect(error.redirect, 302);
+      }
       const result = oauthErrorPayload(error);
       return reply.code(result.status).send(result.payload);
     }
   });
   app.post("/oauth/token", async (request, reply) => {
     try {
-      return reply.header("cache-control", "no-store").send(oauth.exchangeToken(requestForm(request.body)));
+      return reply
+        .header("cache-control", "no-store")
+        .header("pragma", "no-cache")
+        .send(oauth.exchangeToken(requestForm(request.body)));
     } catch (error) {
       const result = oauthErrorPayload(error);
-      return reply.code(result.status).header("cache-control", "no-store").send(result.payload);
+      return reply
+        .code(result.status)
+        .header("cache-control", "no-store")
+        .header("pragma", "no-cache")
+        .send(result.payload);
     }
   });
   app.post("/oauth/revoke", async (request, reply) => {
