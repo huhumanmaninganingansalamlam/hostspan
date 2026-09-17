@@ -1,0 +1,66 @@
+name: HostSpan bug report
+description: Report a HostSpan Alpha defect or ChatGPT/MCP compatibility issue
+title: "[bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste secrets, raw private keys, or unreviewed process output. Prefer a reviewed `hostspan support-export` bundle.
+  - type: input
+    id: version
+    attributes:
+      label: HostSpan version
+      placeholder: 0.2.0-alpha.1
+    validations:
+      required: true
+  - type: input
+    id: toolset
+    attributes:
+      label: toolset_hash
+      description: From `hostspan print-toolset` or `system_status`.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: Ubuntu 24.04 x64 / WSL2
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include structured error code/state and request_id/process_id when available.
+    validations:
+      required: true
+  - type: dropdown
+    id: reached
+    attributes:
+      label: Did the request reach HostSpan?
+      options:
+        - "Yes - transport/request trace exists"
+        - "No - no matching HostSpan request trace"
+        - "Unknown"
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: hostspan doctor summary
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true

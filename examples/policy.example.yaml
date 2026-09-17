@@ -1,0 +1,16 @@
+# Native execution is not an OS sandbox. This file shows policy intent only.
+target_defaults:
+  deny_globs:
+    - "**/.env*"
+    - "**/*.pem"
+    - "**/*.key"
+    - ".git/objects/**"
+  ignore_globs:
+    - "**/node_modules/**"
+    - "**/dist/**"
+    - "**/.cache/**"
+
+exec_profile_defaults:
+  mode: native
+  env_allowlist: [LANG, LC_ALL, CI, NODE_ENV]
+  max_concurrent_processes: 4

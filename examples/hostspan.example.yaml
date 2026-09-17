@@ -1,0 +1,34 @@
+schema_version: 1
+policy_epoch: 1
+
+server:
+  listen_host: 127.0.0.1
+  listen_port: 39393
+  data_dir: ~/.local/state/hostspan
+
+retention:
+  completed_process_output_ttl_minutes: 60
+  operation_result_days: 14
+  audit_days: 30
+  max_total_spool_bytes: 1073741824
+
+targets:
+  local-app:
+    label: Main application
+    provider: local
+    root: /home/alice/projects/app
+    capabilities: [read, write, exec, git]
+    exec_profile: native-dev
+    deny_globs: ["**/.env*", "**/*.pem", "**/*.key", ".git/objects/**"]
+    ignore_globs: ["**/node_modules/**", "**/dist/**", "**/.cache/**"]
+
+exec_profiles:
+  native-dev:
+    mode: native
+    allowed_programs: [git, node, npm, pnpm, python, pytest, cargo]
+    env_allowlist: [LANG, LC_ALL, CI, NODE_ENV]
+    default_deadline_ms: 30000
+    max_deadline_ms: 600000
+    default_output_bytes: 4194304
+    max_output_bytes: 67108864
+    max_concurrent_processes: 4
