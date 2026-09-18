@@ -176,6 +176,37 @@ async function daemonAction(action: "start" | "stop" | "restart") {
   return action === "start" ? startDaemon(configPath, cliPath, nodePath) : stopDaemon(configPath);
 }
 
+async function confirmDaemonRestart(): Promise<boolean> {
+  const current = await snapshot();
+  const activeNative = current.active_processes.filter((process) => process.backend !== "tmux").length;
+  const activeTmux = current.active_processes.filter((process) => process.backend === "tmux").length;
+  const impact = [
+    "HostSpan loads target and policy configuration once when the daemon starts.",
+    "Restarting is the intentional boundary that applies workspace additions, removals, and capability changes atomically.",
+    activeNative > 0 ? `${activeNative} active native process(es) will be stopped.` : "No active native process will be stopped.",
+    activeTmux > 0 ? `${activeTmux} tmux-backed interactive session(s) will remain alive and reconnect after restart.` : "No live tmux session needs recovery.",
+  ].join("\n\n");
+  const options = {
+    type: activeNative > 0 ? ("warning" as const) : ("question" as const),
+    title: "Restart HostSpan",
+    message: "Restart HostSpan now?",
+    detail: impact,
+    buttons: ["Restart", "Cancel"],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  };
+  const result = window && !window.isDestroyed() ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options);
+  return result.response === 0;
+}
+
+async function restartDaemonWithConfirmation() {
+  if (!(await confirmDaemonRestart())) return { cancelled: true };
+  const result = await daemonAction("restart");
+  await refreshUi();
+  return { cancelled: false, result };
+}
+
 async function doctorReport(): Promise<DoctorReport> {
   if (process.platform === "win32") return wslJson<DoctorReport>(["doctor"]);
   return runDoctor(configPath);
@@ -291,7 +322,7 @@ async function refresh(){try{render(await window.hostspan.snapshot())}catch(err)
 async function attach(id,ro){try{await window.hostspan.attach(id,ro)}catch(err){setMessage(err.message||String(err),true)}}
 e('refresh').onclick=refresh;
 e('toggle').onclick=async()=>{try{await window.hostspan.daemon(snapshot?.daemon?.running?'stop':'start');setMessage('HostSpan '+(snapshot?.daemon?.running?'stopped.':'started.'));await refresh()}catch(err){setMessage(err.message||String(err),true)}};
-e('restart').onclick=async()=>{try{setMessage('Restarting HostSpan…');await window.hostspan.daemon('restart');setMessage('HostSpan restarted.');await refresh()}catch(err){setMessage(err.message||String(err),true)}};
+e('restart').onclick=async()=>{try{const result=await window.hostspan.daemon('restart');if(result?.cancelled){setMessage('Restart cancelled.');return}setMessage('HostSpan restarted.');await refresh()}catch(err){setMessage(err.message||String(err),true)}};
 e('doctor').onclick=async()=>{try{e('healthState').textContent='Checking…';renderHealth(await window.hostspan.doctor())}catch(err){setMessage(err.message||String(err),true)}};
 e('addWorkspace').onclick=()=>{resetWorkspaceDialog();e('workspaceDialog').showModal()};
 e('cancelWorkspace').onclick=()=>e('workspaceDialog').close();
@@ -303,11 +334,13 @@ e('saveWorkspace').onclick=async()=>{try{
   const capabilities=[...document.querySelectorAll('[data-cap]:checked')].map(x=>x.dataset.cap);
   await window.hostspan.addWorkspace({target_id:e('wsId').value.trim()||undefined,label:e('wsLabel').value.trim()||undefined,root:e('wsPath').value,capabilities});
   e('workspaceDialog').close();
-  setMessage('Workspace saved. Restart HostSpan to apply it.');
-  if(snapshot?.daemon?.running&&confirm('Restart HostSpan now to apply the workspace change?'))await window.hostspan.daemon('restart');
+  if(snapshot?.daemon?.running){
+    const restart=await window.hostspan.daemon('restart');
+    setMessage(restart?.cancelled?'Workspace saved; restart is still required before MCP uses it.':'Workspace saved and applied after restart.');
+  }else setMessage('Workspace saved; it will apply the next time HostSpan starts.');
   await refresh();
 }catch(err){setMessage(err.message||String(err),true)}};
-e('targets').onclick=async ev=>{const id=ev.target?.dataset?.removeTarget;if(!id)return;if(!confirm('Remove workspace '+id+'?'))return;try{await window.hostspan.removeWorkspace(id);setMessage('Workspace removed. Restart HostSpan to apply it.');if(snapshot?.daemon?.running&&confirm('Restart HostSpan now?'))await window.hostspan.daemon('restart');await refresh()}catch(err){setMessage(err.message||String(err),true)}};
+e('targets').onclick=async ev=>{const id=ev.target?.dataset?.removeTarget;if(!id)return;if(!confirm('Remove workspace '+id+'?'))return;try{await window.hostspan.removeWorkspace(id);if(snapshot?.daemon?.running){const restart=await window.hostspan.daemon('restart');setMessage(restart?.cancelled?'Workspace removed from config; restart is still required before MCP drops it.':'Workspace removed and applied after restart.')}else setMessage('Workspace removed; it will be absent the next time HostSpan starts.');await refresh()}catch(err){setMessage(err.message||String(err),true)}};
 e('terminals').onclick=ev=>{const a=ev.target?.dataset?.attach;if(a)attach(a,false);const ro=ev.target?.dataset?.readonly;if(ro)attach(ro,true)};
 window.hostspan.onUpdate(render);
 refresh();
@@ -344,7 +377,7 @@ async function refreshUi(): Promise<void> {
       data.daemon.running
         ? { label: "Stop HostSpan", click: () => void daemonAction("stop").then(refreshUi) }
         : { label: "Start HostSpan", click: () => void daemonAction("start").then(refreshUi) },
-      { label: "Restart HostSpan", enabled: data.daemon.running, click: () => void daemonAction("restart").then(refreshUi) },
+      { label: "Restart HostSpan", enabled: data.daemon.running, click: () => void restartDaemonWithConfirmation() },
       { label: "Start at login", type: "checkbox", checked: data.auto_start, click: (item) => { setAutoStart(item.checked); void refreshUi(); } },
       { type: "separator" },
       { label: `Targets: ${data.targets.length}`, enabled: false },
@@ -359,6 +392,7 @@ async function refreshUi(): Promise<void> {
 
 ipcMain.handle("hostspan:snapshot", () => snapshot());
 ipcMain.handle("hostspan:daemon", async (_event, action: "start" | "stop" | "restart") => {
+  if (action === "restart") return restartDaemonWithConfirmation();
   const result = await daemonAction(action);
   await refreshUi();
   return result;

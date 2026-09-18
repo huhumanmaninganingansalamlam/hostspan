@@ -2,7 +2,7 @@
 
 ## Release contract
 
-- Version: `0.2.0-alpha.14`
+- Version: `0.2.0-alpha.15`
 - Toolset: `hostspan-v2`
 - MCP protocol target: `2026-07-28`
 - Platform: Linux x64 (Ubuntu 24.04 LTS / WSL2)
@@ -42,11 +42,20 @@
 
 Multi-host routing, native Windows/macOS process adapters, GUI/browser computer-use, LSP/CodeGraph, MCP aggregation, scheduler, and an OS sandbox. The small tray/dashboard is a local management surface, not computer-use automation.
 
+## Known post-Alpha work
+
+- package the Electron companion as signed/installer artifacts for Windows, macOS, and Linux;
+- run native macOS and Windows/WSL2 desktop qualification rather than relying only on implemented platform branches;
+- extend soak duration from the current functional/concurrency evidence to multi-day steady-state runs;
+- add bounded JSONL rotation/archival for always-on installations (SQLite audit rows are already age/count bounded).
+
+These items do not require a new MCP tool and are not blockers for the current Linux/WSL2 Alpha contract.
+
 ## Compatibility and migration
 
 `hostspan-v2` tool names and input schemas are fixed for this Alpha line. `v2` is intentionally a breaking tool-contract revision from `hostspan-v1`: `process_start` gains optional TTY fields and `process_write` is added. Description/schema metadata changes alter `toolset_hash`; refresh the ChatGPT app after upgrading.
 
-`0.2.0-alpha.14` keeps the `hostspan-v2` 11-tool schema unchanged and polishes Add Workspace: Cancel is independent of form validation, all five capabilities default on, and target ID/label are optional with folder-derived defaults and collision-safe generated IDs. Alpha.13 completed the daily-use tray management surface. Remote non-loopback serving still fails closed without OAuth. Existing targets do not gain terminal authority automatically: add the explicit `terminal` capability before `tty=true` is accepted. Existing non-interactive `process_start`/`process_poll`/`process_cancel` semantics remain available.
+`0.2.0-alpha.15` keeps the `hostspan-v2` 11-tool schema unchanged and closes the final operations/documentation audit. Workspace and capability configuration remains restart-gated by design: config writes are atomic, the daemon enforces one immutable policy snapshot per lifetime, restart confirmation reports native-process shutdown impact, and tmux sessions survive/reconcile. Alpha.14 polished Add Workspace defaults and cancellation. Remote non-loopback serving still fails closed without OAuth. Existing targets do not gain terminal authority automatically outside the tray convenience profile: add the explicit `terminal` capability before `tty=true` is accepted. Existing non-interactive `process_start`/`process_poll`/`process_cancel` semantics remain available.
 
 Config schema remains version 1. The durable database schema is version 4 and adds process backend/session/deadline/output-cap metadata so tmux sessions can be reconciled after daemon restart. Database initialization uses WAL and backs up an existing database before migration.
 

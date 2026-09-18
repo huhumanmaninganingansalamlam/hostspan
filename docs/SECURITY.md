@@ -94,6 +94,8 @@ Reverse proxy transport does not make native execution safer. Any authenticated 
 
 The local Electron tray/dashboard does not open an additional network admin API. It reads the local config/SQLite state and invokes local daemon/terminal commands. On Windows it delegates these operations to the WSL2 `hostspan` CLI. Treat the desktop login/session as the trust boundary for that management UI.
 
+Target and policy configuration is immutable for one daemon lifetime. The tray writes workspace additions/removals atomically, but the running MCP server continues enforcing the policy snapshot it started with until an explicit restart. This is intentional: HostSpan does not partially hot-reload authorization state while requests or processes are active. Restart confirmation reports the impact before proceeding—native processes are stopped during shutdown, while tmux-backed interactive sessions survive and are reconciled after startup. Add Workspace selects all capabilities by default for the trusted-local convenience profile; this includes native `exec` and `terminal` authority, so reduce the selection for lower-trust folders.
+
 ## Overload boundary
 
 HostSpan fails bounded rather than spawning unbounded work under request bursts:

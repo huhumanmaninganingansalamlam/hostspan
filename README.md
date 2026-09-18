@@ -124,7 +124,7 @@ On Linux you may still prefer the existing systemd user service commands.
 
 ### Tray companion
 
-The optional tray companion is intentionally small: server start/stop/restart, version/PID, Doctor health checks, current activity, targets/workspaces, recent calls, login autostart, and interactive terminal attach. Workspaces can be added with explicit capabilities or removed when no process is active; the UI offers a daemon restart after config changes. It does not expose a new HTTP admin API and is not GUI computer-use.
+The optional tray companion is intentionally small: server start/stop/restart, version/PID, Doctor health checks, current activity, targets/workspaces, recent calls, login autostart, and interactive terminal attach. Workspaces can be added with explicit capabilities or removed when no process is active. For the trusted-local DevSpace-replacement workflow, Add Workspace selects all five capabilities by default; uncheck any authority the workspace does not need, especially `terminal`. Target and policy configuration is intentionally snapshotted when the daemon starts, so workspace/capability changes require a daemon restart before MCP uses them. The tray explains this boundary and warns that restart stops active native processes; tmux-backed interactive sessions remain alive and reconnect. It does not expose a new HTTP admin API and is not GUI computer-use.
 
 ```bash
 pnpm desktop

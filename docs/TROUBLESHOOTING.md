@@ -28,6 +28,12 @@ hostspan logs --follow
 
 Then reproduce once. A received transport request is logged before the handler, and an accepted tool call is recorded in the durable audit store. If neither exists, do not debug the HostSpan tool handler; inspect ChatGPT/tunnel behavior first.
 
+## A workspace was added or removed but MCP still shows the old target list
+
+This is expected until the daemon restarts. HostSpan snapshots target and policy configuration at startup so one request cannot observe a partially reloaded authorization policy. The tray writes the config atomically and offers an explicit restart; after restart, `target_list` and `system_status.policy_epoch` reflect the new configuration.
+
+Before restarting, review the tray warning. Active native processes are stopped by daemon shutdown. tmux-backed interactive sessions remain alive and reconnect to the same durable `process_id` after startup.
+
 ## `file_search` fails
 
 HostSpan Alpha requires ripgrep. `hostspan doctor` reports whether `rg` is available. If missing, the server remains available in degraded mode but `file_search` returns `SEARCH_BACKEND_UNAVAILABLE`.
