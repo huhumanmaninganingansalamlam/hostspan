@@ -74,7 +74,6 @@ export const OAuthConfigSchema = z
     public_mcp_url: z.string().refine(validPublicMcpUrl, {
       message: "public_mcp_url must be an HTTPS URL whose path is exactly /mcp",
     }),
-    issuer_identification: z.boolean().default(true),
     approval_secret_salt: z.string().regex(/^[A-Za-z0-9_-]{16,}$/),
     approval_secret_hash: z.string().regex(/^[A-Za-z0-9_-]{32,}$/),
     access_token_ttl_minutes: z.number().int().min(5).max(60).default(15),

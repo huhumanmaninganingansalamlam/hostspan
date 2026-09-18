@@ -392,7 +392,6 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
           ? {
               public_mcp_url: config.oauth.public_mcp_url,
               issuer: new URL(config.oauth.public_mcp_url).origin,
-              issuer_identification: config.oauth.issuer_identification,
               approval_secret_file: oauthApprovalSecretPath(configPath),
               access_token_ttl_minutes: config.oauth.access_token_ttl_minutes,
               refresh_token_ttl_days: config.oauth.refresh_token_ttl_days,

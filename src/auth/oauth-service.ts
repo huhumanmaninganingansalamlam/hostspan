@@ -132,7 +132,6 @@ export function createOAuthSetup(publicMcpUrl: string): OAuthSetupResult {
   return {
     config: {
       public_mcp_url: normalizePublicMcpUrl(publicMcpUrl),
-      issuer_identification: true,
       approval_secret_salt: salt,
       approval_secret_hash: hashApprovalSecret(approvalSecret, salt).toString("base64url"),
       access_token_ttl_minutes: 15,
@@ -185,7 +184,7 @@ export class OAuthService implements OAuthTokenVerifier {
       scopes_supported: ["mcp", "offline_access"],
       resource_indicators_supported: true,
       protected_resources: [this.publicMcpUrl],
-      ...(this.config.issuer_identification ? { authorization_response_iss_parameter_supported: true } : {}),
+      authorization_response_iss_parameter_supported: true,
     };
   }
 
@@ -326,7 +325,7 @@ export class OAuthService implements OAuthTokenVerifier {
     const redirect = new URL(pending.redirect_uri);
     redirect.searchParams.set("code", code);
     if (pending.state) redirect.searchParams.set("state", pending.state);
-    if (this.config.issuer_identification) redirect.searchParams.set("iss", this.issuer);
+    redirect.searchParams.set("iss", this.issuer);
     return redirect.toString();
   }
 
@@ -340,7 +339,7 @@ export class OAuthService implements OAuthTokenVerifier {
     redirect.searchParams.set("error", code);
     redirect.searchParams.set("error_description", description);
     if (state) redirect.searchParams.set("state", state);
-    if (this.config.issuer_identification) redirect.searchParams.set("iss", this.issuer);
+    redirect.searchParams.set("iss", this.issuer);
     return redirect.toString();
   }
 

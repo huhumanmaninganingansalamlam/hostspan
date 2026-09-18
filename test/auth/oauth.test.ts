@@ -18,14 +18,13 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(maxRegisteredClients = 100, issuerIdentification = true) {
+function fixture(maxRegisteredClients = 100) {
   const root = mkdtempSync(join(tmpdir(), "hostspan-oauth-"));
   roots.push(root);
   const targetRoot = join(root, "repo");
   mkdirSync(targetRoot, { recursive: true });
   const setup = createOAuthSetup("https://mcp.example.com/mcp");
   setup.config.max_registered_clients = maxRegisteredClients;
-  setup.config.issuer_identification = issuerIdentification;
   const configPath = join(root, "config.yaml");
   const config: HostSpanConfig = {
     schema_version: 1,
@@ -412,72 +411,4 @@ describe("OAuth protected MCP", () => {
     }
   });
 
-  it("can disable RFC 9207 issuer identification for callback-specific ChatGPT redirects", async () => {
-    const { configPath, approvalSecret } = fixture(100, false);
-    const runtime = createRuntime(configPath);
-    if (!runtime.oauth) throw new Error("OAuth runtime was not initialized.");
-    const app = createHostSpanHttpServer({
-      listen_host: "127.0.0.1",
-      listen_port: 0,
-      allowed_hosts: ["127.0.0.1", "mcp.example.com"],
-      oauth: runtime.oauth,
-      handlers: runtime.handlers,
-      responseContext: () => ({ toolset_hash: TOOLSET_HASH, policy_epoch: runtime.config.policy_epoch }),
-      status: { health: () => ({ server_version: "test" }), readiness: () => ({ ready: true }) },
-    });
-    const host = { host: "mcp.example.com" };
-    try {
-      const metadata = await app.inject({
-        method: "GET",
-        url: "/.well-known/oauth-authorization-server",
-        headers: host,
-      });
-      expect(metadata.statusCode).toBe(200);
-      expect(metadata.json()).not.toHaveProperty("authorization_response_iss_parameter_supported");
-
-      const registered = await app.inject({
-        method: "POST",
-        url: "/oauth/register",
-        headers: { ...host, "content-type": "application/json" },
-        payload: {
-          client_name: "ChatGPT callback-specific test",
-          application_type: "web",
-          redirect_uris: ["https://chatgpt.com/connector/oauth/callback-id"],
-          grant_types: ["authorization_code", "refresh_token"],
-          response_types: ["code"],
-          token_endpoint_auth_method: "none",
-        },
-      });
-      const client = registered.json() as { client_id: string };
-      const verifier = randomBytes(32).toString("base64url");
-      const challenge = createHash("sha256").update(verifier).digest("base64url");
-      const query = new URLSearchParams({
-        response_type: "code",
-        client_id: client.client_id,
-        redirect_uri: "https://chatgpt.com/connector/oauth/callback-id",
-        scope: "mcp offline_access",
-        state: "callback-state",
-        code_challenge: challenge,
-        code_challenge_method: "S256",
-        resource: "https://mcp.example.com/mcp",
-      });
-      const authorize = await app.inject({ method: "GET", url: `/oauth/authorize?${query}`, headers: host });
-      const requestId = /name="request_id" value="([^"]+)"/.exec(authorize.body)?.[1] ?? "";
-      const approved = await app.inject({
-        method: "POST",
-        url: "/oauth/authorize",
-        headers: { ...host, "content-type": "application/x-www-form-urlencoded" },
-        payload: form({ request_id: requestId, approval_secret: approvalSecret }),
-      });
-      expect(approved.statusCode).toBe(302);
-      const callback = new URL(String(approved.headers.location));
-      expect(callback.origin + callback.pathname).toBe("https://chatgpt.com/connector/oauth/callback-id");
-      expect(callback.searchParams.get("state")).toBe("callback-state");
-      expect(callback.searchParams.get("code")).toMatch(/^hs_code_/);
-      expect(callback.searchParams.has("iss")).toBe(false);
-    } finally {
-      await app.close();
-      runtime.close();
-    }
-  });
 });
