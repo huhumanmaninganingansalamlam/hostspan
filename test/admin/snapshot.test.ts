@@ -108,6 +108,42 @@ describe("local admin snapshot", () => {
     expect(daemonStatus(configPath).running).toBe(false);
   });
 
+  it("keeps active tmux sessions visible outside the recent-process limit", () => {
+    const { configPath, dataDir } = fixture();
+    const db = openDatabase(join(dataDir, "state.db"));
+    const processes = new ProcessesRepo(db);
+    processes.create({
+      process_id: "proc_active_terminal",
+      idempotency_key: "0199e78d-4c00-7000-8000-000000000911",
+      target_id: "local",
+      argv_digest: "sha256:terminal",
+      cwd_relative: ".",
+      backend: "tmux",
+      backend_ref: "hs-active-terminal",
+      deadline_at: new Date(Date.now() + 60_000).toISOString(),
+      max_output_bytes: 1024 * 1024,
+    });
+    processes.markRunning("proc_active_terminal", 12345, null);
+    processes.create({
+      process_id: "proc_newer_completed",
+      idempotency_key: "0199e78d-4c00-7000-8000-000000000912",
+      target_id: "local",
+      argv_digest: "sha256:newer",
+      cwd_relative: ".",
+    });
+    processes.markRunning("proc_newer_completed", 12346, 12346);
+    processes.markTerminal("proc_newer_completed", "succeeded", 0, null, null);
+    db.prepare("UPDATE processes SET started_at='2026-09-18T00:00:00.000Z' WHERE process_id='proc_active_terminal'").run();
+    db.prepare("UPDATE processes SET started_at='2026-09-18T00:01:00.000Z', ended_at='2026-09-18T00:01:01.000Z' WHERE process_id='proc_newer_completed'").run();
+    db.close();
+
+    const snapshot = buildAdminSnapshot(configPath, { recent: 1 });
+    expect(snapshot.recent_processes).toEqual([expect.objectContaining({ process_id: "proc_newer_completed" })]);
+    expect(snapshot.terminal.sessions).toContainEqual(
+      expect.objectContaining({ process_id: "proc_active_terminal", state: "running", live: false }),
+    );
+  });
+
   it("reads a pre-v4 database without triggering migration before the daemon starts", () => {
     const { configPath, dataDir } = fixture();
     const path = join(dataDir, "state.db");

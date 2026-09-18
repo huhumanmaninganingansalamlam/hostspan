@@ -201,9 +201,12 @@ export function buildAdminSnapshot(configPath: string, options: AdminSnapshotOpt
   }
 
   const terminal = config.terminal ? new TmuxTerminalManager(config.server.data_dir, config.terminal) : undefined;
-  const terminalSessions = recentProcesses
-    .filter((record) => record.backend === "tmux")
-    .map((record) => {
+  const terminalProcessRecords = new Map<string, Record<string, unknown>>();
+  for (const record of [...activeProcesses, ...recentProcesses]) {
+    if (record.backend !== "tmux" || typeof record.process_id !== "string") continue;
+    if (!terminalProcessRecords.has(record.process_id)) terminalProcessRecords.set(record.process_id, record);
+  }
+  const terminalSessions = [...terminalProcessRecords.values()].map((record) => {
       const session = typeof record.backend_ref === "string" ? record.backend_ref : null;
       const live = terminal && session ? terminal.inspectSync(session) : undefined;
       return {

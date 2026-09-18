@@ -2,7 +2,7 @@
 
 ## Release contract
 
-- Version: `0.2.0-alpha.15`
+- Version: `0.2.0-alpha.16`
 - Toolset: `hostspan-v2`
 - MCP protocol target: `2026-07-28`
 - Platform: Linux x64 (Ubuntu 24.04 LTS / WSL2)
@@ -55,7 +55,7 @@ These items do not require a new MCP tool and are not blockers for the current L
 
 `hostspan-v2` tool names and input schemas are fixed for this Alpha line. `v2` is intentionally a breaking tool-contract revision from `hostspan-v1`: `process_start` gains optional TTY fields and `process_write` is added. Description/schema metadata changes alter `toolset_hash`; refresh the ChatGPT app after upgrading.
 
-`0.2.0-alpha.15` keeps the `hostspan-v2` 11-tool schema unchanged and closes the final operations/documentation audit. Workspace and capability configuration remains restart-gated by design: config writes are atomic, the daemon enforces one immutable policy snapshot per lifetime, restart confirmation reports native-process shutdown impact, and tmux sessions survive/reconcile. Alpha.14 polished Add Workspace defaults and cancellation. Remote non-loopback serving still fails closed without OAuth. Existing targets do not gain terminal authority automatically outside the tray convenience profile: add the explicit `terminal` capability before `tty=true` is accepted. Existing non-interactive `process_start`/`process_poll`/`process_cancel` semantics remain available.
+`0.2.0-alpha.16` keeps the `hostspan-v2` 11-tool schema unchanged and fixes tray terminal visibility: active tmux sessions are merged into the terminal list even when newer completed processes push them outside the recent-process window. Alpha.15 closed the operations/documentation audit and made restart impact explicit. Workspace and capability configuration remains restart-gated by design. Remote non-loopback serving still fails closed without OAuth. Existing targets do not gain terminal authority automatically outside the tray convenience profile: add the explicit `terminal` capability before `tty=true` is accepted. Existing non-interactive `process_start`/`process_poll`/`process_cancel` semantics remain available.
 
 Config schema remains version 1. The durable database schema is version 4 and adds process backend/session/deadline/output-cap metadata so tmux sessions can be reconciled after daemon restart. Database initialization uses WAL and backs up an existing database before migration.
 
