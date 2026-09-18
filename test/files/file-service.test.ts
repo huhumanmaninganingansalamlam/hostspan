@@ -116,6 +116,21 @@ describe("file services", () => {
     expect(result.matches.some((match) => match.path === ".env-secret")).toBe(false);
   });
 
+  it("returns an empty result when ripgrep finds no matches", async () => {
+    const { root, target } = fixture();
+    writeFileSync(join(root, "a.txt"), "alpha\n");
+    const result = await fileSearch(target, {
+      query: "missing",
+      paths: ["."],
+      context_before: 0,
+      context_after: 0,
+      max_matches: 10,
+      max_bytes: 4096,
+      deadline_ms: 1000,
+    });
+    expect(result).toMatchObject({ match_count: 0, matches: [], truncated: false, backend: "ripgrep" });
+  });
+
   it("rejects match-all searches before invoking ripgrep", async () => {
     const { target } = fixture();
     await expect(

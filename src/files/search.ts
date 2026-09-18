@@ -142,7 +142,7 @@ export async function fileSearch(target: TargetRuntime, input: FileSearchInput) 
   } catch (error) {
     const cause = error as NodeJS.ErrnoException & { code?: string | number; stdout?: string };
     if (cause.code === "ENOENT") throw new HostSpanError("SEARCH_BACKEND_UNAVAILABLE", "ripgrep is required but not available.", true);
-    if (cause.code === "1") stdout = cause.stdout ?? "";
+    if (String(cause.code) === "1") stdout = cause.stdout ?? "";
     else if (cause.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw new HostSpanError("SEARCH_SCOPE_TOO_BROAD", "Search output exceeded max_bytes; narrow the scope.");
     else throw new HostSpanError("SEARCH_BACKEND_UNAVAILABLE", `ripgrep failed: ${error instanceof Error ? error.message : String(error)}`, true);
   }
