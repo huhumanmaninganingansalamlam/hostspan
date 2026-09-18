@@ -1,5 +1,5 @@
 import { execFile, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { TerminalConfig } from "../config/schema.js";
@@ -32,6 +32,11 @@ export interface StartTmuxTerminalInput {
   columns: number;
   rows: number;
   maxOutputBytes: number;
+}
+
+export interface TmuxOutputDrainResult {
+  drained: boolean;
+  bytes: number;
 }
 
 export class TmuxTerminalManager {
@@ -72,8 +77,10 @@ export class TmuxTerminalManager {
     }
     const session = this.sessionName(input.processId);
     const spoolPath = this.outputPath(input.processId);
+    const drainPath = this.drainPath(input.processId);
     mkdirSync(dirname(spoolPath), { recursive: true, mode: 0o700 });
     writeFileSync(spoolPath, "", { mode: 0o600 });
+    rmSync(drainPath, { force: true });
 
     const envPrefix = Object.entries(input.env)
       .map(([key, value]) => {
@@ -100,7 +107,7 @@ export class TmuxTerminalManager {
       ]);
       await this.tmux(["set-window-option", "-t", `${session}:0`, "remain-on-exit", "on"]);
       await this.tmux(["set-window-option", "-t", `${session}:0`, "history-limit", String(this.config.history_limit_lines)]);
-      const pipeCommand = `head -c ${Math.min(input.maxOutputBytes, this.config.max_output_bytes)} >> ${shellQuote(spoolPath)}`;
+      const pipeCommand = `head -c ${Math.min(input.maxOutputBytes, this.config.max_output_bytes)} >> ${shellQuote(spoolPath)}; status=$?; : > ${shellQuote(drainPath)}; exit $status`;
       await this.tmux(["pipe-pane", "-O", "-t", `${session}:0.0`, pipeCommand]);
     } catch (error) {
       await this.close(session).catch(() => undefined);
@@ -193,6 +200,68 @@ export class TmuxTerminalManager {
     return existsSync(path) ? statSync(path).size : 0;
   }
 
+  async drainOutput(session: string, processId: string, waitMs = 1_500): Promise<TmuxOutputDrainResult> {
+    try {
+      // No shell command means "stop the current pipe". Once the pane is dead,
+      // this closes pipe-pane's writer so the reader can flush and exit.
+      await this.tmux(["pipe-pane", "-t", `${session}:0.0`]);
+    } catch {
+      // A missing session also closes the pipe; the drain wait below is still useful.
+    }
+    return this.waitForOutputDrain(processId, waitMs);
+  }
+
+  async waitForOutputDrain(processId: string, waitMs = 1_500): Promise<TmuxOutputDrainResult> {
+    const drainPath = this.drainPath(processId);
+    const started = Date.now();
+    const deadline = started + Math.max(0, waitMs);
+    let lastBytes = this.outputBytes(processId);
+    let stableSince = started;
+    while (Date.now() <= deadline) {
+      const bytes = this.outputBytes(processId);
+      if (bytes !== lastBytes) {
+        lastBytes = bytes;
+        stableSince = Date.now();
+      }
+      if (existsSync(drainPath)) return { drained: true, bytes };
+      // Sessions created by pre-drain-marker releases do not have a marker.
+      // After their pipe is closed, a short stable-size window is the best
+      // backwards-compatible evidence that the legacy pipe has flushed.
+      if (Date.now() - started >= 250 && Date.now() - stableSince >= 250) {
+        return { drained: false, bytes };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return { drained: existsSync(drainPath), bytes: this.outputBytes(processId) };
+  }
+
+  drainOutputSync(session: string, processId: string, waitMs = 1_500): TmuxOutputDrainResult {
+    spawnSync("tmux", ["-S", this.socketPath, "pipe-pane", "-t", `${session}:0.0`], {
+      encoding: "utf8",
+      timeout: 5_000,
+      maxBuffer: 1024 * 1024,
+    });
+    const drainPath = this.drainPath(processId);
+    const started = Date.now();
+    const deadline = started + Math.max(0, waitMs);
+    let lastBytes = this.outputBytes(processId);
+    let stableSince = started;
+    const sleeper = new Int32Array(new SharedArrayBuffer(4));
+    while (Date.now() <= deadline) {
+      const bytes = this.outputBytes(processId);
+      if (bytes !== lastBytes) {
+        lastBytes = bytes;
+        stableSince = Date.now();
+      }
+      if (existsSync(drainPath)) return { drained: true, bytes };
+      if (Date.now() - started >= 250 && Date.now() - stableSince >= 250) {
+        return { drained: false, bytes };
+      }
+      Atomics.wait(sleeper, 0, 0, 25);
+    }
+    return { drained: existsSync(drainPath), bytes: this.outputBytes(processId) };
+  }
+
   async waitForActivity(session: string, processId: string, previousBytes: number, waitMs: number): Promise<TmuxTerminalSnapshot> {
     const deadline = Date.now() + Math.max(0, waitMs);
     let state = await this.inspect(session);
@@ -205,6 +274,10 @@ export class TmuxTerminalManager {
 
   private outputPath(processId: string): string {
     return join(this.dataDir, "spools", "processes", processId, "stdout.bin");
+  }
+
+  private drainPath(processId: string): string {
+    return join(this.dataDir, "spools", "processes", processId, "tmux-pipe-drained");
   }
 
   private tmux(args: string[]) {

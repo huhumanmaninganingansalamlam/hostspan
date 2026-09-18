@@ -139,6 +139,7 @@ describe("tmux interactive process backend", () => {
       max_bytes: 64 * 1024,
     };
     const [written, joined] = await Promise.all([supervisor.write(writeInput), supervisor.write(writeInput)]);
+    if (written.state !== "running") expect(String(written.stdout ?? "")).toContain("HELLO world");
     expect(joined).toEqual(written);
     await expect(supervisor.write(writeInput)).resolves.toEqual(written);
     await expect(supervisor.write({ ...writeInput, chars: "duplicate" })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });

@@ -155,6 +155,8 @@ export class ProcessSupervisor {
       return "unknown";
     }
     await this.options.terminal.close(record.backend_ref);
+    const drained = await this.options.terminal.waitForOutputDrain(processId);
+    this.options.processes.setBytes(processId, "stdout", drained.bytes);
     this.finalize(processId, state, record.exit_code, record.term_signal, reason);
     return state;
   }
@@ -251,7 +253,7 @@ export class ProcessSupervisor {
       this.finalize(processId, "unknown", record.exit_code, record.term_signal, "tmux_backend_unavailable");
       return;
     }
-    const bytes = this.options.terminal.outputBytes(processId);
+    let bytes = this.options.terminal.outputBytes(processId);
     this.options.processes.setBytes(processId, "stdout", bytes);
     const outputCap = Math.min(record.max_output_bytes ?? Number.MAX_SAFE_INTEGER, this.options.config.terminal?.max_output_bytes ?? Number.MAX_SAFE_INTEGER);
     if (record.deadline_at && record.deadline_at <= new Date().toISOString()) {
@@ -268,6 +270,9 @@ export class ProcessSupervisor {
       return;
     }
     if (state.dead) {
+      const drained = await this.options.terminal.drainOutput(record.backend_ref, processId);
+      bytes = drained.bytes;
+      this.options.processes.setBytes(processId, "stdout", bytes);
       this.finalize(processId, state.exit_code === 0 ? "succeeded" : "failed", state.exit_code, null, state.exit_code === 0 ? null : "nonzero_exit");
     }
   }

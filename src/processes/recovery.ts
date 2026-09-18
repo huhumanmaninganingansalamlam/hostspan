@@ -48,8 +48,11 @@ export function recoverProcesses(
         recovered.push({ process_id: record.process_id, state: "unknown" });
         continue;
       }
+      processes.setBytes(record.process_id, "stdout", terminal.outputBytes(record.process_id));
       if (record.deadline_at && record.deadline_at <= new Date().toISOString() && !state.dead) {
         terminal.closeSync(session);
+        const drained = terminal.drainOutputSync(session, record.process_id);
+        processes.setBytes(record.process_id, "stdout", drained.bytes);
         processes.markTerminal(record.process_id, "timed_out", null, null, "deadline_exceeded_during_restart", record.output_expires_at ?? undefined);
         operations.setState(record.idempotency_key, "timed_out", {
           state: "timed_out",
@@ -62,6 +65,8 @@ export function recoverProcesses(
         continue;
       }
       if (state.dead) {
+        const drained = terminal.drainOutputSync(session, record.process_id);
+        processes.setBytes(record.process_id, "stdout", drained.bytes);
         const terminalState = state.exit_code === 0 ? "succeeded" : "failed";
         processes.markTerminal(record.process_id, terminalState, state.exit_code, null, state.exit_code === 0 ? null : "nonzero_exit", record.output_expires_at ?? undefined);
         operations.setState(record.idempotency_key, terminalState, {
