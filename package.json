@@ -1,6 +1,6 @@
 {
   "name": "hostspan",
-  "version": "0.2.0-alpha.10",
+  "version": "0.2.0-alpha.11",
   "description": "Terminal-first MCP execution gateway for approved local targets",
   "license": "Apache-2.0",
   "type": "module",
@@ -11,12 +11,18 @@
     "hostspan": "./dist/src/cli/index.js"
   },
   "types": "./dist/src/index.d.ts",
-  "files": ["dist/src", "docs", "examples"],
+  "files": [
+    "dist/src",
+    "docs",
+    "examples"
+  ],
   "exports": {
     ".": "./dist/src/index.js"
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.json",
+    "desktop": "corepack pnpm build && electron dist/src/desktop/main.js",
+    "desktop:dev": "corepack pnpm build && electron dist/src/desktop/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:contract": "vitest run test/contract test/acceptance",
@@ -42,6 +48,7 @@
     "@biomejs/biome": "2.2.4",
     "@types/better-sqlite3": "7.6.13",
     "@types/node": "24.7.2",
+    "electron": "^44.4.1",
     "fast-check": "4.3.0",
     "typescript": "5.9.3",
     "vitest": "3.2.4"

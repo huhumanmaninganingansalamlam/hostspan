@@ -109,7 +109,7 @@ describe("overload stability", () => {
     }
   });
 
-  it("migrates schema 2 audit state to schema 3 without losing events", () => {
+  it("migrates schema 2 audit state to schema 4 without losing events", () => {
     const root = mkdtempSync(join(tmpdir(), "hostspan-overload-migration-"));
     roots.push(root);
     const path = join(root, "state.db");
@@ -133,9 +133,55 @@ describe("overload stability", () => {
       const index = db
         .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='audit_events_timestamp_idx'")
         .get() as { name: string } | undefined;
-      expect(version.value).toBe("3");
+      expect(version.value).toBe("4");
       expect(events).toBe(1);
       expect(index?.name).toBe("audit_events_timestamp_idx");
+      expect(existsSync(`${path}.pre-migration.bak`)).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("migrates a schema 3 process row to the tmux-aware schema 4 shape", () => {
+    const root = mkdtempSync(join(tmpdir(), "hostspan-process-migration-"));
+    roots.push(root);
+    const path = join(root, "state.db");
+    const legacy = new Database(path);
+    legacy.exec(`
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO meta(key,value) VALUES('schema_version','3');
+      CREATE TABLE processes (
+        process_id TEXT PRIMARY KEY, idempotency_key TEXT UNIQUE NOT NULL, target_id TEXT NOT NULL,
+        argv_digest TEXT NOT NULL, cwd_relative TEXT NOT NULL, pid INTEGER, pgid INTEGER,
+        state TEXT NOT NULL, exit_code INTEGER, term_signal TEXT, reason TEXT,
+        started_at TEXT, ended_at TEXT, stdout_bytes INTEGER NOT NULL DEFAULT 0,
+        stderr_bytes INTEGER NOT NULL DEFAULT 0, output_expires_at TEXT
+      );
+      INSERT INTO processes(process_id,idempotency_key,target_id,argv_digest,cwd_relative,state,pid,pgid)
+      VALUES('proc_existing','0199e78d-4c00-7000-8000-000000000950','local','sha256:test','.','running',123,123);
+    `);
+    legacy.close();
+
+    const db = openDatabase(path);
+    try {
+      const version = db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string };
+      const row = db.prepare("SELECT process_id,state,backend,backend_ref,deadline_at,max_output_bytes FROM processes WHERE process_id='proc_existing'").get() as {
+        process_id: string;
+        state: string;
+        backend: string;
+        backend_ref: string | null;
+        deadline_at: string | null;
+        max_output_bytes: number | null;
+      };
+      expect(version.value).toBe("4");
+      expect(row).toEqual({
+        process_id: "proc_existing",
+        state: "running",
+        backend: "native",
+        backend_ref: null,
+        deadline_at: null,
+        max_output_bytes: null,
+      });
       expect(existsSync(`${path}.pre-migration.bak`)).toBe(true);
     } finally {
       db.close();
@@ -157,6 +203,7 @@ describe("overload stability", () => {
       git_changes: () => ({ status: [] }),
       process_start: () => ({ state: "succeeded" }),
       process_poll: () => ({ state: "succeeded" }),
+      process_write: () => ({ state: "succeeded" }),
       process_cancel: () => ({ state: "cancelled" }),
     };
     const app = createHostSpanHttpServer({

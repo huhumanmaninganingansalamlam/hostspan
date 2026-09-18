@@ -31,14 +31,20 @@ Do not describe Alpha as secure sandboxed execution. A future sandbox provider m
 - Patch apply requires an `expected_sha256`, stages all requested files before commit, validates before writes, performs per-file atomic replacement, verifies after hashes, and records a durable transaction journal.
 - Multi-file patching is not advertised as a single filesystem transaction. Crash recovery reports `verified`, `rolled_back`, or `unknown` based on observed hashes.
 
-## Process boundary
+## Process and terminal boundary
 
 - `process_start` is the only spawn path.
-- Commands are argv arrays with `shell=false`; Alpha has no raw shell-string tool or PTY/stdin channel.
+- Non-interactive commands are argv arrays with `shell=false` and remain subject to the target exec profile's `allowed_programs`, env allowlist, deadline, output, and concurrency limits.
+- `tty=true` is a separate authority path: the target must explicitly grant the `terminal` capability and HostSpan uses a private tmux server/socket to own the PTY.
+- `process_write` is valid only for tmux-backed interactive processes. It can send text, selected control keys, and terminal resize updates. Every write requires its own UUIDv7 idempotency key; duplicate retries join/replay the original write, while an unprovable crash-boundary outcome becomes `PROCESS_UNKNOWN` and is never automatically retyped.
+- A writable PTY is stronger than bounded exec. A shell, REPL, debugger, SSH client, or interpreter inside the PTY can execute operations that are not constrained by the native exec profile's `allowed_programs`. The `terminal` capability therefore grants native interactive terminal authority as the HostSpan OS user.
+- `target_id` still determines the initial working directory and the authorization decision, but once interactive terminal authority is granted it is not a filesystem sandbox. A shell can change directories or access anything available to the HostSpan OS user.
 - Side-effect submissions require a UUIDv7 idempotency key and are deduplicated in SQLite by argument hash.
 - A duplicate key with different arguments is rejected with `IDEMPOTENCY_CONFLICT`.
 - Linux process groups receive TERM then KILL for cancel/deadline/output-limit handling.
 - Crash boundaries are never converted to success. HostSpan uses `unknown` when spawn/side-effect status cannot be proven and `orphaned` when a live process group survives but daemon stream ownership was lost.
+- tmux-backed sessions intentionally survive HostSpan daemon shutdown/restart. Startup reconciliation keeps a live tmux pane `running`, records an exited pane's exit status, or uses `unknown` if the durable session reference no longer exists.
+- Human attach uses the same private tmux session. `--read-only` is the safe observation mode. Writable human attach is deliberate shared ownership: human keystrokes bypass MCP idempotency and are not individually represented as MCP operations.
 
 ## Secrets and retention
 
@@ -86,6 +92,8 @@ Security requirements for a user-managed proxy:
 
 Reverse proxy transport does not make native execution safer. Any authenticated caller that reaches HostSpan can invoke the read/write/exec capabilities permitted by the configured target policy.
 
+The local Electron tray/dashboard does not open an additional network admin API. It reads the local config/SQLite state and invokes local daemon/terminal commands. On Windows it delegates these operations to the WSL2 `hostspan` CLI. Treat the desktop login/session as the trust boundary for that management UI.
+
 ## Overload boundary
 
 HostSpan fails bounded rather than spawning unbounded work under request bursts:
@@ -93,6 +101,7 @@ HostSpan fails bounded rather than spawning unbounded work under request bursts:
 - `/mcp` admits at most `server.max_inflight_mcp_requests` requests at once (128 by default); excess HTTP requests receive `503` plus `Retry-After: 1`.
 - `file_search` admits at most `server.max_concurrent_searches` ripgrep children (8 by default), queues at most `server.max_queued_searches` (16), and returns retryable `SERVER_BUSY` when the queue is full or waits longer than `server.search_queue_timeout_ms` (1 second).
 - `process_start` remains separately bounded per target by the selected exec profile's `max_concurrent_processes`.
+- tmux-backed interactive sessions are separately bounded by `terminal.max_concurrent_sessions` (4 by default) per target.
 - `system_status` and readiness use lightweight SQLite responsiveness checks; full `PRAGMA integrity_check` remains in `hostspan doctor` rather than running on every status request.
 - backend availability probes are cached briefly so status floods do not repeatedly spawn diagnostic child processes.
 

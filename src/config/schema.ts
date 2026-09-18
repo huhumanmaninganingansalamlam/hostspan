@@ -42,7 +42,16 @@ const AllowedHostSchema = z
     message: "allowed_hosts entries must be hostnames or IP addresses without scheme, path, or port",
   });
 
-export const CapabilitySchema = z.enum(["read", "write", "exec", "git"]);
+export const CapabilitySchema = z.enum(["read", "write", "exec", "git", "terminal"]);
+
+export const TerminalConfigSchema = z
+  .object({
+    backend: z.literal("tmux").default("tmux"),
+    max_concurrent_sessions: z.number().int().positive().max(64).default(4),
+    history_limit_lines: z.number().int().min(1_000).max(1_000_000).default(50_000),
+    max_output_bytes: z.number().int().positive().max(268_435_456).default(16_777_216),
+  })
+  .strict();
 
 export const ExecProfileSchema = z
   .object({
@@ -117,6 +126,7 @@ export const HostSpanConfigSchema = z
         max_total_spool_bytes: z.number().int().positive().default(1_073_741_824),
       })
       .strict(),
+    terminal: TerminalConfigSchema.optional(),
     oauth: OAuthConfigSchema.optional(),
     targets: z.record(z.string().min(1), TargetConfigSchema),
     exec_profiles: z.record(z.string().min(1), ExecProfileSchema),
@@ -125,6 +135,7 @@ export const HostSpanConfigSchema = z
 
 export type Capability = z.infer<typeof CapabilitySchema>;
 export type ExecProfile = z.infer<typeof ExecProfileSchema>;
+export type TerminalConfig = z.infer<typeof TerminalConfigSchema>;
 export type TargetConfig = z.infer<typeof TargetConfigSchema>;
 export type OAuthConfig = z.infer<typeof OAuthConfigSchema>;
 export type HostSpanConfig = z.infer<typeof HostSpanConfigSchema>;

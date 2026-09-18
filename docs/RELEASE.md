@@ -2,8 +2,8 @@
 
 ## Release contract
 
-- Version: `0.2.0-alpha.10`
-- Toolset: `hostspan-v1`
+- Version: `0.2.0-alpha.11`
+- Toolset: `hostspan-v2`
 - MCP protocol target: `2026-07-28`
 - Platform: Linux x64 (Ubuntu 24.04 LTS / WSL2)
 - Client target: ChatGPT Web Developer Mode
@@ -11,13 +11,16 @@
 
 ## Included
 
-- immutable 10-tool MCP registry and stable toolset digest
+- immutable 11-tool MCP registry and stable toolset digest
 - persistent explicit `target_id` routing
 - atomic config writes and target registry
 - canonical guarded list/read/search with ripgrep degradation reporting
 - SHA-256 guarded dry-run/apply patch, validators, journal, and startup recovery
 - deterministic bounded Git status/diff wrapper
-- one durable native process supervisor for start/poll/cancel
+- one durable process lifecycle for native and tmux-backed interactive processes
+- `process_write` for tmux-backed stdin/control keys/resize while retaining `process_poll` and `process_cancel`
+- HostSpan-private tmux socket with local human read-only or read/write attach
+- tmux session reconciliation across HostSpan daemon restart
 - process-group deadline/cancel, byte cursors, UTF-8-safe output spool, idempotent submission
 - SQLite WAL operation/process/transaction/audit state
 - native exec policy, env/program/output/deadline/concurrency limits
@@ -32,18 +35,20 @@
 - bounded overload admission: 128 in-flight MCP requests by default, bounded ripgrep concurrency/queue, retryable `SERVER_BUSY`
 - lightweight cached runtime backend probes; full SQLite integrity checks remain in `doctor`
 - audit history bounded by age and `max_audit_events` (500,000 by default)
+- detached `hostspan daemon start|stop|status` management
+- optional Electron tray/dashboard for daemon state, targets/workspaces, recent calls, and tmux attach
 
 ## Explicitly excluded
 
-PTY/stdin, SSH/multi-host execution, native Windows/macOS adapters, GUI/browser computer-use, LSP/CodeGraph, MCP aggregation, scheduler, desktop GUI, and an OS sandbox.
+Multi-host routing, native Windows/macOS process adapters, GUI/browser computer-use, LSP/CodeGraph, MCP aggregation, scheduler, and an OS sandbox. The small tray/dashboard is a local management surface, not computer-use automation.
 
 ## Compatibility and migration
 
-`hostspan-v1` tool names and input schemas are fixed for Alpha. A breaking tool-contract change requires a new toolset version and migration notes. Description/schema metadata changes alter `toolset_hash`; refresh the ChatGPT app after upgrading.
+`hostspan-v2` tool names and input schemas are fixed for this Alpha line. `v2` is intentionally a breaking tool-contract revision from `hostspan-v1`: `process_start` gains optional TTY fields and `process_write` is added. Description/schema metadata changes alter `toolset_hash`; refresh the ChatGPT app after upgrading.
 
-`0.2.0-alpha.10` does not change the `hostspan-v1` tool contract. Remote non-loopback serving still fails closed without OAuth. The OAuth HTTP surface is aligned with the MCP SDK shape (`/authorize`, `/token`, `/register`, `/revoke`) used by working ChatGPT integrations. Overload controls and audit caps are additive operational safeguards; existing configs remain valid because the new server/retention fields have runtime defaults.
+`0.2.0-alpha.11` introduces `hostspan-v2` and tmux-backed interactive process sessions. Remote non-loopback serving still fails closed without OAuth. Existing targets do not gain terminal authority automatically: add the explicit `terminal` capability before `tty=true` is accepted. Existing non-interactive `process_start`/`process_poll`/`process_cancel` semantics remain available.
 
-Config schema remains version 1. The durable database schema is version 3; it retains hashed OAuth client/code/token state and adds an indexed audit-retention path. HostSpan fails closed if it encounters a newer database schema than the binary supports. Database initialization uses WAL and backs up an existing database before migration.
+Config schema remains version 1. The durable database schema is version 4 and adds process backend/session/deadline/output-cap metadata so tmux sessions can be reconciled after daemon restart. Database initialization uses WAL and backs up an existing database before migration.
 
 ## Release gates
 

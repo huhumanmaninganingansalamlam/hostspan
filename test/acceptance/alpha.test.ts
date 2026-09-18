@@ -67,9 +67,9 @@ function fixture() {
 }
 
 describe("HostSpan Alpha acceptance", () => {
-  it("keeps the exact static 10-tool contract and rejects unknown input fields", () => {
-    expect(TOOL_NAMES).toHaveLength(10);
-    expect(new Set(TOOL_NAMES).size).toBe(10);
+  it("keeps the exact static 11-tool contract and rejects unknown input fields", () => {
+    expect(TOOL_NAMES).toHaveLength(11);
+    expect(new Set(TOOL_NAMES).size).toBe(11);
     expect(TOOLSET_HASH).toMatch(/^sha256:[0-9a-f]{64}$/);
     const parsed = FileReadInputSchema.safeParse({
       target_id: "local",
@@ -155,7 +155,7 @@ describe("HostSpan Alpha acceptance", () => {
       const listed = await post(address, "tools-1", "tools/list");
       const result = listed.result as { tools?: Array<{ name?: string }> } | undefined;
       expect(result?.tools?.map((tool) => tool.name)).toEqual(TOOL_NAMES);
-      expect(result?.tools).toHaveLength(10);
+      expect(result?.tools).toHaveLength(11);
     } finally {
       await app.close();
       runtime.close();

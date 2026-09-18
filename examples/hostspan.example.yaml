@@ -24,12 +24,18 @@ retention:
   max_audit_events: 500000
   max_total_spool_bytes: 1073741824
 
+terminal:
+  backend: tmux
+  max_concurrent_sessions: 4
+  history_limit_lines: 50000
+  max_output_bytes: 16777216
+
 targets:
   local-app:
     label: Main application
     provider: local
     root: /home/alice/projects/app
-    capabilities: [read, write, exec, git]
+    capabilities: [read, write, exec, git, terminal]
     exec_profile: native-dev
     deny_globs: ["**/.env*", "**/*.pem", "**/*.key", ".git/objects/**"]
     ignore_globs: ["**/node_modules/**", "**/dist/**", "**/.cache/**"]

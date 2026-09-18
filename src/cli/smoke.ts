@@ -37,7 +37,7 @@ export async function runSmoke(context: SmokeContext, targetId: string): Promise
   };
 
   await record("toolset", () => {
-    if (TOOL_NAMES.length !== 10) throw new Error(`expected 10 tools, got ${TOOL_NAMES.length}`);
+    if (TOOL_NAMES.length !== 11) throw new Error(`expected 11 tools, got ${TOOL_NAMES.length}`);
   });
   await record("target_list", async () => {
     const result = await context.handlers.target_list({}, "smoke_target_list");

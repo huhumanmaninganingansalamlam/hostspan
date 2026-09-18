@@ -16,7 +16,7 @@ Run:
 hostspan print-toolset
 ```
 
-Alpha must advertise exactly 10 tools. Target permissions never remove a tool from `tools/list`; a disallowed call returns `SCOPE_DENIED`. If ChatGPT shows an older schema/hash, Refresh the app. If local Inspector/contract tests show a stable registry but ChatGPT does not, treat that as a compatibility incident and collect traces.
+HostSpan `hostspan-v2` must advertise exactly 11 tools. Target permissions never remove a tool from `tools/list`; a disallowed call returns `SCOPE_DENIED`. If ChatGPT still shows the old 10-tool `hostspan-v1` schema after upgrading, Refresh the app before debugging the server.
 
 ## A call does not reach HostSpan
 
@@ -49,6 +49,19 @@ The same key was previously submitted with different arguments. Do not reuse tha
 ## Process is `orphaned`
 
 `orphaned` means a process group remained alive across daemon recovery but HostSpan lost normal stream ownership. `process_cancel` can still attempt process-group cleanup. If cleanup cannot be verified, the state remains non-success.
+
+tmux-backed `tty=true` processes are different: tmux owns the PTY outside the HostSpan daemon, so a surviving tmux session is reconciled back to `running` after daemon restart instead of being marked orphaned. Use `hostspan terminal list` to inspect locally.
+
+## `process_write` says the process is not interactive
+
+`process_write` only accepts a process created with `process_start(..., tty=true)`. The target must include the explicit `terminal` capability and `hostspan doctor` must report tmux available.
+
+For local observation or takeover:
+
+```bash
+hostspan terminal attach --process <process_id> --read-only
+hostspan terminal attach --process <process_id>
+```
 
 ## Cancelled process appears to remain
 

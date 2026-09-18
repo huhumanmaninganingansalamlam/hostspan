@@ -38,11 +38,11 @@ async function toolsListOnce(handler: ReturnType<typeof createMcpHandler>, id: n
   return tools;
 }
 
-describe("hostspan-v1 tool contract", () => {
-  it("contains exactly the fixed 10 tools with a stable digest", () => {
+describe("hostspan-v2 tool contract", () => {
+  it("contains exactly the fixed 11 tools with a stable digest", () => {
     const first = JSON.stringify(toolsetDocument());
     expect(toolsetDocument().tools.map((tool) => tool.name)).toEqual(TOOL_NAMES);
-    expect(toolsetDocument().tools).toHaveLength(10);
+    expect(toolsetDocument().tools).toHaveLength(11);
     expect(TOOLSET_HASH).toMatch(/^sha256:[0-9a-f]{64}$/);
     for (let index = 0; index < 100; index += 1) expect(JSON.stringify(toolsetDocument())).toBe(first);
   });
@@ -54,7 +54,7 @@ describe("hostspan-v1 tool contract", () => {
       for (let index = 0; index < 100; index += 1) {
         const tools = await toolsListOnce(handler, index + 1);
         expect(tools.map((tool) => tool.name)).toEqual(TOOL_NAMES);
-        expect(tools).toHaveLength(10);
+        expect(tools).toHaveLength(11);
         const digestable = JSON.stringify(tools);
         first ??= digestable;
         expect(digestable).toBe(first);

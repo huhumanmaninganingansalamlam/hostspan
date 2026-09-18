@@ -12,6 +12,7 @@ import {
   ProcessCancelInputSchema,
   ProcessPollInputSchema,
   ProcessStartInputSchema,
+  ProcessWriteInputSchema,
   SystemStatusInputSchema,
   TargetListInputSchema,
   type FileListToolInput,
@@ -22,6 +23,7 @@ import {
   type ProcessCancelToolInput,
   type ProcessPollToolInput,
   type ProcessStartToolInput,
+  type ProcessWriteToolInput,
   type SystemStatusInput,
   type TargetListInput,
 } from "./schemas.js";
@@ -36,6 +38,7 @@ export const TOOL_NAMES = [
   "git_changes",
   "process_start",
   "process_poll",
+  "process_write",
   "process_cancel",
 ] as const;
 
@@ -118,6 +121,12 @@ export const TOOL_DEFINITIONS = [
     annotations: readOnlyAnnotations,
   },
   {
+    name: "process_write" as const,
+    description: "Write characters, control keys, or terminal resize updates to a tmux-backed interactive process and return incremental output.",
+    inputSchema: ProcessWriteInputSchema,
+    annotations: processAnnotations,
+  },
+  {
     name: "process_cancel" as const,
     description: "Idempotently cancel a supervised process group with TERM followed by KILL when required.",
     inputSchema: ProcessCancelInputSchema,
@@ -160,6 +169,7 @@ export interface HostSpanToolHandlers {
   git_changes(input: GitChangesToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
   process_start(input: ProcessStartToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
   process_poll(input: ProcessPollToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
+  process_write(input: ProcessWriteToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
   process_cancel(input: ProcessCancelToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
 }
 
@@ -225,8 +235,13 @@ export function registerHostSpanTools(server: McpServer, handlers: HostSpanToolH
     (input) => invoke(input, handlers.process_poll.bind(handlers), context),
   );
   server.registerTool(
+    "process_write",
+    { description: TOOL_DEFINITIONS[9].description, inputSchema: ProcessWriteInputSchema, annotations: TOOL_DEFINITIONS[9].annotations },
+    (input) => invoke(input, handlers.process_write.bind(handlers), context),
+  );
+  server.registerTool(
     "process_cancel",
-    { description: TOOL_DEFINITIONS[9].description, inputSchema: ProcessCancelInputSchema, annotations: TOOL_DEFINITIONS[9].annotations },
+    { description: TOOL_DEFINITIONS[10].description, inputSchema: ProcessCancelInputSchema, annotations: TOOL_DEFINITIONS[10].annotations },
     (input) => invoke(input, handlers.process_cancel.bind(handlers), context),
   );
 }

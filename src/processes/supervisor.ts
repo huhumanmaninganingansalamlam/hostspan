@@ -4,7 +4,7 @@ import type { Readable } from "node:stream";
 import { v7 as uuidv7 } from "uuid";
 import type { HostSpanConfig } from "../config/schema.js";
 import { HostSpanError } from "../mcp/errors.js";
-import type { ProcessCancelToolInput, ProcessPollToolInput, ProcessStartToolInput } from "../mcp/schemas.js";
+import type { ProcessCancelToolInput, ProcessPollToolInput, ProcessStartToolInput, ProcessWriteToolInput } from "../mcp/schemas.js";
 import type { HostSpanLogger } from "../observability/logger.js";
 import type { PolicyEvaluator } from "../policy/evaluator.js";
 import type { OperationsRepo } from "../state/operations-repo.js";
@@ -13,6 +13,7 @@ import type { TargetRegistry } from "../targets/registry.js";
 import { resolveTargetPath } from "../files/path-guard.js";
 import { OutputSpool } from "./output-spool.js";
 import { processGroupAlive } from "./recovery.js";
+import type { TmuxTerminalManager } from "./tmux-terminal.js";
 
 const TERMINAL_STATES = new Set<ProcessState>(["succeeded", "failed", "timed_out", "cancelled", "orphaned", "unknown"]);
 
@@ -62,13 +63,20 @@ export interface ProcessSupervisorOptions {
   policy: PolicyEvaluator;
   operations: OperationsRepo;
   processes: ProcessesRepo;
+  terminal?: TmuxTerminalManager;
   logger?: HostSpanLogger;
 }
 
 export class ProcessSupervisor {
   private readonly runtimes = new Map<string, RuntimeProcess>();
+  private readonly tmuxDeadlineTimers = new Map<string, NodeJS.Timeout>();
+  private readonly writeInflight = new Map<string, Promise<Record<string, unknown>>>();
 
-  constructor(private readonly options: ProcessSupervisorOptions) {}
+  constructor(private readonly options: ProcessSupervisorOptions) {
+    for (const record of this.options.processes.active()) {
+      if (record.backend === "tmux") this.scheduleTmuxDeadline(record.process_id, record.deadline_at);
+    }
+  }
 
   private expiresAt(): string {
     const ttlMs = this.options.config.retention.completed_process_output_ttl_minutes * 60_000;
@@ -116,7 +124,39 @@ export class ProcessSupervisor {
     });
     const runtime = this.runtimes.get(processId);
     if (runtime?.deadlineTimer) clearTimeout(runtime.deadlineTimer);
+    const tmuxTimer = this.tmuxDeadlineTimers.get(processId);
+    if (tmuxTimer) clearTimeout(tmuxTimer);
+    this.tmuxDeadlineTimers.delete(processId);
     runtime?.resolveTerminal();
+  }
+
+  private scheduleTmuxDeadline(processId: string, deadlineAt: string | null): void {
+    if (!deadlineAt) return;
+    const delay = new Date(deadlineAt).getTime() - Date.now();
+    if (delay <= 0) {
+      void this.terminateTmux(processId, "timed_out", "deadline_exceeded");
+      return;
+    }
+    const existing = this.tmuxDeadlineTimers.get(processId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      void this.terminateTmux(processId, "timed_out", "deadline_exceeded");
+    }, delay);
+    timer.unref();
+    this.tmuxDeadlineTimers.set(processId, timer);
+  }
+
+  private async terminateTmux(processId: string, state: "timed_out" | "cancelled" | "failed", reason: string): Promise<ProcessState> {
+    const record = this.options.processes.get(processId);
+    if (!record) throw new HostSpanError("PROCESS_NOT_FOUND", `Unknown process_id: ${processId}`);
+    if (TERMINAL_STATES.has(record.state)) return record.state;
+    if (!this.options.terminal || !record.backend_ref) {
+      this.finalize(processId, "unknown", record.exit_code, record.term_signal, "tmux_backend_unavailable");
+      return "unknown";
+    }
+    await this.options.terminal.close(record.backend_ref);
+    this.finalize(processId, state, record.exit_code, record.term_signal, reason);
+    return state;
   }
 
   private async terminate(
@@ -172,10 +212,13 @@ export class ProcessSupervisor {
         });
       }
     }
-    const perStream = Math.max(1, Math.floor(maxBytes / 2));
-    const spool = this.spool(processId);
+    const interactive = record.backend === "tmux";
+    const perStream = interactive ? maxBytes : Math.max(1, Math.floor(maxBytes / 2));
+    const spool = this.spool(processId, record.max_output_bytes ?? Number.MAX_SAFE_INTEGER);
     const stdout = spool.read("stdout", stdoutCursor, perStream);
-    const stderr = spool.read("stderr", stderrCursor, perStream);
+    const stderr = interactive
+      ? { text: "", next_cursor: stderrCursor, earliest_cursor: 0, bytes_returned: 0 }
+      : spool.read("stderr", stderrCursor, perStream);
     return {
       state: record.state,
       process_id: processId,
@@ -187,16 +230,54 @@ export class ProcessSupervisor {
       signal: record.term_signal,
       reason: record.reason,
       output_expires_at: record.output_expires_at,
+      backend: record.backend,
+      interactive,
+      ...(interactive && record.backend_ref && this.options.terminal
+        ? {
+            terminal_session: record.backend_ref,
+            human_attach_command: this.options.terminal.humanAttachCommand(record.backend_ref, false),
+            human_attach_read_only_command: this.options.terminal.humanAttachCommand(record.backend_ref, true),
+          }
+        : {}),
       native_execution: true,
       sandboxed: false,
     };
   }
 
+  private async syncTmuxState(processId: string): Promise<void> {
+    const record = this.options.processes.get(processId);
+    if (!record || record.backend !== "tmux" || TERMINAL_STATES.has(record.state)) return;
+    if (!this.options.terminal || !record.backend_ref) {
+      this.finalize(processId, "unknown", record.exit_code, record.term_signal, "tmux_backend_unavailable");
+      return;
+    }
+    const bytes = this.options.terminal.outputBytes(processId);
+    this.options.processes.setBytes(processId, "stdout", bytes);
+    const outputCap = Math.min(record.max_output_bytes ?? Number.MAX_SAFE_INTEGER, this.options.config.terminal?.max_output_bytes ?? Number.MAX_SAFE_INTEGER);
+    if (record.deadline_at && record.deadline_at <= new Date().toISOString()) {
+      await this.terminateTmux(processId, "timed_out", "deadline_exceeded");
+      return;
+    }
+    const state = await this.options.terminal.inspect(record.backend_ref);
+    if (!state.exists) {
+      this.finalize(processId, "unknown", record.exit_code, record.term_signal, "tmux_session_missing");
+      return;
+    }
+    if (bytes >= outputCap && !state.dead) {
+      await this.terminateTmux(processId, "failed", "output_limit");
+      return;
+    }
+    if (state.dead) {
+      this.finalize(processId, state.exit_code === 0 ? "succeeded" : "failed", state.exit_code, null, state.exit_code === 0 ? null : "nonzero_exit");
+    }
+  }
+
   async start(input: ProcessStartToolInput, requestId: string): Promise<Record<string, unknown>> {
-    const target = this.options.targets.get(input.target_id, "exec");
+    const interactive = input.tty ?? false;
+    const target = this.options.targets.get(input.target_id, interactive ? "terminal" : "exec");
     const cwd = resolveTargetPath(target, input.cwd, "exec");
     if (!cwd.exists) throw new HostSpanError("FILE_NOT_FOUND", `Process cwd does not exist: ${input.cwd}`);
-    const profile = this.options.policy.validateExec(target, input.argv, input.env, input.deadline_ms, input.max_output_bytes);
+    const profile = interactive ? undefined : this.options.policy.validateExec(target, input.argv, input.env, input.deadline_ms, input.max_output_bytes);
     const resolution = this.options.operations.resolve(input.idempotency_key, "process_start", input, input.target_id);
     if (resolution.kind !== "new") {
       const existing = this.options.processes.getByKey(input.idempotency_key);
@@ -207,22 +288,89 @@ export class ProcessSupervisor {
       if (resolution.kind === "unknown" || existing.state === "unknown") {
         return this.snapshot(existing.process_id, 0, 0, Math.min(input.max_output_bytes, 131_072));
       }
-      await this.waitForTerminal(existing.process_id, input.wait_ms);
+      if (existing.backend === "tmux") {
+        await this.syncTmuxState(existing.process_id);
+      } else {
+        await this.waitForTerminal(existing.process_id, input.wait_ms);
+      }
       return this.snapshot(existing.process_id, 0, 0, Math.min(input.max_output_bytes, 131_072));
     }
 
-    if (this.options.processes.activeCountForTarget(input.target_id) >= profile.max_concurrent_processes) {
+    if (interactive) {
+      if (!this.options.terminal || !this.options.config.terminal) {
+        this.options.operations.setState(input.idempotency_key, "failed", undefined, { code: "TERMINAL_BACKEND_UNAVAILABLE" });
+        throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "Interactive terminal support is not configured.", true);
+      }
+      if (this.options.processes.activeCountForTargetBackend(input.target_id, "tmux") >= this.options.config.terminal.max_concurrent_sessions) {
+        this.options.operations.setState(input.idempotency_key, "failed", undefined, { code: "SCOPE_DENIED", reason: "max_concurrent_terminal_sessions" });
+        throw new HostSpanError("SCOPE_DENIED", `Target ${input.target_id} reached max_concurrent_terminal_sessions.`);
+      }
+      const processId = `proc_${uuidv7().replaceAll("-", "")}`;
+      const session = this.options.terminal.sessionName(processId);
+      const deadlineAt = new Date(Date.now() + input.deadline_ms).toISOString();
+      this.options.processes.create({
+        process_id: processId,
+        idempotency_key: input.idempotency_key,
+        target_id: input.target_id,
+        argv_digest: digestArgv(input.argv),
+        cwd_relative: cwd.relative,
+        backend: "tmux",
+        backend_ref: session,
+        deadline_at: deadlineAt,
+        max_output_bytes: Math.min(input.max_output_bytes, this.options.config.terminal.max_output_bytes),
+      });
+      this.options.operations.setState(input.idempotency_key, "launching", { state: "launching", process_id: processId, backend: "tmux" });
+      this.options.logger?.info("process.launching", {
+        request_id: requestId,
+        process_id: processId,
+        target_id: input.target_id,
+        argv_digest: digestArgv(input.argv),
+        cwd: cwd.relative,
+        backend: "tmux",
+      });
+      try {
+        const started = await this.options.terminal.start({
+          processId,
+          cwd: cwd.absolute,
+          argv: input.argv,
+          env: input.env,
+          columns: input.columns ?? 120,
+          rows: input.rows ?? 40,
+          maxOutputBytes: input.max_output_bytes,
+        });
+        this.options.processes.markRunning(processId, started.pid, null);
+        this.options.operations.setState(input.idempotency_key, "running", { state: "running", process_id: processId, backend: "tmux" });
+        this.options.logger?.info("process.started", { request_id: requestId, process_id: processId, pid: started.pid, backend: "tmux", session });
+        this.scheduleTmuxDeadline(processId, deadlineAt);
+        const beforeBytes = this.options.terminal.outputBytes(processId);
+        await this.options.terminal.waitForActivity(session, processId, beforeBytes, input.wait_ms);
+        await this.syncTmuxState(processId);
+        return this.snapshot(processId, 0, 0, Math.min(input.max_output_bytes, 131_072));
+      } catch (error) {
+        this.options.processes.markTerminal(processId, "failed", null, null, "tmux_start_failed", this.expiresAt());
+        this.options.operations.setState(input.idempotency_key, "failed", { state: "failed", process_id: processId, reason: "tmux_start_failed" }, error);
+        throw error;
+      }
+    }
+
+    if (!profile) throw new HostSpanError("POLICY_UNENFORCEABLE", "Missing native exec profile.");
+    if (this.options.processes.activeCountForTargetBackend(input.target_id, "native") >= profile.max_concurrent_processes) {
       this.options.operations.setState(input.idempotency_key, "failed", undefined, { code: "SCOPE_DENIED", reason: "max_concurrent_processes" });
       throw new HostSpanError("SCOPE_DENIED", `Target ${input.target_id} reached max_concurrent_processes.`);
     }
 
     const processId = `proc_${uuidv7().replaceAll("-", "")}`;
+    const deadlineAt = new Date(Date.now() + input.deadline_ms).toISOString();
     this.options.processes.create({
       process_id: processId,
       idempotency_key: input.idempotency_key,
       target_id: input.target_id,
       argv_digest: digestArgv(input.argv),
       cwd_relative: cwd.relative,
+      backend: "native",
+      backend_ref: null,
+      deadline_at: deadlineAt,
+      max_output_bytes: input.max_output_bytes,
     });
     this.options.operations.setState(input.idempotency_key, "launching", { state: "launching", process_id: processId });
     this.options.logger?.info("process.launching", {
@@ -318,8 +466,95 @@ export class ProcessSupervisor {
   async poll(input: ProcessPollToolInput): Promise<Record<string, unknown>> {
     const record = this.options.processes.get(input.process_id);
     if (!record) throw new HostSpanError("PROCESS_NOT_FOUND", `Unknown process_id: ${input.process_id}`);
-    await this.waitForTerminal(input.process_id, input.wait_ms);
+    if (record.backend === "tmux") {
+      if (!this.options.terminal || !record.backend_ref) throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "tmux terminal backend is unavailable.", true);
+      const previousBytes = this.options.terminal.outputBytes(input.process_id);
+      if (previousBytes <= input.stdout_cursor && !TERMINAL_STATES.has(record.state)) {
+        await this.options.terminal.waitForActivity(record.backend_ref, input.process_id, previousBytes, input.wait_ms);
+      }
+      await this.syncTmuxState(input.process_id);
+    } else {
+      await this.waitForTerminal(input.process_id, input.wait_ms);
+    }
     return this.snapshot(input.process_id, input.stdout_cursor, input.stderr_cursor, input.max_bytes);
+  }
+
+  async write(input: ProcessWriteToolInput): Promise<Record<string, unknown>> {
+    const record = this.options.processes.get(input.process_id);
+    if (!record) throw new HostSpanError("PROCESS_NOT_FOUND", `Unknown process_id: ${input.process_id}`);
+    if (record.backend !== "tmux" || !record.backend_ref) {
+      throw new HostSpanError("TERMINAL_NOT_INTERACTIVE", "process_write requires a tmux-backed process started with tty=true.");
+    }
+    this.options.targets.get(record.target_id, "terminal");
+    if (!this.options.terminal) throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "tmux terminal backend is unavailable.", true);
+    const resolution = this.options.operations.resolve(input.idempotency_key, "process_write", input, record.target_id);
+    if (resolution.kind === "replay") {
+      return (resolution.result as Record<string, unknown> | null) ?? this.snapshot(input.process_id, input.stdout_cursor, 0, input.max_bytes);
+    }
+    if (resolution.kind === "unknown") {
+      throw new HostSpanError("PROCESS_UNKNOWN", "Interactive input outcome is unknown; do not replay it automatically.", false, {
+        process_id: input.process_id,
+        idempotency_key: input.idempotency_key,
+      });
+    }
+    if (resolution.kind === "join") {
+      const joined = this.writeInflight.get(input.idempotency_key);
+      if (joined) return joined;
+      this.options.operations.setState(input.idempotency_key, "unknown", {
+        state: "unknown",
+        process_id: input.process_id,
+        reason: "interactive_write_restart_boundary",
+      });
+      throw new HostSpanError("PROCESS_UNKNOWN", "Interactive input may have crossed a daemon restart boundary; it was not replayed.", false, {
+        process_id: input.process_id,
+        idempotency_key: input.idempotency_key,
+      });
+    }
+
+    const operation = this.performWrite(input, record.backend_ref);
+    this.writeInflight.set(input.idempotency_key, operation);
+    try {
+      return await operation;
+    } finally {
+      this.writeInflight.delete(input.idempotency_key);
+    }
+  }
+
+  private async performWrite(input: ProcessWriteToolInput, session: string): Promise<Record<string, unknown>> {
+    if (!this.options.terminal) throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "tmux terminal backend is unavailable.", true);
+    await this.syncTmuxState(input.process_id);
+    const refreshed = this.options.processes.get(input.process_id);
+    if (!refreshed || TERMINAL_STATES.has(refreshed.state)) {
+      const result = this.snapshot(input.process_id, input.stdout_cursor, 0, input.max_bytes);
+      this.options.operations.setState(input.idempotency_key, "succeeded", result);
+      return result;
+    }
+    this.options.operations.setState(input.idempotency_key, "running", { state: "writing", process_id: input.process_id });
+    const previousBytes = this.options.terminal.outputBytes(input.process_id);
+    try {
+      await this.options.terminal.write(session, {
+        chars: input.chars,
+        control_keys: input.control_keys,
+        ...(input.columns !== undefined ? { columns: input.columns } : {}),
+        ...(input.rows !== undefined ? { rows: input.rows } : {}),
+      });
+      await this.options.terminal.waitForActivity(session, input.process_id, previousBytes, input.wait_ms);
+      await this.syncTmuxState(input.process_id);
+      const result = this.snapshot(input.process_id, input.stdout_cursor, 0, input.max_bytes);
+      this.options.operations.setState(input.idempotency_key, "succeeded", result);
+      return result;
+    } catch (error) {
+      const unknown = {
+        state: "unknown",
+        process_id: input.process_id,
+        reason: "interactive_write_outcome_unknown",
+      };
+      this.options.operations.setState(input.idempotency_key, "unknown", unknown, error);
+      throw new HostSpanError("PROCESS_UNKNOWN", "Interactive input outcome could not be proven; it was not replayed.", false, {
+        process_id: input.process_id,
+        idempotency_key: input.idempotency_key,
+      });
+    }
   }
 
   async cancel(input: ProcessCancelToolInput): Promise<Record<string, unknown>> {
@@ -348,6 +583,12 @@ export class ProcessSupervisor {
       return result;
     }
     this.options.operations.setState(input.idempotency_key, "running", { state: "cancelling", process_id: input.process_id });
+    if (record.backend === "tmux") {
+      const terminalState = await this.terminateTmux(input.process_id, "cancelled", "cancel_requested");
+      const result = this.snapshot(input.process_id, 0, 0, 131_072);
+      this.options.operations.setState(input.idempotency_key, terminalState === "unknown" ? "unknown" : "succeeded", result);
+      return result;
+    }
     const terminalState = await this.terminate(input.process_id, "cancelled", "cancel_requested", input.grace_ms);
     const result = this.snapshot(input.process_id, 0, 0, 131_072);
     this.options.operations.setState(input.idempotency_key, terminalState === "orphaned" ? "unknown" : "succeeded", result);
@@ -355,7 +596,7 @@ export class ProcessSupervisor {
   }
 
   async shutdown(): Promise<void> {
-    const active = this.options.processes.active();
+    const active = this.options.processes.active().filter((record) => record.backend === "native");
     await Promise.all(
       active.map(async (record) => {
         try {

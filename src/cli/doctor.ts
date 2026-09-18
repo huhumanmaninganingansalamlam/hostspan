@@ -118,6 +118,10 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
       details: target.ready ? `provider=${target.provider}; capabilities=${target.capabilities.join(",")}` : "target root is unavailable",
     });
   }
+  if (config.terminal || targets.list().some((target) => target.capabilities.includes("terminal"))) {
+    const tmux = commandCheck("tmux", ["-V"]);
+    checks.push({ ...tmux, name: "tmux" });
+  }
 
   try {
     const db = openDatabase(join(config.server.data_dir, "state.db"));
@@ -143,7 +147,7 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
   checks.push(await processGroupCheck());
   checks.push({
     name: "toolset",
-    status: TOOL_NAMES.length === 10 ? "pass" : "fail",
+    status: TOOL_NAMES.length === 11 ? "pass" : "fail",
     details: `${TOOL_NAMES.length} tools; ${TOOLSET_HASH}`,
   });
   const tunnel = spawnSync("tunnel-client", ["--version"], { encoding: "utf8" });

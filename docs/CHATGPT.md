@@ -110,8 +110,8 @@ MCP `2026-07-28` is stateless at the protocol core, so ordinary reverse proxies 
 
 In ChatGPT Developer Mode, add the MCP endpoint issued by Secure MCP Tunnel or the OAuth-protected HTTPS reverse proxy endpoint you operate. For the latter, choose OAuth. ChatGPT should open the HostSpan authorization page; enter the credential from the local `approval_secret_file` created by `hostspan oauth init`. After authorization/tool scan, invoke `system_status` and verify:
 
-- `toolset_version` is `hostspan-v1`
-- the toolset has exactly 10 tools
+- `toolset_version` is `hostspan-v2`
+- the toolset has exactly 11 tools
 - `toolset_hash` matches `hostspan print-toolset`
 - `policy_epoch` matches the local config
 
@@ -119,9 +119,15 @@ OpenAI Developer Mode reference: <https://developers.openai.com/api/docs/guides/
 
 ## Refresh after metadata changes
 
-ChatGPT may cache tool names/descriptions/schemas. Alpha intentionally keeps the 10 tool names and input schemas fixed. If a HostSpan release changes tool metadata, compare `server_version` and `toolset_hash`, then use the ChatGPT app Refresh action before diagnosing a cached schema as a HostSpan runtime failure.
+ChatGPT may cache tool names/descriptions/schemas. `hostspan-v2` intentionally keeps its 11 tool names and input schemas fixed. If a HostSpan release changes tool metadata, compare `server_version` and `toolset_hash`, then use the ChatGPT app Refresh action before diagnosing a cached schema as a HostSpan runtime failure.
 
-A breaking contract must use a new toolset version rather than silently changing `hostspan-v1`.
+A breaking contract must use a new toolset version rather than silently changing `hostspan-v2`.
+
+## Interactive terminal use
+
+Targets with the explicit `terminal` capability may start `process_start` with `tty=true`. ChatGPT then uses the same durable `process_id` with `process_poll`, `process_write`, and `process_cancel`. `process_write` can send text, control keys such as `C-c`, and resize updates, and every write carries its own UUIDv7 idempotency key. The tmux-backed session survives HostSpan daemon restart; an ambiguous write that crosses a crash boundary is reported as unknown rather than replayed automatically.
+
+This is intentionally separate from ordinary bounded exec policy. A writable interactive PTY can host a shell/REPL/TUI and therefore has native user authority beyond an `allowed_programs` list. Enable `terminal` only on targets where that authority is acceptable.
 
 ## Distinguish client-side blocking from server failures
 

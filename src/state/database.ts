@@ -5,7 +5,7 @@ import Database from "better-sqlite3";
 import type { HostSpanConfig } from "../config/schema.js";
 import type { TargetRegistry } from "../targets/registry.js";
 
-export const DB_SCHEMA_VERSION = 3;
+export const DB_SCHEMA_VERSION = 4;
 
 export type HostSpanDatabase = Database.Database;
 
@@ -35,7 +35,8 @@ export function openDatabase(path: string): HostSpanDatabase {
       );
       CREATE TABLE IF NOT EXISTS processes (
         process_id TEXT PRIMARY KEY, idempotency_key TEXT UNIQUE NOT NULL, target_id TEXT NOT NULL,
-        argv_digest TEXT NOT NULL, cwd_relative TEXT NOT NULL, pid INTEGER, pgid INTEGER,
+        argv_digest TEXT NOT NULL, cwd_relative TEXT NOT NULL, backend TEXT NOT NULL DEFAULT 'native', backend_ref TEXT,
+        pid INTEGER, pgid INTEGER, deadline_at TEXT, max_output_bytes INTEGER,
         state TEXT NOT NULL, exit_code INTEGER, term_signal TEXT, reason TEXT,
         started_at TEXT, ended_at TEXT, stdout_bytes INTEGER NOT NULL DEFAULT 0,
         stderr_bytes INTEGER NOT NULL DEFAULT 0, output_expires_at TEXT
@@ -71,6 +72,14 @@ export function openDatabase(path: string): HostSpanDatabase {
         resource TEXT NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER
       );
     `);
+    if (!current || Number(current.value) < 4) {
+      const columns = db.prepare("PRAGMA table_info(processes)").all() as Array<{ name: string }>;
+      const names = new Set(columns.map((column) => column.name));
+      if (!names.has("backend")) db.exec("ALTER TABLE processes ADD COLUMN backend TEXT NOT NULL DEFAULT 'native'");
+      if (!names.has("backend_ref")) db.exec("ALTER TABLE processes ADD COLUMN backend_ref TEXT");
+      if (!names.has("deadline_at")) db.exec("ALTER TABLE processes ADD COLUMN deadline_at TEXT");
+      if (!names.has("max_output_bytes")) db.exec("ALTER TABLE processes ADD COLUMN max_output_bytes INTEGER");
+    }
     db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)").run(String(DB_SCHEMA_VERSION));
   })();
   return db;

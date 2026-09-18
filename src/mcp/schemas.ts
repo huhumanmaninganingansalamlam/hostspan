@@ -89,6 +89,9 @@ export const ProcessStartInputSchema = z
     wait_ms: z.number().int().min(0).max(1_500).default(1_200),
     deadline_ms: z.number().int().min(1).max(86_400_000).default(30_000),
     max_output_bytes: z.number().int().min(1).max(256 * 1024 * 1024).default(4_194_304),
+    tty: z.boolean().optional(),
+    columns: z.number().int().min(1).max(1_000).optional(),
+    rows: z.number().int().min(1).max(1_000).optional(),
   })
   .strict();
 
@@ -110,6 +113,20 @@ export const ProcessCancelInputSchema = z
   })
   .strict();
 
+export const ProcessWriteInputSchema = z
+  .object({
+    idempotency_key: UuidV7Schema,
+    process_id: z.string().min(1),
+    chars: z.string().max(131_072).default(""),
+    control_keys: z.array(z.enum(["Enter", "Escape", "Tab", "C-c", "C-d", "C-z"])).max(32).default([]),
+    columns: z.number().int().min(1).max(1_000).optional(),
+    rows: z.number().int().min(1).max(1_000).optional(),
+    stdout_cursor: z.number().int().nonnegative().default(0),
+    wait_ms: z.number().int().min(0).max(1_500).default(250),
+    max_bytes: z.number().int().min(1).max(4 * 1024 * 1024).default(131_072),
+  })
+  .strict();
+
 export type SystemStatusInput = z.infer<typeof SystemStatusInputSchema>;
 export type TargetListInput = z.infer<typeof TargetListInputSchema>;
 export type FileListToolInput = z.infer<typeof FileListInputSchema>;
@@ -120,3 +137,4 @@ export type GitChangesToolInput = z.infer<typeof GitChangesInputSchema>;
 export type ProcessStartToolInput = z.infer<typeof ProcessStartInputSchema>;
 export type ProcessPollToolInput = z.infer<typeof ProcessPollInputSchema>;
 export type ProcessCancelToolInput = z.infer<typeof ProcessCancelInputSchema>;
+export type ProcessWriteToolInput = z.infer<typeof ProcessWriteInputSchema>;

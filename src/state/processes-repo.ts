@@ -8,8 +8,12 @@ export interface ProcessRecord {
   target_id: string;
   argv_digest: string;
   cwd_relative: string;
+  backend: "native" | "tmux";
+  backend_ref: string | null;
   pid: number | null;
   pgid: number | null;
+  deadline_at: string | null;
+  max_output_bytes: number | null;
   state: ProcessState;
   exit_code: number | null;
   term_signal: string | null;
@@ -24,13 +28,29 @@ export interface ProcessRecord {
 export class ProcessesRepo {
   constructor(private readonly db: HostSpanDatabase) {}
 
-  create(record: Pick<ProcessRecord, "process_id" | "idempotency_key" | "target_id" | "argv_digest" | "cwd_relative">): void {
+  create(
+    record: Pick<ProcessRecord, "process_id" | "idempotency_key" | "target_id" | "argv_digest" | "cwd_relative"> &
+      Partial<Pick<ProcessRecord, "backend" | "backend_ref" | "deadline_at" | "max_output_bytes">>,
+  ): void {
     this.db
-      .prepare("INSERT INTO processes(process_id,idempotency_key,target_id,argv_digest,cwd_relative,state) VALUES(?,?,?,?,?,?)")
-      .run(record.process_id, record.idempotency_key, record.target_id, record.argv_digest, record.cwd_relative, "launching");
+      .prepare(
+        "INSERT INTO processes(process_id,idempotency_key,target_id,argv_digest,cwd_relative,backend,backend_ref,deadline_at,max_output_bytes,state) VALUES(?,?,?,?,?,?,?,?,?,?)",
+      )
+      .run(
+        record.process_id,
+        record.idempotency_key,
+        record.target_id,
+        record.argv_digest,
+        record.cwd_relative,
+        record.backend ?? "native",
+        record.backend_ref ?? null,
+        record.deadline_at ?? null,
+        record.max_output_bytes ?? null,
+        "launching",
+      );
   }
 
-  markRunning(processId: string, pid: number, pgid: number): void {
+  markRunning(processId: string, pid: number | null, pgid: number | null): void {
     this.db.prepare("UPDATE processes SET state='running', pid=?, pgid=?, started_at=? WHERE process_id=?").run(pid, pgid, new Date().toISOString(), processId);
   }
 
@@ -47,6 +67,11 @@ export class ProcessesRepo {
   addBytes(processId: string, stream: "stdout" | "stderr", bytes: number): void {
     const column = stream === "stdout" ? "stdout_bytes" : "stderr_bytes";
     this.db.prepare(`UPDATE processes SET ${column}=${column}+? WHERE process_id=?`).run(bytes, processId);
+  }
+
+  setBytes(processId: string, stream: "stdout" | "stderr", bytes: number): void {
+    const column = stream === "stdout" ? "stdout_bytes" : "stderr_bytes";
+    this.db.prepare(`UPDATE processes SET ${column}=? WHERE process_id=?`).run(bytes, processId);
   }
 
   get(processId: string): ProcessRecord | undefined {
@@ -70,6 +95,14 @@ export class ProcessesRepo {
       this.db
         .prepare("SELECT count(*) AS count FROM processes WHERE target_id=? AND state IN ('accepted','launching','running')")
         .get(targetId) as { count: number }
+    ).count;
+  }
+
+  activeCountForTargetBackend(targetId: string, backend: ProcessRecord["backend"]): number {
+    return (
+      this.db
+        .prepare("SELECT count(*) AS count FROM processes WHERE target_id=? AND backend=? AND state IN ('accepted','launching','running')")
+        .get(targetId, backend) as { count: number }
     ).count;
   }
 

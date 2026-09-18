@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createOAuthSetup, OAuthService, rotateOAuthApprovalSecret } from "../auth/oauth-service.js";
+import { buildAdminSnapshot, resolveTerminalSession } from "../admin/snapshot.js";
 import type { HostSpanConfig } from "../config/schema.js";
 import { loadConfig } from "../config/loader.js";
 import { writeConfigAtomic } from "../config/writer.js";
@@ -26,6 +27,7 @@ import type {
   ProcessCancelToolInput,
   ProcessPollToolInput,
   ProcessStartToolInput,
+  ProcessWriteToolInput,
   SystemStatusInput,
   TargetListInput,
 } from "../mcp/schemas.js";
@@ -35,6 +37,7 @@ import { PolicyEvaluator } from "../policy/evaluator.js";
 import { cleanupExpiredProcessSpools } from "../processes/output-spool.js";
 import { recoverProcesses } from "../processes/recovery.js";
 import { ProcessSupervisor } from "../processes/supervisor.js";
+import { TmuxTerminalManager } from "../processes/tmux-terminal.js";
 import { AuditRepo } from "../state/audit-repo.js";
 import { databaseResponsive, openDatabase, syncTargetSnapshots, type HostSpanDatabase } from "../state/database.js";
 import { argumentHash, OperationsRepo } from "../state/operations-repo.js";
@@ -44,6 +47,7 @@ import { TransactionsRepo } from "../state/transactions-repo.js";
 import { TargetRegistry } from "../targets/registry.js";
 import { PROTOCOL_VERSION, SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
 import { runDoctor } from "./doctor.js";
+import { daemonStatus, removeDaemonPid, startDaemon, stopDaemon, writeDaemonPid } from "./daemon.js";
 import { installSystemdService, runServiceCommand } from "./service.js";
 import { runSmoke } from "./smoke.js";
 
@@ -59,8 +63,10 @@ export interface HostSpanRuntime {
   audit: AuditRepo;
   logger: HostSpanLogger;
   supervisor: ProcessSupervisor;
+  terminal?: TmuxTerminalManager;
   searchLimiter: SearchConcurrencyLimiter;
   searchBackendReady(): boolean;
+  terminalBackendReady(): boolean;
   oauthRepo: OAuthRepo;
   oauth?: OAuthService;
   handlers: HostSpanToolHandlers;
@@ -76,15 +82,17 @@ export function runtimeReadiness(runtime: HostSpanRuntime) {
   }
   const processReady = process.platform === "linux";
   const searchReady = runtime.searchBackendReady();
+  const terminalReady = runtime.config.terminal ? runtime.terminalBackendReady() : true;
   return {
     ready: databaseReady && processReady,
-    degraded: !searchReady,
+    degraded: !searchReady || !terminalReady,
     toolset_hash: TOOLSET_HASH,
     policy_epoch: runtime.config.policy_epoch,
     backends: {
       database: databaseReady,
       process: processReady,
       search: searchReady,
+      terminal: terminalReady,
     },
   };
 }
@@ -106,17 +114,13 @@ function print(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
-function executableReady(command: string): boolean {
-  return spawnSync(command, ["--version"], { stdio: "ignore" }).status === 0;
-}
-
-function cachedExecutableProbe(command: string, ttlMs = 5_000): () => boolean {
+function cachedExecutableProbe(command: string, args: string[] = ["--version"], ttlMs = 5_000): () => boolean {
   let checkedAt = 0;
   let ready = false;
   return () => {
     const now = Date.now();
     if (checkedAt === 0 || now - checkedAt >= ttlMs) {
-      ready = executableReady(command);
+      ready = spawnSync(command, args, { stdio: "ignore" }).status === 0;
       checkedAt = now;
     }
     return ready;
@@ -168,7 +172,8 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
   ]);
   syncTargetSnapshots(db, config, targets);
   recoverPatchTransactions(targets, operations, transactions);
-  const recoveredProcesses = recoverProcesses(processes, operations);
+  const terminal = config.terminal ? new TmuxTerminalManager(config.server.data_dir, config.terminal) : undefined;
+  const recoveredProcesses = recoverProcesses(processes, operations, terminal);
   for (const recovered of recoveredProcesses) logger.info("process.recovered", recovered);
   const cleanup = cleanupExpiredProcessSpools(
     config.server.data_dir,
@@ -178,13 +183,14 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
   if (cleanup.over_quota) logger.info("spool.quota_exceeded", cleanup);
 
   const patchService = new FilePatchService({ data_dir: config.server.data_dir, operations, transactions, policy });
-  const supervisor = new ProcessSupervisor({ config, targets, policy, operations, processes, logger });
+  const supervisor = new ProcessSupervisor({ config, targets, policy, operations, processes, ...(terminal ? { terminal } : {}), logger });
   const searchLimiter = new SearchConcurrencyLimiter(
     config.server.max_concurrent_searches ?? 8,
     config.server.max_queued_searches ?? 16,
     config.server.search_queue_timeout_ms ?? 1_000,
   );
   const searchBackendReady = cachedExecutableProbe("rg");
+  const terminalBackendReady = cachedExecutableProbe("tmux", ["-V"]);
   const oauth = config.oauth ? new OAuthService(config.oauth, oauthRepo) : undefined;
 
   const traced = async <T extends Record<string, unknown>>(
@@ -231,6 +237,7 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
     system_status: (_input: SystemStatusInput, requestId: string) =>
       traced("system_status", {}, requestId, () => {
         const searchReady = searchBackendReady();
+        const terminalReady = config.terminal ? terminalBackendReady() : true;
         return {
           server_version: SERVER_VERSION,
           protocol_version: PROTOCOL_VERSION,
@@ -240,10 +247,11 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
             search: { name: "ripgrep", ready: searchReady },
             database: { name: "sqlite", ready: databaseResponsive(db) },
             process: { name: "linux_process_group", ready: process.platform === "linux" },
+            terminal: { name: "tmux", ready: terminalReady, configured: Boolean(config.terminal) },
             search_concurrency: searchLimiter.snapshot(),
           },
           active_process_count: processes.activeCount(),
-          degraded: !searchReady,
+          degraded: !searchReady || !terminalReady,
           oauth: oauth
             ? { enabled: true, issuer: oauth.issuer, resource: oauth.publicMcpUrl }
             : { enabled: false },
@@ -301,6 +309,8 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
       traced("process_start", input, requestId, () => supervisor.start(input, requestId)),
     process_poll: (input: ProcessPollToolInput, requestId: string) =>
       traced("process_poll", input, requestId, () => supervisor.poll(input)),
+    process_write: (input: ProcessWriteToolInput, requestId: string) =>
+      traced("process_write", input, requestId, () => supervisor.write(input)),
     process_cancel: (input: ProcessCancelToolInput, requestId: string) =>
       traced("process_cancel", input, requestId, () => supervisor.cancel(input)),
   };
@@ -317,8 +327,10 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
     audit,
     logger,
     supervisor,
+    ...(terminal ? { terminal } : {}),
     searchLimiter,
     searchBackendReady,
+    terminalBackendReady,
     oauthRepo,
     ...(oauth ? { oauth } : {}),
     handlers,
@@ -347,6 +359,12 @@ function initialConfig(): HostSpanConfig {
       max_audit_events: 500_000,
       max_total_spool_bytes: 1_073_741_824,
     },
+    terminal: {
+      backend: "tmux",
+      max_concurrent_sessions: 4,
+      history_limit_lines: 50_000,
+      max_output_bytes: 16_777_216,
+    },
     targets: {},
     exec_profiles: {
       "native-dev": {
@@ -364,7 +382,7 @@ function initialConfig(): HostSpanConfig {
 }
 
 function usage(): string {
-  return `HostSpan ${SERVER_VERSION}\n\nCommands:\n  init [--config PATH]\n  serve [--config PATH]\n  doctor [--config PATH]\n  smoke --target TARGET [--config PATH]\n  status [--verbose] [--config PATH]\n  targets list|add|remove ... [--config PATH]\n  oauth init --public-url https://host/mcp [--config PATH]\n  oauth status [--config PATH]\n  oauth rotate-secret [--config PATH]\n  policy validate [--config PATH]\n  print-toolset\n  logs [--follow] [--config PATH]\n  support-export [PATH] [--config PATH]\n  service install|start|stop|restart|status [--config PATH]\n  --version\n`;
+  return `HostSpan ${SERVER_VERSION}\n\nCommands:\n  init [--config PATH]\n  serve [--config PATH]\n  daemon start|stop|status [--config PATH]\n  doctor [--config PATH]\n  smoke --target TARGET [--config PATH]\n  status [--verbose] [--config PATH]\n  admin snapshot [--recent N] [--config PATH]\n  terminal list|attach --process PROCESS_ID [--read-only] [--config PATH]\n  targets list|add|remove ... [--config PATH]\n  oauth init --public-url https://host/mcp [--config PATH]\n  oauth status [--config PATH]\n  oauth rotate-secret [--config PATH]\n  policy validate [--config PATH]\n  print-toolset\n  logs [--follow] [--config PATH]\n  support-export [PATH] [--config PATH]\n  service install|start|stop|restart|status [--config PATH]\n  --version\n`;
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
@@ -383,6 +401,22 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   }
 
   const configPath = resolve(flag(argv, "--config") ?? defaultConfigPath());
+  if (command === "daemon") {
+    const action = argv[1];
+    if (action === "start") {
+      print(await startDaemon(configPath));
+      return 0;
+    }
+    if (action === "stop") {
+      print(await stopDaemon(configPath));
+      return 0;
+    }
+    if (action === "status") {
+      print(daemonStatus(configPath));
+      return 0;
+    }
+    throw new Error("daemon requires start, stop, or status");
+  }
   if (command === "init") {
     if (existsSync(configPath)) throw new Error(`config already exists: ${configPath}`);
     writeConfigAtomic(configPath, initialConfig());
@@ -458,6 +492,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     throw new Error("oauth requires init, status, or rotate-secret");
   }
   if (command === "serve") {
+    const existingDaemon = daemonStatus(configPath);
+    if (existingDaemon.running && existingDaemon.pid !== process.pid) {
+      throw new Error(`HostSpan is already running with pid ${existingDaemon.pid}.`);
+    }
     const runtime = createRuntime(configPath);
     if (!isLoopbackHost(runtime.config.server.listen_host) && !runtime.oauth) {
       runtime.close();
@@ -478,6 +516,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       trace: (event, metadata) => runtime.logger.info(event, metadata),
     });
     const address = await listenHostSpan(app, runtime.config.server.listen_host, runtime.config.server.listen_port);
+    writeDaemonPid(configPath);
     print({
       ok: true,
       address,
@@ -491,9 +530,13 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       sandboxed: false,
     });
     const shutdown = async () => {
-      await runtime.supervisor.shutdown();
-      await app.close();
-      runtime.close();
+      try {
+        await runtime.supervisor.shutdown();
+        await app.close();
+        runtime.close();
+      } finally {
+        removeDaemonPid(configPath);
+      }
     };
     await new Promise<void>((resolveShutdown) => {
       const onSignal = () => {
@@ -505,33 +548,54 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return 0;
   }
   if (command === "status") {
-    const runtime = createRuntime(configPath);
-    try {
-      print({
-        server_version: SERVER_VERSION,
-        protocol_version: PROTOCOL_VERSION,
-        toolset_hash: TOOLSET_HASH,
-        policy_epoch: runtime.config.policy_epoch,
-        listen_host: runtime.config.server.listen_host,
-        allowed_hosts: runtime.config.server.allowed_hosts ?? [],
-        oauth: runtime.oauth
-          ? { enabled: true, public_mcp_url: runtime.oauth.publicMcpUrl, issuer: runtime.oauth.issuer }
-          : { enabled: false },
-        native_execution: true,
-        sandboxed: false,
-        targets: runtime.targets.list().map((target) => ({
-          target_id: target.target_id,
-          label: target.label,
-          ready: target.ready,
-          capabilities: target.capabilities,
-          ...(has(argv, "--verbose") ? { root: target.root_real } : {}),
-        })),
-        active_process_count: runtime.processes.activeCount(),
-      });
-    } finally {
-      runtime.close();
-    }
+    const snapshot = buildAdminSnapshot(configPath, { recent: 20 });
+    print({
+      server_version: snapshot.server_version,
+      protocol_version: PROTOCOL_VERSION,
+      toolset_hash: TOOLSET_HASH,
+      toolset_version: snapshot.toolset_version,
+      policy_epoch: snapshot.policy_epoch,
+      daemon: snapshot.daemon,
+      listen_host: snapshot.listen.host,
+      listen_port: snapshot.listen.port,
+      native_execution: true,
+      sandboxed: false,
+      targets: snapshot.targets.map((target) => ({
+        target_id: target.target_id,
+        label: target.label,
+        ready: target.ready,
+        capabilities: target.capabilities,
+        ...(has(argv, "--verbose") ? { root: target.root } : {}),
+      })),
+      active_process_count: snapshot.active_process_count,
+      terminal_sessions: snapshot.terminal.sessions,
+    });
     return 0;
+  }
+  if (command === "admin" && argv[1] === "snapshot") {
+    const recent = Number(flag(argv, "--recent") ?? "30");
+    print(buildAdminSnapshot(configPath, { recent: Number.isFinite(recent) ? recent : 30 }));
+    return 0;
+  }
+  if (command === "terminal") {
+    const action = argv[1];
+    if (action === "list") {
+      print({ sessions: buildAdminSnapshot(configPath, { recent: 200 }).terminal.sessions });
+      return 0;
+    }
+    if (action === "attach") {
+      const processId = flag(argv, "--process") ?? argv[2];
+      if (!processId) throw new Error("terminal attach requires --process PROCESS_ID");
+      if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("terminal attach requires an interactive local terminal.");
+      const config = loadConfig(configPath);
+      if (!config.terminal) throw new Error("terminal support is not configured.");
+      const session = resolveTerminalSession(configPath, processId);
+      if (!session) throw new Error(`interactive process not found: ${processId}`);
+      const manager = new TmuxTerminalManager(config.server.data_dir, config.terminal);
+      const attached = spawnSync("tmux", manager.attachArgs(session.session, has(argv, "--read-only")), { stdio: "inherit" });
+      return attached.status ?? 1;
+    }
+    throw new Error("terminal requires list or attach");
   }
   if (command === "smoke") {
     const targetId = flag(argv, "--target");
@@ -558,7 +622,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       const root = flag(argv, "--root");
       if (!targetId || !root) throw new Error("targets add requires --id and --root");
       if (config.targets[targetId]) throw new Error(`target already exists: ${targetId}`);
-      const capabilities = (flag(argv, "--capabilities") ?? "read,write,exec,git").split(",").filter(Boolean) as Array<"read" | "write" | "exec" | "git">;
+      const capabilities = (flag(argv, "--capabilities") ?? "read,write,exec,git").split(",").filter(Boolean) as Array<"read" | "write" | "exec" | "git" | "terminal">;
       const execProfile = flag(argv, "--exec-profile") ?? (capabilities.includes("exec") ? "native-dev" : undefined);
       if (execProfile && !config.exec_profiles[execProfile]) throw new Error(`unknown exec profile: ${execProfile}`);
       config.targets[targetId] = {
