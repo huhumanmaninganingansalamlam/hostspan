@@ -5,7 +5,7 @@ import Database from "better-sqlite3";
 import type { HostSpanConfig } from "../config/schema.js";
 import type { TargetRegistry } from "../targets/registry.js";
 
-export const DB_SCHEMA_VERSION = 2;
+export const DB_SCHEMA_VERSION = 3;
 
 export type HostSpanDatabase = Database.Database;
 
@@ -48,6 +48,7 @@ export function openDatabase(path: string): HostSpanDatabase {
         event_id TEXT PRIMARY KEY, request_id TEXT NOT NULL, idempotency_key TEXT, process_id TEXT,
         event_type TEXT NOT NULL, metadata_json TEXT NOT NULL, timestamp TEXT NOT NULL
       );
+      CREATE INDEX IF NOT EXISTS audit_events_timestamp_idx ON audit_events(timestamp, event_id);
       CREATE TABLE IF NOT EXISTS oauth_clients (
         client_id TEXT PRIMARY KEY, metadata_json TEXT NOT NULL, created_at INTEGER NOT NULL
       );
@@ -78,6 +79,11 @@ export function openDatabase(path: string): HostSpanDatabase {
 export function databaseHealthy(db: HostSpanDatabase): boolean {
   const row = db.pragma("integrity_check", { simple: true });
   return row === "ok";
+}
+
+export function databaseResponsive(db: HostSpanDatabase): boolean {
+  const row = db.prepare("SELECT 1 AS ok").get() as { ok: number } | undefined;
+  return row?.ok === 1;
 }
 
 export function syncTargetSnapshots(db: HostSpanDatabase, config: HostSpanConfig, targets: TargetRegistry): void {

@@ -1,8 +1,21 @@
 import { v7 as uuidv7 } from "uuid";
 import type { HostSpanDatabase } from "./database.js";
 
+export interface AuditRepoOptions {
+  maxAgeDays: number;
+  maxEvents: number;
+}
+
 export class AuditRepo {
-  constructor(private readonly db: HostSpanDatabase) {}
+  private appendsSinceMaintenance = 0;
+  private nextMaintenanceAt = 0;
+
+  constructor(
+    private readonly db: HostSpanDatabase,
+    private readonly options?: AuditRepoOptions,
+  ) {
+    if (options) this.maintain();
+  }
 
   append(event: {
     request_id: string;
@@ -22,6 +35,45 @@ export class AuditRepo {
         JSON.stringify(event.metadata ?? {}),
         new Date().toISOString(),
       );
+    this.appendsSinceMaintenance += 1;
+    if (this.options && (this.appendsSinceMaintenance >= 10_000 || Date.now() >= this.nextMaintenanceAt)) {
+      this.maintain();
+    }
+  }
+
+  maintain(nowMs = Date.now()): { deleted_by_age: number; deleted_by_cap: number; retained: number } {
+    if (!this.options) {
+      const retained = (this.db.prepare("SELECT count(*) AS count FROM audit_events").get() as { count: number }).count;
+      return { deleted_by_age: 0, deleted_by_cap: 0, retained };
+    }
+    const options = this.options;
+    const cutoff = new Date(nowMs - options.maxAgeDays * 86_400_000).toISOString();
+    const result = this.db.transaction(() => {
+      const deletedByAge = this.db.prepare("DELETE FROM audit_events WHERE timestamp < ?").run(cutoff).changes;
+      const count = (this.db.prepare("SELECT count(*) AS count FROM audit_events").get() as { count: number }).count;
+      const overflow = Math.max(0, count - options.maxEvents);
+      let deletedByCap = 0;
+      if (overflow > 0) {
+        deletedByCap = this.db
+          .prepare(
+            `DELETE FROM audit_events
+             WHERE rowid IN (
+               SELECT rowid FROM audit_events
+               ORDER BY timestamp ASC, event_id ASC
+               LIMIT ?
+             )`,
+          )
+          .run(overflow).changes;
+      }
+      return {
+        deleted_by_age: deletedByAge,
+        deleted_by_cap: deletedByCap,
+        retained: count - deletedByCap,
+      };
+    })();
+    this.appendsSinceMaintenance = 0;
+    this.nextMaintenanceAt = nowMs + 60_000;
+    return result;
   }
 
   recent(limit = 500): Array<Record<string, unknown>> {

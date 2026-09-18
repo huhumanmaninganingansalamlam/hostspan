@@ -46,6 +46,8 @@ Default target deny patterns cover `.env*`, private key extensions, and Git obje
 
 Audit records contain structured identifiers, digests, phases, and result metadata, not raw process stdout/stderr. Structured logs and support exports redact common token/password/private-key patterns and home-directory prefixes. Completed process output is retained for 60 minutes by default and is stored under the local HostSpan state directory, not in the support bundle.
 
+SQLite audit history is bounded by both age and count: `audit_days` defaults to 30 and `max_audit_events` defaults to 500,000. Maintenance runs incrementally during normal request handling so sustained traffic reuses bounded SQLite pages instead of growing the durable audit table without limit.
+
 Use restrictive OS permissions on the config/state directories and avoid expanding retention unless needed.
 
 ## Network exposure
@@ -64,8 +66,8 @@ The recommended remote path remains outbound-only OpenAI Secure MCP Tunnel. If y
 - access tokens are short-lived (15 minutes by default);
 - refresh tokens rotate on every successful refresh and replay of an old refresh token fails;
 - OAuth tokens are bound to the configured MCP `resource` URL;
-- authorization responses include `iss` for authorization-server mix-up protection;
-- `offline_access` is advertised and refresh tokens are issued for reconnects;
+- HostSpan exposes the MCP-SDK-compatible root `/authorize`, `/token`, `/register`, and `/revoke` OAuth surface and advertises the `hostspan` scope;
+- refresh tokens are issued and rotated for reconnects without requiring a separate `offline_access` scope;
 - rotating the approval secret revokes all outstanding access/refresh tokens;
 - OAuth authorization query parameters and secrets are not emitted in HostSpan transport traces/support bundles.
 
@@ -83,6 +85,16 @@ Security requirements for a user-managed proxy:
 - treat forwarded MCP calls as untrusted even after proxy authentication: HostSpan target/file/exec policy is still the final local capability boundary.
 
 Reverse proxy transport does not make native execution safer. Any authenticated caller that reaches HostSpan can invoke the read/write/exec capabilities permitted by the configured target policy.
+
+## Overload boundary
+
+HostSpan fails bounded rather than spawning unbounded work under request bursts:
+
+- `/mcp` admits at most `server.max_inflight_mcp_requests` requests at once (128 by default); excess HTTP requests receive `503` plus `Retry-After: 1`.
+- `file_search` admits at most `server.max_concurrent_searches` ripgrep children (8 by default), queues at most `server.max_queued_searches` (16), and returns retryable `SERVER_BUSY` when the queue is full or waits longer than `server.search_queue_timeout_ms` (1 second).
+- `process_start` remains separately bounded per target by the selected exec profile's `max_concurrent_processes`.
+- `system_status` and readiness use lightweight SQLite responsiveness checks; full `PRAGMA integrity_check` remains in `hostspan doctor` rather than running on every status request.
+- backend availability probes are cached briefly so status floods do not repeatedly spawn diagnostic child processes.
 
 ## Reporting
 

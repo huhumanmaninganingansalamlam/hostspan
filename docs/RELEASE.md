@@ -2,7 +2,7 @@
 
 ## Release contract
 
-- Version: `0.2.0-alpha.5`
+- Version: `0.2.0-alpha.10`
 - Toolset: `hostspan-v1`
 - MCP protocol target: `2026-07-28`
 - Platform: Linux x64 (Ubuntu 24.04 LTS / WSL2)
@@ -28,6 +28,10 @@
 - built-in OAuth authorization-code + PKCE S256 for all non-loopback serving
 - RFC 9728 protected-resource metadata, authorization-server discovery, and public-client registration compatibility
 - hashed durable OAuth codes/tokens, short access-token TTL, rotating refresh tokens, approval-secret rotation/revocation
+- MCP-SDK-compatible OAuth issuer/endpoint/scope surface proven against ChatGPT Developer Mode
+- bounded overload admission: 128 in-flight MCP requests by default, bounded ripgrep concurrency/queue, retryable `SERVER_BUSY`
+- lightweight cached runtime backend probes; full SQLite integrity checks remain in `doctor`
+- audit history bounded by age and `max_audit_events` (500,000 by default)
 
 ## Explicitly excluded
 
@@ -37,9 +41,9 @@ PTY/stdin, SSH/multi-host execution, native Windows/macOS adapters, GUI/browser 
 
 `hostspan-v1` tool names and input schemas are fixed for Alpha. A breaking tool-contract change requires a new toolset version and migration notes. Description/schema metadata changes alter `toolset_hash`; refresh the ChatGPT app after upgrading.
 
-`0.2.0-alpha.5` does not change the `hostspan-v1` tool contract. It closes unauthenticated remote MCP exposure: any non-loopback HostSpan server now fails closed until `hostspan oauth init --public-url https://.../mcp` configures OAuth. Existing loopback-only local workflows remain usable without OAuth.
+`0.2.0-alpha.10` does not change the `hostspan-v1` tool contract. Remote non-loopback serving still fails closed without OAuth. The OAuth HTTP surface is aligned with the MCP SDK shape (`/authorize`, `/token`, `/register`, `/revoke`) used by working ChatGPT integrations. Overload controls and audit caps are additive operational safeguards; existing configs remain valid because the new server/retention fields have runtime defaults.
 
-Config schema remains version 1. The durable database schema is version 2 and adds hashed OAuth client/code/token state. HostSpan fails closed if it encounters a newer database schema than the binary supports. Database initialization uses WAL and backs up an existing database before migration.
+Config schema remains version 1. The durable database schema is version 3; it retains hashed OAuth client/code/token state and adds an indexed audit-retention path. HostSpan fails closed if it encounters a newer database schema than the binary supports. Database initialization uses WAL and backs up an existing database before migration.
 
 ## Release gates
 

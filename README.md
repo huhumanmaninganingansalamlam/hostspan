@@ -71,6 +71,19 @@ Readiness http://127.0.0.1:39393/readyz
 
 The default bind is loopback-only, but `server.listen_host` is configurable for LAN/container/reverse-proxy deployments. Host header validation remains enabled for every bind. **Any non-loopback HostSpan server additionally requires built-in OAuth and fails closed when OAuth is missing.** `readyz` represents server/database readiness; missing ripgrep is reported as degraded so non-search tools stay usable, while `file_search` returns `SEARCH_BACKEND_UNAVAILABLE`.
 
+HostSpan also applies local overload boundaries so several agents cannot amplify one burst into unbounded host work. Defaults are 128 in-flight MCP requests, 8 concurrent ripgrep searches, 16 queued searches, and a 1-second search queue timeout. Search overflow returns retryable `SERVER_BUSY`; process execution is independently bounded by each exec profile's `max_concurrent_processes`. Durable audit history is bounded by both `audit_days` and `max_audit_events` (500,000 by default).
+
+```yaml
+server:
+  max_inflight_mcp_requests: 128
+  max_concurrent_searches: 8
+  max_queued_searches: 16
+  search_queue_timeout_ms: 1000
+
+retention:
+  max_audit_events: 500000
+```
+
 To listen on a specific interface:
 
 ```yaml

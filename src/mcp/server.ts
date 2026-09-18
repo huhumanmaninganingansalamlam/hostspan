@@ -25,6 +25,7 @@ export interface HostSpanHttpServerOptions {
   listen_host: string;
   listen_port: number;
   allowed_hosts?: string[];
+  max_inflight_mcp_requests?: number;
   oauth?: OAuthService;
   handlers: HostSpanToolHandlers;
   responseContext: ResponseContextProvider;
@@ -83,6 +84,31 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
     },
   );
   const nodeHandler = toNodeHandler(mcpHandler, { onerror: reportTransportError });
+  const maxInflightMcpRequests = options.max_inflight_mcp_requests ?? 128;
+  let inflightMcpRequests = 0;
+  app.addHook("onRequest", async (request, reply) => {
+    const path = request.url.split("?", 1)[0];
+    if (path !== "/mcp") return;
+    if (inflightMcpRequests >= maxInflightMcpRequests) {
+      return reply
+        .code(503)
+        .header("retry-after", "1")
+        .send({
+          jsonrpc: "2.0",
+          error: { code: -32000, message: "HostSpan is busy; retry shortly." },
+          id: null,
+        });
+    }
+    inflightMcpRequests += 1;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      inflightMcpRequests = Math.max(0, inflightMcpRequests - 1);
+    };
+    reply.raw.once("finish", release);
+    reply.raw.once("close", release);
+  });
   app.addHook("onRequest", async (request) => {
     const oauthPath = ["/authorize", "/token", "/register", "/revoke"].some((path) => request.url.startsWith(path));
     const traceUrl = oauthPath || request.url.startsWith("/.well-known/") ? request.url.split("?", 1)[0] : request.url;

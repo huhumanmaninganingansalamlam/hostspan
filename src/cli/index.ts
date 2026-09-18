@@ -13,7 +13,7 @@ import { fileList } from "../files/list.js";
 import { FilePatchService, recoverPatchTransactions } from "../files/patch.js";
 import { resolveTargetPath } from "../files/path-guard.js";
 import { fileRead } from "../files/read.js";
-import { fileSearch } from "../files/search.js";
+import { fileSearch, SearchConcurrencyLimiter } from "../files/search.js";
 import { asHostSpanError } from "../mcp/errors.js";
 import { TOOL_NAMES, TOOLSET_HASH, toolsetDocument, type HostSpanToolHandlers } from "../mcp/registry.js";
 import { createHostSpanHttpServer, listenHostSpan } from "../mcp/server.js";
@@ -36,7 +36,7 @@ import { cleanupExpiredProcessSpools } from "../processes/output-spool.js";
 import { recoverProcesses } from "../processes/recovery.js";
 import { ProcessSupervisor } from "../processes/supervisor.js";
 import { AuditRepo } from "../state/audit-repo.js";
-import { databaseHealthy, openDatabase, syncTargetSnapshots, type HostSpanDatabase } from "../state/database.js";
+import { databaseResponsive, openDatabase, syncTargetSnapshots, type HostSpanDatabase } from "../state/database.js";
 import { argumentHash, OperationsRepo } from "../state/operations-repo.js";
 import { OAuthRepo } from "../state/oauth-repo.js";
 import { ProcessesRepo } from "../state/processes-repo.js";
@@ -59,6 +59,8 @@ export interface HostSpanRuntime {
   audit: AuditRepo;
   logger: HostSpanLogger;
   supervisor: ProcessSupervisor;
+  searchLimiter: SearchConcurrencyLimiter;
+  searchBackendReady(): boolean;
   oauthRepo: OAuthRepo;
   oauth?: OAuthService;
   handlers: HostSpanToolHandlers;
@@ -68,12 +70,12 @@ export interface HostSpanRuntime {
 export function runtimeReadiness(runtime: HostSpanRuntime) {
   let databaseReady = false;
   try {
-    databaseReady = databaseHealthy(runtime.db);
+    databaseReady = databaseResponsive(runtime.db);
   } catch {
     databaseReady = false;
   }
   const processReady = process.platform === "linux";
-  const searchReady = executableReady("rg");
+  const searchReady = runtime.searchBackendReady();
   return {
     ready: databaseReady && processReady,
     degraded: !searchReady,
@@ -108,6 +110,19 @@ function executableReady(command: string): boolean {
   return spawnSync(command, ["--version"], { stdio: "ignore" }).status === 0;
 }
 
+function cachedExecutableProbe(command: string, ttlMs = 5_000): () => boolean {
+  let checkedAt = 0;
+  let ready = false;
+  return () => {
+    const now = Date.now();
+    if (checkedAt === 0 || now - checkedAt >= ttlMs) {
+      ready = executableReady(command);
+      checkedAt = now;
+    }
+    return ready;
+  };
+}
+
 function oauthApprovalSecretPath(configPath: string): string {
   return join(dirname(configPath), "oauth-approval-secret");
 }
@@ -140,7 +155,10 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
   const operations = new OperationsRepo(db);
   const processes = new ProcessesRepo(db);
   const transactions = new TransactionsRepo(db);
-  const audit = new AuditRepo(db);
+  const audit = new AuditRepo(db, {
+    maxAgeDays: config.retention.audit_days,
+    maxEvents: config.retention.max_audit_events ?? 500_000,
+  });
   const oauthRepo = new OAuthRepo(db);
   const logger = new HostSpanLogger(config.server.data_dir);
   const policy = new PolicyEvaluator(config, [
@@ -161,6 +179,12 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
 
   const patchService = new FilePatchService({ data_dir: config.server.data_dir, operations, transactions, policy });
   const supervisor = new ProcessSupervisor({ config, targets, policy, operations, processes, logger });
+  const searchLimiter = new SearchConcurrencyLimiter(
+    config.server.max_concurrent_searches ?? 8,
+    config.server.max_queued_searches ?? 16,
+    config.server.search_queue_timeout_ms ?? 1_000,
+  );
+  const searchBackendReady = cachedExecutableProbe("rg");
   const oauth = config.oauth ? new OAuthService(config.oauth, oauthRepo) : undefined;
 
   const traced = async <T extends Record<string, unknown>>(
@@ -206,7 +230,7 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
   const handlers: HostSpanToolHandlers = {
     system_status: (_input: SystemStatusInput, requestId: string) =>
       traced("system_status", {}, requestId, () => {
-        const searchReady = executableReady("rg");
+        const searchReady = searchBackendReady();
         return {
           server_version: SERVER_VERSION,
           protocol_version: PROTOCOL_VERSION,
@@ -214,8 +238,9 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
           advertised_tools: [...TOOL_NAMES],
           backends: {
             search: { name: "ripgrep", ready: searchReady },
-            database: { name: "sqlite", ready: databaseHealthy(db) },
+            database: { name: "sqlite", ready: databaseResponsive(db) },
             process: { name: "linux_process_group", ready: process.platform === "linux" },
+            search_concurrency: searchLimiter.snapshot(),
           },
           active_process_count: processes.activeCount(),
           degraded: !searchReady,
@@ -251,14 +276,16 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
         return fileRead(target, input);
       }),
     file_search: (input: FileSearchToolInput, requestId: string) =>
-      traced("file_search", input, requestId, async () => {
-        const target = targets.get(input.target_id, "read");
-        for (const path of input.paths.length ? input.paths : ["."]) {
-          const guarded = resolveTargetPath(target, path, "search");
-          policy.assertFileAllowed(target, guarded.relative, guarded.absolute, false);
-        }
-        return fileSearch(target, input);
-      }),
+      traced("file_search", input, requestId, () =>
+        searchLimiter.run(async () => {
+          const target = targets.get(input.target_id, "read");
+          for (const path of input.paths.length ? input.paths : ["."]) {
+            const guarded = resolveTargetPath(target, path, "search");
+            policy.assertFileAllowed(target, guarded.relative, guarded.absolute, false);
+          }
+          return fileSearch(target, input);
+        }),
+      ),
     file_patch: (input: FilePatchToolInput, requestId: string) =>
       traced("file_patch", input, requestId, () => patchService.apply(targets.get(input.target_id, "write"), input)),
     git_changes: (input: GitChangesToolInput, requestId: string) =>
@@ -290,6 +317,8 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
     audit,
     logger,
     supervisor,
+    searchLimiter,
+    searchBackendReady,
     oauthRepo,
     ...(oauth ? { oauth } : {}),
     handlers,
@@ -306,11 +335,16 @@ function initialConfig(): HostSpanConfig {
       listen_port: 39393,
       allowed_hosts: [],
       data_dir: join(homedir(), ".local", "state", "hostspan"),
+      max_inflight_mcp_requests: 128,
+      max_concurrent_searches: 8,
+      max_queued_searches: 16,
+      search_queue_timeout_ms: 1_000,
     },
     retention: {
       completed_process_output_ttl_minutes: 60,
       operation_result_days: 14,
       audit_days: 30,
+      max_audit_events: 500_000,
       max_total_spool_bytes: 1_073_741_824,
     },
     targets: {},
@@ -433,6 +467,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       listen_host: runtime.config.server.listen_host,
       listen_port: runtime.config.server.listen_port,
       ...(runtime.config.server.allowed_hosts ? { allowed_hosts: runtime.config.server.allowed_hosts } : {}),
+      max_inflight_mcp_requests: runtime.config.server.max_inflight_mcp_requests ?? 128,
       ...(runtime.oauth ? { oauth: runtime.oauth } : {}),
       handlers: runtime.handlers,
       responseContext: () => ({ toolset_hash: TOOLSET_HASH, policy_epoch: runtime.config.policy_epoch }),

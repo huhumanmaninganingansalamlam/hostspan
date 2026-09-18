@@ -93,6 +93,10 @@ export const HostSpanConfigSchema = z
         listen_port: z.number().int().min(1).max(65535).default(39393),
         allowed_hosts: z.array(AllowedHostSchema).max(64).optional(),
         data_dir: z.string().min(1),
+        max_inflight_mcp_requests: z.number().int().min(1).max(4096).optional(),
+        max_concurrent_searches: z.number().int().min(1).max(64).optional(),
+        max_queued_searches: z.number().int().min(0).max(1024).optional(),
+        search_queue_timeout_ms: z.number().int().min(1).max(30_000).optional(),
       })
       .strict()
       .superRefine((server, context) => {
@@ -109,6 +113,7 @@ export const HostSpanConfigSchema = z
         completed_process_output_ttl_minutes: z.number().int().positive().default(60),
         operation_result_days: z.number().int().positive().default(14),
         audit_days: z.number().int().positive().default(30),
+        max_audit_events: z.number().int().min(10_000).max(10_000_000).optional(),
         max_total_spool_bytes: z.number().int().positive().default(1_073_741_824),
       })
       .strict(),
