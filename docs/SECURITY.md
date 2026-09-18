@@ -73,7 +73,7 @@ MCP 2026-07-28 hardened authorization around issuer validation and is moving fro
 
 Security requirements for a user-managed proxy:
 
-- forward `/mcp`, HostSpan OAuth discovery routes, and `/oauth/*`;
+- forward `/mcp`, HostSpan OAuth discovery routes, and the root OAuth endpoints `/authorize`, `/token`, `/register`, and `/revoke`;
 - keep `/healthz` and `/readyz` private by default;
 - terminate HTTPS at a trusted proxy/gateway;
 - rate-limit and apply WAF/network policy where appropriate;

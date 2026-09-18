@@ -1,4 +1,4 @@
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import {
   OAuthError,
   OAuthErrorCode,
@@ -12,7 +12,8 @@ import type {
 } from "../state/oauth-repo.js";
 import type { OAuthRepo } from "../state/oauth-repo.js";
 
-const ALLOWED_SCOPES = new Set(["mcp", "offline_access"]);
+const HOSTSPAN_SCOPE = "hostspan";
+const ALLOWED_SCOPES = new Set([HOSTSPAN_SCOPE]);
 
 export class OAuthHttpError extends Error {
   constructor(
@@ -59,7 +60,7 @@ export interface AuthorizationPrompt {
 
 export interface OAuthTokenResponse {
   access_token: string;
-  token_type: "Bearer";
+  token_type: "bearer";
   expires_in: number;
   refresh_token: string;
   scope: string;
@@ -86,9 +87,11 @@ function normalizePublicMcpUrl(value: string): string {
 }
 
 function normalizeScope(scope: string | undefined): string {
-  const items = scope?.trim() ? scope.trim().split(/\s+/) : ["mcp", "offline_access"];
+  const items = scope?.trim() ? scope.trim().split(/\s+/) : [HOSTSPAN_SCOPE];
   const unique = [...new Set(items)];
-  if (!unique.includes("mcp")) throw new OAuthHttpError(400, "invalid_scope", "The mcp scope is required.");
+  if (!unique.includes(HOSTSPAN_SCOPE)) {
+    throw new OAuthHttpError(400, "invalid_scope", `The ${HOSTSPAN_SCOPE} scope is required.`);
+  }
   for (const item of unique) {
     if (!ALLOWED_SCOPES.has(item)) throw new OAuthHttpError(400, "invalid_scope", `Unsupported OAuth scope: ${item}`);
   }
@@ -166,25 +169,22 @@ export class OAuthService implements OAuthTokenVerifier {
     private readonly repo: OAuthRepo,
   ) {
     this.publicMcpUrl = normalizePublicMcpUrl(config.public_mcp_url);
-    this.issuer = new URL(this.publicMcpUrl).origin;
-    this.resourceMetadataUrl = `${this.issuer}/.well-known/oauth-protected-resource/mcp`;
+    this.issuer = new URL(`${new URL(this.publicMcpUrl).origin}/`).href;
+    this.resourceMetadataUrl = new URL("/.well-known/oauth-protected-resource/mcp", this.issuer).href;
   }
 
   authorizationServerMetadata(): Record<string, unknown> {
     return {
       issuer: this.issuer,
-      authorization_endpoint: `${this.issuer}/oauth/authorize`,
-      token_endpoint: `${this.issuer}/oauth/token`,
-      registration_endpoint: `${this.issuer}/oauth/register`,
-      revocation_endpoint: `${this.issuer}/oauth/revoke`,
+      authorization_endpoint: new URL("/authorize", this.issuer).href,
+      token_endpoint: new URL("/token", this.issuer).href,
+      registration_endpoint: new URL("/register", this.issuer).href,
+      revocation_endpoint: new URL("/revoke", this.issuer).href,
       response_types_supported: ["code"],
       grant_types_supported: ["authorization_code", "refresh_token"],
       token_endpoint_auth_methods_supported: ["none"],
       code_challenge_methods_supported: ["S256"],
-      scopes_supported: ["mcp", "offline_access"],
-      resource_indicators_supported: true,
-      protected_resources: [this.publicMcpUrl],
-      authorization_response_iss_parameter_supported: true,
+      scopes_supported: [HOSTSPAN_SCOPE],
     };
   }
 
@@ -192,8 +192,7 @@ export class OAuthService implements OAuthTokenVerifier {
     return {
       resource: this.publicMcpUrl,
       authorization_servers: [this.issuer],
-      scopes_supported: ["mcp", "offline_access"],
-      bearer_methods_supported: ["header"],
+      scopes_supported: [HOSTSPAN_SCOPE],
       resource_name: "HostSpan MCP",
     };
   }
@@ -231,7 +230,7 @@ export class OAuthService implements OAuthTokenVerifier {
       throw new OAuthHttpError(400, "invalid_client_metadata", "application_type must be web or native.");
     }
     const metadata: RegisteredOAuthClient = {
-      client_id: `hs_client_${randomToken(18)}`,
+      client_id: `hostspan-${randomUUID()}`,
       client_id_issued_at: now,
       redirect_uris: redirects as string[],
       token_endpoint_auth_method: "none",
@@ -311,7 +310,7 @@ export class OAuthService implements OAuthTokenVerifier {
         this.authorizationErrorRedirect(pending.redirect_uri, pending.state, "access_denied", "Approval secret is incorrect."),
       );
     }
-    const code = `hs_code_${randomToken(32)}`;
+    const code = `code-${randomUUID()}`;
     this.repo.saveAuthorizationCode({
       code_hash: tokenHash(code),
       client_id: pending.client_id,
@@ -325,7 +324,6 @@ export class OAuthService implements OAuthTokenVerifier {
     const redirect = new URL(pending.redirect_uri);
     redirect.searchParams.set("code", code);
     if (pending.state) redirect.searchParams.set("state", pending.state);
-    redirect.searchParams.set("iss", this.issuer);
     return redirect.toString();
   }
 
@@ -339,7 +337,6 @@ export class OAuthService implements OAuthTokenVerifier {
     redirect.searchParams.set("error", code);
     redirect.searchParams.set("error_description", description);
     if (state) redirect.searchParams.set("state", state);
-    redirect.searchParams.set("iss", this.issuer);
     return redirect.toString();
   }
 
@@ -458,7 +455,7 @@ export class OAuthService implements OAuthTokenVerifier {
     });
     return {
       access_token: accessRaw,
-      token_type: "Bearer",
+      token_type: "bearer",
       expires_in: expiresIn,
       refresh_token: refreshRaw,
       scope,

@@ -84,7 +84,8 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
   );
   const nodeHandler = toNodeHandler(mcpHandler, { onerror: reportTransportError });
   app.addHook("onRequest", async (request) => {
-    const traceUrl = request.url.startsWith("/oauth/") || request.url.startsWith("/.well-known/") ? request.url.split("?", 1)[0] : request.url;
+    const oauthPath = ["/authorize", "/token", "/register", "/revoke"].some((path) => request.url.startsWith(path));
+    const traceUrl = oauthPath || request.url.startsWith("/.well-known/") ? request.url.split("?", 1)[0] : request.url;
     options.trace?.("transport.request", {
       method: request.method,
       url: traceUrl,
@@ -106,7 +107,7 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
       try {
         const auth = await verifyBearerToken(request.headers.authorization, {
           verifier: options.oauth,
-          requiredScopes: ["mcp"],
+          requiredScopes: ["hostspan"],
           resourceMetadataUrl: options.oauth.resourceMetadataUrl,
         });
         Object.assign(request.raw, { auth });
@@ -114,7 +115,7 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
         return sendWebResponse(
           reply,
           bearerAuthChallengeResponse(error, {
-            requiredScopes: ["mcp"],
+            requiredScopes: ["hostspan"],
             resourceMetadataUrl: options.oauth.resourceMetadataUrl,
           }),
         );
@@ -162,7 +163,7 @@ function authorizationPage(prompt: ReturnType<OAuthService["beginAuthorization"]
     `<p><strong>Scopes:</strong> ${escapeHtml(prompt.scope)}</p>`,
     `<p><strong>Resource:</strong> ${escapeHtml(prompt.resource)}</p>`,
     "<p>This grants access to the local HostSpan targets allowed by server policy, including write/exec when configured.</p>",
-    '<form method="post" action="/oauth/authorize">',
+    '<form method="post">',
     `<input type="hidden" name="request_id" value="${escapeHtml(prompt.request_id)}">`,
     '<label>HostSpan approval secret<br><input style="width:100%;max-width:560px" type="password" name="approval_secret" autocomplete="off" required></label>',
     '<p><button type="submit">Approve</button></p></form></main></body></html>',
@@ -177,18 +178,28 @@ function oauthErrorPayload(error: unknown): { status: number; payload: Record<st
 }
 
 function registerOAuthRoutes(app: FastifyInstance, oauth: OAuthService): void {
+  const cors = (reply: FastifyReply) =>
+    reply
+      .header("access-control-allow-origin", "*")
+      .header("access-control-allow-methods", "GET,POST,OPTIONS")
+      .header("access-control-allow-headers", "content-type,authorization");
   const metadata = async (_request: unknown, reply: FastifyReply) =>
-    reply.header("cache-control", "no-store").send(oauth.authorizationServerMetadata());
+    cors(reply).header("cache-control", "no-store").send(oauth.authorizationServerMetadata());
   app.get("/.well-known/oauth-authorization-server", metadata);
   app.get("/.well-known/oauth-protected-resource", async (_request, reply) =>
-    reply.header("cache-control", "no-store").send(oauth.protectedResourceMetadata()),
+    cors(reply).header("cache-control", "no-store").send(oauth.protectedResourceMetadata()),
   );
   app.get("/.well-known/oauth-protected-resource/mcp", async (_request, reply) =>
-    reply.header("cache-control", "no-store").send(oauth.protectedResourceMetadata()),
+    cors(reply).header("cache-control", "no-store").send(oauth.protectedResourceMetadata()),
   );
-  app.post("/oauth/register", async (request, reply) => {
+  app.options("/.well-known/oauth-authorization-server", async (_request, reply) => cors(reply).code(204).send());
+  app.options("/.well-known/oauth-protected-resource", async (_request, reply) => cors(reply).code(204).send());
+  app.options("/.well-known/oauth-protected-resource/mcp", async (_request, reply) => cors(reply).code(204).send());
+  app.options("/register", async (_request, reply) => cors(reply).code(204).send());
+  app.options("/token", async (_request, reply) => cors(reply).code(204).send());
+  app.post("/register", async (request, reply) => {
     try {
-      return reply
+      return cors(reply)
         .code(201)
         .header("cache-control", "no-store")
         .header("pragma", "no-cache")
@@ -198,15 +209,12 @@ function registerOAuthRoutes(app: FastifyInstance, oauth: OAuthService): void {
       return reply.code(result.status).send(result.payload);
     }
   });
-  app.get("/oauth/authorize", async (request, reply) => {
+  app.get("/authorize", async (request, reply) => {
     try {
       const prompt = oauth.beginAuthorization(queryParams(request.query));
       return reply
         .type("text/html; charset=utf-8")
         .header("cache-control", "no-store")
-        .header("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
-        .header("referrer-policy", "no-referrer")
-        .header("x-frame-options", "DENY")
         .send(authorizationPage(prompt));
     } catch (error) {
       if (error instanceof OAuthAuthorizationRedirectError) {
@@ -216,7 +224,7 @@ function registerOAuthRoutes(app: FastifyInstance, oauth: OAuthService): void {
       return reply.code(result.status).send(result.payload);
     }
   });
-  app.post("/oauth/authorize", async (request, reply) => {
+  app.post("/authorize", async (request, reply) => {
     try {
       const form = requestForm(request.body);
       const redirect = oauth.approveAuthorization(form.get("request_id") ?? "", form.get("approval_secret") ?? "");
@@ -229,22 +237,22 @@ function registerOAuthRoutes(app: FastifyInstance, oauth: OAuthService): void {
       return reply.code(result.status).send(result.payload);
     }
   });
-  app.post("/oauth/token", async (request, reply) => {
+  app.post("/token", async (request, reply) => {
     try {
-      return reply
+      return cors(reply)
         .header("cache-control", "no-store")
         .header("pragma", "no-cache")
         .send(oauth.exchangeToken(requestForm(request.body)));
     } catch (error) {
       const result = oauthErrorPayload(error);
-      return reply
+      return cors(reply)
         .code(result.status)
         .header("cache-control", "no-store")
         .header("pragma", "no-cache")
         .send(result.payload);
     }
   });
-  app.post("/oauth/revoke", async (request, reply) => {
+  app.post("/revoke", async (request, reply) => {
     try {
       const token = requestForm(request.body).get("token");
       if (token) oauth.revoke(token);

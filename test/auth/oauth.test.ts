@@ -148,7 +148,7 @@ describe("OAuth protected MCP", () => {
       for (let index = 0; index < 3; index += 1) {
         const registered = await app.inject({
           method: "POST",
-          url: "/oauth/register",
+          url: "/register",
           headers: { host: "mcp.example.com", "content-type": "application/json" },
           payload: {
             client_name: `inactive-${index}`,
@@ -211,7 +211,8 @@ describe("OAuth protected MCP", () => {
       expect(resourceMetadata.statusCode).toBe(200);
       expect(resourceMetadata.json()).toMatchObject({
         resource: "https://mcp.example.com/mcp",
-        authorization_servers: ["https://mcp.example.com"],
+        authorization_servers: ["https://mcp.example.com/"],
+        scopes_supported: ["hostspan"],
       });
 
       const serverMetadata = await app.inject({
@@ -220,16 +221,18 @@ describe("OAuth protected MCP", () => {
         headers: host,
       });
       expect(serverMetadata.json()).toMatchObject({
-        issuer: "https://mcp.example.com",
-        authorization_endpoint: "https://mcp.example.com/oauth/authorize",
-        token_endpoint: "https://mcp.example.com/oauth/token",
-        registration_endpoint: "https://mcp.example.com/oauth/register",
+        issuer: "https://mcp.example.com/",
+        authorization_endpoint: "https://mcp.example.com/authorize",
+        token_endpoint: "https://mcp.example.com/token",
+        registration_endpoint: "https://mcp.example.com/register",
         code_challenge_methods_supported: ["S256"],
+        scopes_supported: ["hostspan"],
       });
+      expect(serverMetadata.json()).not.toHaveProperty("authorization_response_iss_parameter_supported");
 
       const registered = await app.inject({
         method: "POST",
-        url: "/oauth/register",
+        url: "/register",
         headers: { ...host, "content-type": "application/json" },
         payload: {
           client_name: "ChatGPT test",
@@ -250,7 +253,7 @@ describe("OAuth protected MCP", () => {
         response_type: "code",
         client_id: client.client_id,
         redirect_uri: "https://client.example/callback",
-        scope: "mcp offline_access",
+        scope: "hostspan",
         state: "state-123",
         code_challenge: challenge,
         code_challenge_method: "S256",
@@ -258,7 +261,7 @@ describe("OAuth protected MCP", () => {
       });
       const authorize = await app.inject({
         method: "GET",
-        url: `/oauth/authorize?${authorizeQuery.toString()}`,
+        url: `/authorize?${authorizeQuery.toString()}`,
         headers: host,
       });
       expect(authorize.statusCode).toBe(200);
@@ -269,7 +272,7 @@ describe("OAuth protected MCP", () => {
       secondAuthorizeQuery.set("state", "state-parallel");
       const secondAuthorize = await app.inject({
         method: "GET",
-        url: `/oauth/authorize?${secondAuthorizeQuery.toString()}`,
+        url: `/authorize?${secondAuthorizeQuery.toString()}`,
         headers: host,
       });
       expect(secondAuthorize.statusCode).toBe(200);
@@ -279,7 +282,7 @@ describe("OAuth protected MCP", () => {
 
       const wrongApproval = await app.inject({
         method: "POST",
-        url: "/oauth/authorize",
+        url: "/authorize",
         headers: { ...host, "content-type": "application/x-www-form-urlencoded" },
         payload: form({ request_id: requestId ?? "", approval_secret: "wrong" }),
       });
@@ -287,11 +290,11 @@ describe("OAuth protected MCP", () => {
       const wrongApprovalCallback = new URL(String(wrongApproval.headers.location));
       expect(wrongApprovalCallback.searchParams.get("error")).toBe("access_denied");
       expect(wrongApprovalCallback.searchParams.get("state")).toBe("state-123");
-      expect(wrongApprovalCallback.searchParams.get("iss")).toBe("https://mcp.example.com");
+      expect(wrongApprovalCallback.searchParams.has("iss")).toBe(false);
 
       const approved = await app.inject({
         method: "POST",
-        url: "/oauth/authorize",
+        url: "/authorize",
         headers: { ...host, "content-type": "application/x-www-form-urlencoded" },
         payload: form({ request_id: requestId ?? "", approval_secret: approvalSecret }),
       });
@@ -299,25 +302,26 @@ describe("OAuth protected MCP", () => {
       const callback = new URL(String(approved.headers.location));
       expect(callback.origin + callback.pathname).toBe("https://client.example/callback");
       expect(callback.searchParams.get("state")).toBe("state-123");
-      expect(callback.searchParams.get("iss")).toBe("https://mcp.example.com");
+      expect(callback.searchParams.has("iss")).toBe(false);
       const firstCode = callback.searchParams.get("code") ?? "";
+      expect(firstCode).toMatch(/^code-[0-9a-f-]{36}$/);
 
       const duplicateApproval = await app.inject({
         method: "POST",
-        url: "/oauth/authorize",
+        url: "/authorize",
         headers: { ...host, "content-type": "application/x-www-form-urlencoded" },
         payload: form({ request_id: requestId ?? "", approval_secret: approvalSecret }),
       });
       expect(duplicateApproval.statusCode).toBe(302);
       const duplicateCallback = new URL(String(duplicateApproval.headers.location));
       expect(duplicateCallback.searchParams.get("state")).toBe("state-123");
-      expect(duplicateCallback.searchParams.get("iss")).toBe("https://mcp.example.com");
+      expect(duplicateCallback.searchParams.has("iss")).toBe(false);
       const code = duplicateCallback.searchParams.get("code") ?? "";
       expect(code).not.toBe(firstCode);
 
       const parallelApproval = await app.inject({
         method: "POST",
-        url: "/oauth/authorize",
+        url: "/authorize",
         headers: { ...host, "content-type": "application/x-www-form-urlencoded" },
         payload: form({ request_id: secondRequestId ?? "", approval_secret: approvalSecret }),
       });
@@ -326,7 +330,7 @@ describe("OAuth protected MCP", () => {
 
       const wrongPkce = await app.inject({
         method: "POST",
-        url: "/oauth/token",
+        url: "/token",
         headers: { ...host, "content-type": "application/x-www-form-urlencoded" },
         payload: form({
           grant_type: "authorization_code",
@@ -343,7 +347,7 @@ describe("OAuth protected MCP", () => {
 
       const token = await app.inject({
         method: "POST",
-        url: "/oauth/token",
+        url: "/token",
         headers: { ...host, "content-type": "application/x-www-form-urlencoded" },
         payload: form({
           grant_type: "authorization_code",
@@ -380,7 +384,7 @@ describe("OAuth protected MCP", () => {
 
       const refreshed = await app.inject({
         method: "POST",
-        url: "/oauth/token",
+        url: "/token",
         headers: { ...host, "content-type": "application/x-www-form-urlencoded" },
         payload: form({
           grant_type: "refresh_token",
@@ -395,7 +399,7 @@ describe("OAuth protected MCP", () => {
 
       const replayedRefresh = await app.inject({
         method: "POST",
-        url: "/oauth/token",
+        url: "/token",
         headers: { ...host, "content-type": "application/x-www-form-urlencoded" },
         payload: form({
           grant_type: "refresh_token",

@@ -119,7 +119,7 @@ Example Caddy upstream:
 
 ```caddyfile
 mcp.example.com {
-    @hostspan path /mcp /.well-known/oauth-* /oauth/*
+    @hostspan path /mcp /.well-known/oauth-* /authorize /token /register /revoke
     reverse_proxy @hostspan 127.0.0.1:39393
 }
 ```
@@ -127,7 +127,7 @@ mcp.example.com {
 Example nginx upstream:
 
 ```nginx
-location ~ ^/(mcp|oauth/|\.well-known/) {
+location ~ ^/(mcp|authorize$|token$|register$|revoke$|\.well-known/) {
     proxy_pass http://127.0.0.1:39393;
     proxy_set_header Host $host;
     proxy_http_version 1.1;
@@ -135,7 +135,7 @@ location ~ ^/(mcp|oauth/|\.well-known/) {
 }
 ```
 
-TLS, rate limits, WAF rules, and public DNS belong at your proxy/gateway. HostSpan itself is the OAuth authorization/resource server. The proxy must forward `/mcp`, `/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource*`, and `/oauth/*`. Keep `/healthz` and `/readyz` private.
+TLS, rate limits, WAF rules, and public DNS belong at your proxy/gateway. HostSpan itself is the OAuth authorization/resource server. The proxy must forward `/mcp`, `/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource*`, `/authorize`, `/token`, `/register`, and `/revoke`. Keep `/healthz` and `/readyz` private.
 
 Rotate the local OAuth approval credential and revoke all existing access/refresh tokens with:
 

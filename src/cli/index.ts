@@ -379,7 +379,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       print({
         ok: true,
         public_mcp_url: setup.config.public_mcp_url,
-        issuer: new URL(setup.config.public_mcp_url).origin,
+        issuer: new URL(`${new URL(setup.config.public_mcp_url).origin}/`).href,
         approval_secret_file: approvalSecretFile,
         warning: "The OAuth approval secret is stored only in the local mode-0600 file. Do not copy it into logs or chat messages.",
       });
@@ -391,7 +391,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         ...(config.oauth
           ? {
               public_mcp_url: config.oauth.public_mcp_url,
-              issuer: new URL(config.oauth.public_mcp_url).origin,
+              issuer: new URL(`${new URL(config.oauth.public_mcp_url).origin}/`).href,
               approval_secret_file: oauthApprovalSecretPath(configPath),
               access_token_ttl_minutes: config.oauth.access_token_ttl_minutes,
               refresh_token_ttl_days: config.oauth.refresh_token_ttl_days,

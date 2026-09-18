@@ -71,7 +71,7 @@ Minimal Caddy example:
 
 ```caddyfile
 mcp.example.com {
-    @hostspan path /mcp /.well-known/oauth-* /oauth/*
+    @hostspan path /mcp /.well-known/oauth-* /authorize /token /register /revoke
     reverse_proxy @hostspan 127.0.0.1:39393
 }
 ```
@@ -79,7 +79,7 @@ mcp.example.com {
 Minimal nginx example:
 
 ```nginx
-location ~ ^/(mcp|oauth/|\.well-known/) {
+location ~ ^/(mcp|authorize$|token$|register$|revoke$|\.well-known/) {
     proxy_pass http://127.0.0.1:39393;
     proxy_set_header Host $host;
     proxy_http_version 1.1;
@@ -96,13 +96,13 @@ Forward these paths to the same HostSpan upstream:
 /.well-known/oauth-authorization-server
 /.well-known/oauth-protected-resource
 /.well-known/oauth-protected-resource/mcp
-/oauth/register
-/oauth/authorize
-/oauth/token
-/oauth/revoke
+/register
+/authorize
+/token
+/revoke
 ```
 
-Keep `/healthz` and `/readyz` private unless you have an explicit operational reason to publish them. HostSpan advertises `mcp offline_access`, requires PKCE S256, and issues rotating refresh tokens so ChatGPT can maintain OAuth connectivity.
+Keep `/healthz` and `/readyz` private unless you have an explicit operational reason to publish them. HostSpan advertises the refresh-capable `hostspan` scope, requires PKCE S256, and issues rotating refresh tokens so ChatGPT can maintain OAuth connectivity. The OAuth metadata and endpoint layout intentionally follow the MCP SDK shape used by known-working ChatGPT integrations.
 
 MCP `2026-07-28` is stateless at the protocol core, so ordinary reverse proxies and load balancers do not need sticky MCP sessions for modern requests. The proxy should preserve the `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`, content type, and request body headers/data.
 
@@ -134,7 +134,7 @@ hostspan support-export ./hostspan-support.json
 
 HostSpan records transport requests and accepted tool calls. If there is no corresponding transport/request event, the failure occurred before HostSpan and is a client/tunnel compatibility incident, not a HostSpan handler failure. Do not fabricate a successful tool result for a request that never arrived.
 
-If the trace shows `GET /oauth/authorize` and a successful `POST /oauth/authorize`, an authorization code exists, but ChatGPT never sends `POST /oauth/token`, the failure is after HostSpan's authorization redirect. Keep HostSpan's OAuth semantics standards-compliant rather than changing issuer-identification behavior to work around a client-side callback incident. For private/developer-machine testing, prefer OpenAI Secure MCP Tunnel while investigating the ChatGPT callback path.
+If the trace shows `GET /authorize` and a successful `POST /authorize`, an authorization code exists, but ChatGPT never sends `POST /token`, compare the public OAuth metadata and redirect response against a known-working MCP SDK server before attributing the failure to the client. HostSpan intentionally uses the SDK-compatible root authorization paths and does not add an RFC 9207 `iss` parameter that the working DevSpace flow does not advertise.
 
 If a request arrived but failed, use `request_id`, `idempotency_key`, `process_id`, and structured error code to identify the stage.
 
