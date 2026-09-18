@@ -67,12 +67,25 @@ export function recoverProcesses(
       if (state.dead) {
         const drained = terminal.drainOutputSync(session, record.process_id);
         processes.setBytes(record.process_id, "stdout", drained.bytes);
-        const terminalState = state.exit_code === 0 ? "succeeded" : "failed";
-        processes.markTerminal(record.process_id, terminalState, state.exit_code, null, state.exit_code === 0 ? null : "nonzero_exit", record.output_expires_at ?? undefined);
+        const settled = state.exit_code === null ? terminal.waitForExitStatusSync(session) : state;
+        if (!settled.exists || settled.exit_code === null) {
+          processes.markTerminal(record.process_id, "unknown", null, null, "tmux_exit_status_unavailable_after_restart", record.output_expires_at ?? undefined);
+          operations.setState(record.idempotency_key, "unknown", {
+            state: "unknown",
+            process_id: record.process_id,
+            reason: "tmux_exit_status_unavailable_after_restart",
+            native_execution: true,
+            sandboxed: false,
+          });
+          recovered.push({ process_id: record.process_id, state: "unknown" });
+          continue;
+        }
+        const terminalState = settled.exit_code === 0 ? "succeeded" : "failed";
+        processes.markTerminal(record.process_id, terminalState, settled.exit_code, null, settled.exit_code === 0 ? null : "nonzero_exit", record.output_expires_at ?? undefined);
         operations.setState(record.idempotency_key, terminalState, {
           state: terminalState,
           process_id: record.process_id,
-          exit_code: state.exit_code,
+          exit_code: settled.exit_code,
           native_execution: true,
           sandboxed: false,
         });

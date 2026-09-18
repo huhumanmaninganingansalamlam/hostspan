@@ -273,7 +273,18 @@ export class ProcessSupervisor {
       const drained = await this.options.terminal.drainOutput(record.backend_ref, processId);
       bytes = drained.bytes;
       this.options.processes.setBytes(processId, "stdout", bytes);
-      this.finalize(processId, state.exit_code === 0 ? "succeeded" : "failed", state.exit_code, null, state.exit_code === 0 ? null : "nonzero_exit");
+      const settled = state.exit_code === null ? await this.options.terminal.waitForExitStatus(record.backend_ref) : state;
+      if (!settled.exists || settled.exit_code === null) {
+        this.finalize(processId, "unknown", null, null, "tmux_exit_status_unavailable");
+        return;
+      }
+      this.finalize(
+        processId,
+        settled.exit_code === 0 ? "succeeded" : "failed",
+        settled.exit_code,
+        null,
+        settled.exit_code === 0 ? null : "nonzero_exit",
+      );
     }
   }
 

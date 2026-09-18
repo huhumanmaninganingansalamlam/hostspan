@@ -1,5 +1,5 @@
 import { execFile, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { TerminalConfig } from "../config/schema.js";
@@ -78,9 +78,11 @@ export class TmuxTerminalManager {
     const session = this.sessionName(input.processId);
     const spoolPath = this.outputPath(input.processId);
     const drainPath = this.drainPath(input.processId);
+    const exitStatusPath = this.exitStatusPath(input.processId);
     mkdirSync(dirname(spoolPath), { recursive: true, mode: 0o700 });
     writeFileSync(spoolPath, "", { mode: 0o600 });
     rmSync(drainPath, { force: true });
+    rmSync(exitStatusPath, { force: true });
 
     const envPrefix = Object.entries(input.env)
       .map(([key, value]) => {
@@ -89,7 +91,8 @@ export class TmuxTerminalManager {
       })
       .join(" ");
     const command = input.argv.map(shellQuote).join(" ");
-    const launch = `sleep 0.10; exec ${envPrefix ? `${envPrefix} ` : ""}${command}`;
+    const invocation = `${envPrefix ? `${envPrefix} ` : ""}${command}`;
+    const launch = `sleep 0.10; ${invocation}; hostspan_exit=$?; printf '%s\\n' "$hostspan_exit" > ${shellQuote(exitStatusPath)}; exit "$hostspan_exit"`;
 
     try {
       await this.tmux([
@@ -107,7 +110,7 @@ export class TmuxTerminalManager {
       ]);
       await this.tmux(["set-window-option", "-t", `${session}:0`, "remain-on-exit", "on"]);
       await this.tmux(["set-window-option", "-t", `${session}:0`, "history-limit", String(this.config.history_limit_lines)]);
-      const pipeCommand = `head -c ${Math.min(input.maxOutputBytes, this.config.max_output_bytes)} >> ${shellQuote(spoolPath)}; status=$?; : > ${shellQuote(drainPath)}; exit $status`;
+      const pipeCommand = `dd bs=65536 count=${Math.min(input.maxOutputBytes, this.config.max_output_bytes)} iflag=count_bytes status=none >> ${shellQuote(spoolPath)}; hostspan_pipe_exit=$?; : > ${shellQuote(drainPath)}; exit $hostspan_pipe_exit`;
       await this.tmux(["pipe-pane", "-O", "-t", `${session}:0.0`, pipeCommand]);
     } catch (error) {
       await this.close(session).catch(() => undefined);
@@ -131,10 +134,11 @@ export class TmuxTerminalManager {
         "#{pane_dead}|#{pane_dead_status}|#{pane_pid}|#{pane_width}|#{pane_height}",
       ]);
       const [deadRaw, exitRaw, pidRaw, colsRaw, rowsRaw] = stdout.trim().split("|");
+      const recordedExitCode = deadRaw === "1" ? this.recordedExitCode(session) : null;
       return {
         exists: true,
         dead: deadRaw === "1",
-        exit_code: deadRaw === "1" && exitRaw !== "" ? Number(exitRaw) : null,
+        exit_code: deadRaw === "1" && exitRaw !== "" ? Number(exitRaw) : recordedExitCode,
         pid: pidRaw ? Number(pidRaw) : null,
         columns: colsRaw ? Number(colsRaw) : null,
         rows: rowsRaw ? Number(rowsRaw) : null,
@@ -152,10 +156,11 @@ export class TmuxTerminalManager {
     );
     if (result.status !== 0) return { exists: false, dead: false, exit_code: null, pid: null, columns: null, rows: null };
     const [deadRaw, exitRaw, pidRaw, colsRaw, rowsRaw] = result.stdout.trim().split("|");
+    const recordedExitCode = deadRaw === "1" ? this.recordedExitCode(session) : null;
     return {
       exists: true,
       dead: deadRaw === "1",
-      exit_code: deadRaw === "1" && exitRaw !== "" ? Number(exitRaw) : null,
+      exit_code: deadRaw === "1" && exitRaw !== "" ? Number(exitRaw) : recordedExitCode,
       pid: pidRaw ? Number(pidRaw) : null,
       columns: colsRaw ? Number(colsRaw) : null,
       rows: rowsRaw ? Number(rowsRaw) : null,
@@ -235,6 +240,16 @@ export class TmuxTerminalManager {
     return { drained: existsSync(drainPath), bytes: this.outputBytes(processId) };
   }
 
+  async waitForExitStatus(session: string, waitMs = 1_500): Promise<TmuxTerminalSnapshot> {
+    const deadline = Date.now() + Math.max(0, waitMs);
+    let state = await this.inspect(session);
+    while (Date.now() <= deadline && state.exists && state.dead && state.exit_code === null) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      state = await this.inspect(session);
+    }
+    return state;
+  }
+
   drainOutputSync(session: string, processId: string, waitMs = 1_500): TmuxOutputDrainResult {
     spawnSync("tmux", ["-S", this.socketPath, "pipe-pane", "-t", `${session}:0.0`], {
       encoding: "utf8",
@@ -262,6 +277,17 @@ export class TmuxTerminalManager {
     return { drained: existsSync(drainPath), bytes: this.outputBytes(processId) };
   }
 
+  waitForExitStatusSync(session: string, waitMs = 1_500): TmuxTerminalSnapshot {
+    const deadline = Date.now() + Math.max(0, waitMs);
+    let state = this.inspectSync(session);
+    const sleeper = new Int32Array(new SharedArrayBuffer(4));
+    while (Date.now() <= deadline && state.exists && state.dead && state.exit_code === null) {
+      Atomics.wait(sleeper, 0, 0, 25);
+      state = this.inspectSync(session);
+    }
+    return state;
+  }
+
   async waitForActivity(session: string, processId: string, previousBytes: number, waitMs: number): Promise<TmuxTerminalSnapshot> {
     const deadline = Date.now() + Math.max(0, waitMs);
     let state = await this.inspect(session);
@@ -278,6 +304,23 @@ export class TmuxTerminalManager {
 
   private drainPath(processId: string): string {
     return join(this.dataDir, "spools", "processes", processId, "tmux-pipe-drained");
+  }
+
+  private exitStatusPath(processId: string): string {
+    return join(this.dataDir, "spools", "processes", processId, "tmux-exit-status");
+  }
+
+  private recordedExitCode(session: string): number | null {
+    const match = /^hs-([0-9a-f]+)$/.exec(session);
+    if (!match?.[1]) return null;
+    const path = this.exitStatusPath(`proc_${match[1]}`);
+    if (!existsSync(path)) return null;
+    try {
+      const value = Number(readFileSync(path, "utf8").trim());
+      return Number.isInteger(value) && value >= 0 ? value : null;
+    } catch {
+      return null;
+    }
   }
 
   private tmux(args: string[]) {
