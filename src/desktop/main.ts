@@ -1,18 +1,33 @@
 import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeImage, Tray } from "electron";
-import { buildAdminSnapshot, resolveTerminalSession } from "../admin/snapshot.js";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Tray } from "electron";
+import {
+  addLocalWorkspace,
+  buildAdminSnapshot,
+  removeLocalWorkspace,
+  resolveTerminalSession,
+  type AddWorkspaceInput,
+} from "../admin/snapshot.js";
 import { startDaemon, stopDaemon } from "../cli/daemon.js";
+import { runDoctor, type DoctorReport } from "../cli/doctor.js";
 import { loadConfig } from "../config/loader.js";
+import type { Capability } from "../config/schema.js";
 import { TmuxTerminalManager } from "../processes/tmux-terminal.js";
 
 declare global {
   interface Window {
     hostspan: {
       snapshot(): Promise<unknown>;
-      daemon(action: "start" | "stop"): Promise<unknown>;
+      daemon(action: "start" | "stop" | "restart"): Promise<unknown>;
+      doctor(): Promise<unknown>;
+      chooseWorkspace(): Promise<{ canceled: boolean; path?: string }>;
+      addWorkspace(input: AddWorkspaceInput): Promise<unknown>;
+      removeWorkspace(targetId: string): Promise<unknown>;
+      getAutoStart(): Promise<boolean>;
+      setAutoStart(enabled: boolean): Promise<boolean>;
       attach(processId: string, readOnly: boolean): Promise<unknown>;
       copy(text: string): Promise<unknown>;
       onUpdate(callback: (snapshot: unknown) => void): void;
@@ -25,6 +40,7 @@ const configPath = resolve(
 );
 if (process.platform === "linux") app.commandLine.appendSwitch("disable-gpu");
 const cliPath = fileURLToPath(new URL("../cli/index.js", import.meta.url));
+const mainPath = fileURLToPath(new URL("./main.js", import.meta.url));
 const preloadPath = fileURLToPath(new URL("./preload.cjs", import.meta.url));
 const nodePath = process.env.HOSTSPAN_NODE ?? process.execPath;
 
@@ -60,7 +76,6 @@ function attachCommand(processId: string, readOnly: boolean): { command: string;
   );
   if (!terminal) throw new Error("No supported graphical terminal launcher was found.");
   if (terminal === "gnome-terminal") return { command: terminal, args: ["--", ...args] };
-  if (terminal === "konsole") return { command: terminal, args: ["-e", ...args] };
   return { command: terminal, args: ["-e", ...args] };
 }
 
@@ -70,38 +85,215 @@ function openAttach(processId: string, readOnly: boolean): void {
   child.unref();
 }
 
+function launchSpec(): { path: string; args: string[] } {
+  if (app.isPackaged) return { path: process.execPath, args: [] };
+  return { path: process.execPath, args: ["--no-sandbox", mainPath] };
+}
+
+function desktopExecQuote(value: string): string {
+  return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+function linuxAutoStartPath(): string {
+  return join(homedir(), ".config", "autostart", "hostspan.desktop");
+}
+
+function getAutoStart(): boolean {
+  if (process.platform === "linux") return existsSync(linuxAutoStartPath());
+  const spec = launchSpec();
+  return app.getLoginItemSettings({ path: spec.path, args: spec.args }).openAtLogin;
+}
+
+function setAutoStart(enabled: boolean): boolean {
+  const spec = launchSpec();
+  if (process.platform === "linux") {
+    const path = linuxAutoStartPath();
+    if (!enabled) {
+      rmSync(path, { force: true });
+      return false;
+    }
+    mkdirSync(join(homedir(), ".config", "autostart"), { recursive: true, mode: 0o700 });
+    const exec = [spec.path, ...spec.args].map(desktopExecQuote).join(" ");
+    writeFileSync(
+      path,
+      `[Desktop Entry]
+Type=Application
+Name=HostSpan
+Comment=HostSpan tray companion
+Exec=${exec}
+Terminal=false
+X-GNOME-Autostart-enabled=true
+`,
+      { mode: 0o600 },
+    );
+    return true;
+  }
+  app.setLoginItemSettings({ openAtLogin: enabled, path: spec.path, args: spec.args });
+  return app.getLoginItemSettings({ path: spec.path, args: spec.args }).openAtLogin;
+}
+
+function wslJson<T>(args: string[]): T {
+  const result = spawnSync("wsl.exe", ["hostspan", ...args], { encoding: "utf8", timeout: 10_000, maxBuffer: 4 * 1024 * 1024 });
+  if (result.status !== 0) throw new Error((result.stderr || result.error?.message || "WSL HostSpan command failed").trim());
+  return JSON.parse(result.stdout) as T;
+}
+
+function wslPath(value: string): string {
+  const result = spawnSync("wsl.exe", ["wslpath", "-u", value], { encoding: "utf8", timeout: 5_000 });
+  if (result.status !== 0) throw new Error((result.stderr || "Could not convert the selected Windows folder to a WSL path.").trim());
+  return result.stdout.trim();
+}
+
+function normalizedDesktopCapabilities(input: Capability[]): Capability[] {
+  const capabilities = [...new Set(input)];
+  if (capabilities.includes("terminal") && !capabilities.includes("exec")) capabilities.push("exec");
+  return capabilities;
+}
+
+type AdminSnapshot = ReturnType<typeof buildAdminSnapshot>;
+type DesktopSnapshot = AdminSnapshot & { auto_start: boolean };
+
+async function snapshot(): Promise<DesktopSnapshot> {
+  const base =
+    process.platform === "win32" ? wslJson<AdminSnapshot>(["admin", "snapshot", "--recent", "40"]) : buildAdminSnapshot(configPath, { recent: 40 });
+  return { ...base, auto_start: getAutoStart() };
+}
+
+async function daemonAction(action: "start" | "stop" | "restart") {
+  if (process.platform === "win32") {
+    if (action === "restart") {
+      wslJson(["daemon", "stop"]);
+      return wslJson(["daemon", "start"]);
+    }
+    return wslJson(["daemon", action]);
+  }
+  if (action === "restart") {
+    await stopDaemon(configPath);
+    return startDaemon(configPath, cliPath, nodePath);
+  }
+  return action === "start" ? startDaemon(configPath, cliPath, nodePath) : stopDaemon(configPath);
+}
+
+async function doctorReport(): Promise<DoctorReport> {
+  if (process.platform === "win32") return wslJson<DoctorReport>(["doctor"]);
+  return runDoctor(configPath);
+}
+
+function addWorkspace(input: AddWorkspaceInput) {
+  const capabilities = normalizedDesktopCapabilities(input.capabilities);
+  if (process.platform !== "win32") return addLocalWorkspace(configPath, { ...input, capabilities });
+
+  const root = wslPath(input.root);
+  const args = [
+    "targets",
+    "add",
+    "--id",
+    input.target_id,
+    "--label",
+    input.label?.trim() || input.target_id,
+    "--root",
+    root,
+    "--capabilities",
+    capabilities.join(","),
+  ];
+  if (capabilities.includes("exec")) args.push("--exec-profile", "native-dev");
+  return wslJson([...args]);
+}
+
+function removeWorkspace(targetId: string) {
+  if (process.platform === "win32") return wslJson(["targets", "remove", "--id", targetId]);
+  return removeLocalWorkspace(configPath, targetId);
+}
+
 function html(): string {
   return `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>HostSpan</title>
 <style>
-body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:#101218;color:#e9edf5}main{padding:16px;max-width:900px;margin:auto}h1{font-size:20px;margin:0 0 12px}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.card{background:#181c25;border:1px solid #2b3241;border-radius:10px;padding:12px;margin:10px 0}button{background:#2b66f6;color:white;border:0;border-radius:7px;padding:7px 10px;cursor:pointer}button.secondary{background:#31394b}.ok{color:#70dc9b}.bad{color:#ff8080}.muted{color:#9aa6b8;font-size:12px}table{width:100%;border-collapse:collapse;font-size:13px}td,th{text-align:left;padding:6px;border-bottom:1px solid #2b3241;vertical-align:top}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;word-break:break-all}.scroll{max-height:220px;overflow:auto}.pill{padding:2px 6px;border-radius:10px;background:#283044;font-size:11px}</style>
+:root{color-scheme:dark}body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:#101218;color:#e9edf5}main{padding:16px;max-width:940px;margin:auto}h1{font-size:20px;margin:0}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.grow{flex:1}.card{background:#181c25;border:1px solid #2b3241;border-radius:10px;padding:12px;margin:10px 0}.cardhead{display:flex;align-items:center;gap:8px;margin-bottom:8px}.cardhead b{flex:1}button{background:#2b66f6;color:white;border:0;border-radius:7px;padding:7px 10px;cursor:pointer}button.secondary{background:#31394b}button.danger{background:#71323a}button:disabled{opacity:.45;cursor:default}.ok{color:#70dc9b}.bad{color:#ff8080}.warn{color:#f2c56b}.muted{color:#9aa6b8;font-size:12px}.message{min-height:18px;margin-top:6px;font-size:12px}.message.error{color:#ff8080}table{width:100%;border-collapse:collapse;font-size:13px}td,th{text-align:left;padding:6px;border-bottom:1px solid #2b3241;vertical-align:top}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;word-break:break-all}.scroll{max-height:230px;overflow:auto}.pill{padding:2px 6px;border-radius:10px;background:#283044;font-size:11px}.caps{display:flex;gap:8px;flex-wrap:wrap}.caps label{font-size:12px}.activity{padding:5px 0;border-bottom:1px solid #242a37}dialog{width:min(560px,90vw);border:1px solid #394359;border-radius:10px;background:#181c25;color:#e9edf5;padding:16px}dialog::backdrop{background:#0008}.field{margin:10px 0}.field label.title{display:block;font-size:12px;color:#9aa6b8;margin-bottom:4px}.field input[type=text]{box-sizing:border-box;width:100%;padding:8px;border:1px solid #3b455a;border-radius:6px;background:#11151d;color:#e9edf5}.pathrow{display:flex;gap:6px}.pathrow input{flex:1}
+</style>
 </head><body><main>
-<div class="row"><h1 style="flex:1">HostSpan</h1><button id="refresh" class="secondary">Refresh</button><button id="toggle">Start</button></div>
+<div class="row"><h1 class="grow">HostSpan</h1><button id="doctor" class="secondary">Run Doctor</button><button id="restart" class="secondary">Restart</button><button id="refresh" class="secondary">Refresh</button><button id="toggle">Start</button></div>
+<div id="message" class="message"></div>
 <div id="summary" class="card">Loading…</div>
-<div class="card"><b>Targets / Workspaces</b><div id="targets"></div></div>
-<div class="card"><b>Interactive terminals</b><div id="terminals"></div></div>
-<div class="card"><b>Recent calls</b><div id="calls" class="scroll"></div></div>
+<div class="card"><div class="cardhead"><b>Health</b><span id="healthState" class="muted">Run Doctor for full checks.</span></div><div id="health"></div></div>
+<div class="card"><div class="cardhead"><b>Targets / Workspaces</b><button id="addWorkspace">Add Workspace</button></div><div id="targets"></div></div>
+<div class="card"><div class="cardhead"><b>Current activity</b><span id="activityCount" class="muted"></span></div><div id="activity"></div></div>
+<div class="card"><div class="cardhead"><b>Interactive terminals</b></div><div id="terminals"></div></div>
+<div class="card"><div class="cardhead"><b>Recent calls</b></div><div id="calls" class="scroll"></div></div>
+<dialog id="workspaceDialog">
+  <form method="dialog" id="workspaceForm">
+    <div class="cardhead"><b>Add Workspace</b></div>
+    <div class="field"><label class="title">Folder</label><div class="pathrow"><input id="wsPath" type="text" readonly required><button id="browse" type="button" class="secondary">Browse</button></div></div>
+    <div class="field"><label class="title">Target ID</label><input id="wsId" type="text" required placeholder="my-project"></div>
+    <div class="field"><label class="title">Label</label><input id="wsLabel" type="text" placeholder="My project"></div>
+    <div class="field"><label class="title">Capabilities</label><div class="caps">
+      <label><input type="checkbox" data-cap="read" checked> Read</label>
+      <label><input type="checkbox" data-cap="write" checked> Write</label>
+      <label><input type="checkbox" data-cap="exec" checked> Exec</label>
+      <label><input type="checkbox" data-cap="git" checked> Git</label>
+      <label><input type="checkbox" data-cap="terminal"> Interactive terminal</label>
+    </div><div class="muted" style="margin-top:6px">Interactive terminal grants full native terminal authority as your OS user.</div></div>
+    <div class="row" style="justify-content:flex-end"><button value="cancel" class="secondary">Cancel</button><button id="saveWorkspace" type="button">Save</button></div>
+  </form>
+</dialog>
 </main>
 <script>
 let snapshot;
 const e=id=>document.getElementById(id);
 const esc=v=>String(v??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-function render(s){snapshot=s;const running=!!s.daemon?.running;e('toggle').textContent=running?'Stop':'Start';e('toggle').className=running?'secondary':'';
-e('summary').innerHTML='<div class="row"><span class="pill '+(running?'ok':'bad')+'">'+(running?'RUNNING':'STOPPED')+'</span><b>'+esc(s.server_version)+'</b><span class="muted">'+esc(s.toolset_version)+' · policy '+esc(s.policy_epoch)+' · pid '+esc(s.daemon?.pid??'-')+'</span></div><div class="muted">'+esc(s.listen?.host)+':'+esc(s.listen?.port)+'</div>';
-e('targets').innerHTML='<table><tr><th>ID</th><th>Root</th><th>Capabilities</th><th>Ready</th></tr>'+s.targets.map(t=>'<tr><td><b>'+esc(t.target_id)+'</b><div class="muted">'+esc(t.label)+'</div></td><td><code>'+esc(t.root)+'</code></td><td>'+esc(t.capabilities.join(', '))+'</td><td>'+(t.ready?'✓':'✕')+'</td></tr>').join('')+'</table>';
-e('terminals').innerHTML=s.terminal.sessions.length?'<table><tr><th>Process</th><th>Target</th><th>State</th><th></th></tr>'+s.terminal.sessions.map(t=>'<tr><td><code>'+esc(t.process_id)+'</code></td><td>'+esc(t.target_id)+'</td><td>'+esc(t.state)+(t.live?' · live':'')+'</td><td><button onclick="attach(\\''+esc(t.process_id)+'\\',false)">Attach</button> <button class="secondary" onclick="attach(\\''+esc(t.process_id)+'\\',true)">Read only</button></td></tr>').join('')+'</table>':'<div class="muted">No tmux-backed sessions.</div>';
-e('calls').innerHTML=s.recent_calls.map(c=>'<div style="padding:5px 0;border-bottom:1px solid #242a37"><span class="muted">'+esc(c.timestamp)+'</span> <b>'+esc(c.event_type)+'</b> <code>'+esc(c.metadata?.tool??'')+'</code> <span class="muted">'+esc(c.metadata?.error_code??'')+'</span></div>').join('');}
-async function refresh(){render(await window.hostspan.snapshot())}async function attach(id,ro){await window.hostspan.attach(id,ro)}
-e('refresh').onclick=refresh;e('toggle').onclick=async()=>{await window.hostspan.daemon(snapshot?.daemon?.running?'stop':'start');await refresh()};window.hostspan.onUpdate(render);refresh();
+const short=v=>String(v??'').slice(0,12);
+function setMessage(message,error=false){const el=e('message');el.textContent=message??'';el.className='message'+(error?' error':'')}
+function targetIdFromPath(path){const part=String(path).split(/[\\/]/).filter(Boolean).pop()||'workspace';return part.toLowerCase().replace(/[^a-z0-9._-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,64)||'workspace'}
+function render(s){
+  snapshot=s;
+  const running=!!s.daemon?.running;
+  e('toggle').textContent=running?'Stop':'Start';
+  e('toggle').className=running?'secondary':'';
+  e('restart').disabled=!running;
+  e('summary').innerHTML='<div class="row"><span class="pill '+(running?'ok':'bad')+'">'+(running?'RUNNING':'STOPPED')+'</span><b>'+esc(s.server_version)+'</b><span class="muted">'+esc(s.toolset_version)+' · policy '+esc(s.policy_epoch)+' · pid '+esc(s.daemon?.pid??'-')+'</span><span class="grow"></span><label class="muted"><input id="autoStart" type="checkbox" '+(s.auto_start?'checked':'')+'> Start at login</label></div><div class="muted">'+esc(s.listen?.host)+':'+esc(s.listen?.port)+' · active processes '+esc(s.active_process_count)+'</div>';
+  e('autoStart').onchange=async ev=>{try{await window.hostspan.setAutoStart(ev.target.checked);await refresh()}catch(err){setMessage(err.message||String(err),true)}};
+  e('targets').innerHTML=s.targets.length?'<table><tr><th>ID</th><th>Root</th><th>Capabilities</th><th>Ready</th><th></th></tr>'+s.targets.map(t=>'<tr><td><b>'+esc(t.target_id)+'</b><div class="muted">'+esc(t.label)+'</div></td><td><code>'+esc(t.root)+'</code></td><td>'+esc(t.capabilities.join(', '))+'</td><td>'+(t.ready?'✓':'✕')+'</td><td><button class="danger" data-remove-target="'+esc(t.target_id)+'">Remove</button></td></tr>').join('')+'</table>':'<div class="muted">No workspaces configured.</div>';
+  const requests=s.active_requests||[],processes=s.active_processes||[];
+  e('activityCount').textContent=(requests.length+processes.length)+' active';
+  e('activity').innerHTML=(requests.length||processes.length)?processes.map(p=>'<div class="activity"><span class="pill">'+esc(p.state)+'</span> <b>'+esc(p.target_id)+'</b> <code>'+esc(short(p.process_id))+'</code> <span class="muted">'+esc(p.backend)+'</span></div>').join('')+requests.map(r=>'<div class="activity"><span class="pill">request</span> <b>'+esc(r.metadata?.tool??'unknown')+'</b> <span class="muted">'+esc(r.metadata?.target_id??'')+' '+esc(short(r.request_id))+'</span></div>').join(''):'<div class="muted">No active work.</div>';
+  e('terminals').innerHTML=s.terminal.sessions.length?'<table><tr><th>Process</th><th>Target</th><th>State</th><th></th></tr>'+s.terminal.sessions.map(t=>'<tr><td><code>'+esc(t.process_id)+'</code></td><td>'+esc(t.target_id)+'</td><td>'+esc(t.state)+(t.live?' · live':'')+'</td><td><button data-attach="'+esc(t.process_id)+'">Attach</button> <button class="secondary" data-readonly="'+esc(t.process_id)+'">Read only</button></td></tr>').join('')+'</table>':'<div class="muted">No tmux-backed sessions.</div>';
+  e('calls').innerHTML=s.recent_calls.length?s.recent_calls.map(c=>'<div class="activity"><span class="muted">'+esc(c.timestamp)+'</span> <b>'+esc(c.event_type)+'</b> <code>'+esc(c.metadata?.tool??'')+'</code> <span class="'+(c.metadata?.error_code?'bad':'muted')+'">'+esc(c.metadata?.error_code??'')+'</span></div>').join(''):'<div class="muted">No recent calls.</div>';
+}
+function renderHealth(report){
+  e('healthState').textContent=report.ok?'All required checks passed.':'One or more required checks failed.';
+  e('healthState').className=report.ok?'ok':'bad';
+  e('health').innerHTML='<table><tr><th>Check</th><th>Status</th><th>Details</th></tr>'+report.checks.map(c=>'<tr><td>'+esc(c.name)+'</td><td class="'+(c.status==='pass'?'ok':c.status==='warn'?'warn':'bad')+'">'+esc(c.status)+'</td><td class="muted">'+esc(c.details)+'</td></tr>').join('')+'</table>';
+}
+async function refresh(){try{render(await window.hostspan.snapshot())}catch(err){setMessage(err.message||String(err),true)}}
+async function attach(id,ro){try{await window.hostspan.attach(id,ro)}catch(err){setMessage(err.message||String(err),true)}}
+e('refresh').onclick=refresh;
+e('toggle').onclick=async()=>{try{await window.hostspan.daemon(snapshot?.daemon?.running?'stop':'start');setMessage('HostSpan '+(snapshot?.daemon?.running?'stopped.':'started.'));await refresh()}catch(err){setMessage(err.message||String(err),true)}};
+e('restart').onclick=async()=>{try{setMessage('Restarting HostSpan…');await window.hostspan.daemon('restart');setMessage('HostSpan restarted.');await refresh()}catch(err){setMessage(err.message||String(err),true)}};
+e('doctor').onclick=async()=>{try{e('healthState').textContent='Checking…';renderHealth(await window.hostspan.doctor())}catch(err){setMessage(err.message||String(err),true)}};
+e('addWorkspace').onclick=()=>e('workspaceDialog').showModal();
+e('browse').onclick=async()=>{try{const r=await window.hostspan.chooseWorkspace();if(!r.canceled&&r.path){e('wsPath').value=r.path;e('wsId').value=targetIdFromPath(r.path);e('wsLabel').value=String(r.path).split(/[\\/]/).filter(Boolean).pop()||''}}catch(err){setMessage(err.message||String(err),true)}};
+document.querySelector('[data-cap="terminal"]').onchange=ev=>{if(ev.target.checked)document.querySelector('[data-cap="exec"]').checked=true};
+e('saveWorkspace').onclick=async()=>{try{
+  const capabilities=[...document.querySelectorAll('[data-cap]:checked')].map(x=>x.dataset.cap);
+  await window.hostspan.addWorkspace({target_id:e('wsId').value.trim(),label:e('wsLabel').value.trim(),root:e('wsPath').value,capabilities});
+  e('workspaceDialog').close();
+  setMessage('Workspace saved. Restart HostSpan to apply it.');
+  if(snapshot?.daemon?.running&&confirm('Restart HostSpan now to apply the workspace change?'))await window.hostspan.daemon('restart');
+  await refresh();
+}catch(err){setMessage(err.message||String(err),true)}};
+e('targets').onclick=async ev=>{const id=ev.target?.dataset?.removeTarget;if(!id)return;if(!confirm('Remove workspace '+id+'?'))return;try{await window.hostspan.removeWorkspace(id);setMessage('Workspace removed. Restart HostSpan to apply it.');if(snapshot?.daemon?.running&&confirm('Restart HostSpan now?'))await window.hostspan.daemon('restart');await refresh()}catch(err){setMessage(err.message||String(err),true)}};
+e('terminals').onclick=ev=>{const a=ev.target?.dataset?.attach;if(a)attach(a,false);const ro=ev.target?.dataset?.readonly;if(ro)attach(ro,true)};
+window.hostspan.onUpdate(render);
+refresh();
 </script></body></html>`;
 }
 
 function createWindow(): BrowserWindow {
   if (window && !window.isDestroyed()) return window;
   window = new BrowserWindow({
-    width: 780,
-    height: 620,
+    width: 860,
+    height: 720,
     show: false,
     title: "HostSpan",
     webPreferences: { preload: preloadPath, contextIsolation: true, nodeIntegration: false, sandbox: true },
@@ -116,22 +308,6 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
-function wslJson(args: string[]): ReturnType<typeof buildAdminSnapshot> {
-  const result = spawnSync("wsl.exe", ["hostspan", ...args], { encoding: "utf8", timeout: 10_000, maxBuffer: 4 * 1024 * 1024 });
-  if (result.status !== 0) throw new Error((result.stderr || result.error?.message || "WSL HostSpan command failed").trim());
-  return JSON.parse(result.stdout) as ReturnType<typeof buildAdminSnapshot>;
-}
-
-async function snapshot(): Promise<ReturnType<typeof buildAdminSnapshot>> {
-  if (process.platform === "win32") return wslJson(["admin", "snapshot", "--recent", "40"]);
-  return buildAdminSnapshot(configPath, { recent: 40 });
-}
-
-async function daemonAction(action: "start" | "stop") {
-  if (process.platform === "win32") return wslJson(["daemon", action]);
-  return action === "start" ? startDaemon(configPath, cliPath, nodePath) : stopDaemon(configPath);
-}
-
 async function refreshUi(): Promise<void> {
   const data = await snapshot();
   tray?.setToolTip(`HostSpan ${data.daemon.running ? "running" : "stopped"}`);
@@ -143,7 +319,11 @@ async function refreshUi(): Promise<void> {
       data.daemon.running
         ? { label: "Stop HostSpan", click: () => void daemonAction("stop").then(refreshUi) }
         : { label: "Start HostSpan", click: () => void daemonAction("start").then(refreshUi) },
+      { label: "Restart HostSpan", enabled: data.daemon.running, click: () => void daemonAction("restart").then(refreshUi) },
+      { label: "Start at login", type: "checkbox", checked: data.auto_start, click: (item) => { setAutoStart(item.checked); void refreshUi(); } },
+      { type: "separator" },
       { label: `Targets: ${data.targets.length}`, enabled: false },
+      { label: `Active: ${data.active_requests.length + data.active_processes.length}`, enabled: false },
       { label: `Terminal sessions: ${data.terminal.sessions.filter((session) => session.live).length}`, enabled: false },
       { type: "separator" },
       { label: "Quit Tray", click: () => { quitting = true; app.quit(); } },
@@ -153,11 +333,28 @@ async function refreshUi(): Promise<void> {
 }
 
 ipcMain.handle("hostspan:snapshot", () => snapshot());
-ipcMain.handle("hostspan:daemon", async (_event, action: "start" | "stop") => {
+ipcMain.handle("hostspan:daemon", async (_event, action: "start" | "stop" | "restart") => {
   const result = await daemonAction(action);
   await refreshUi();
   return result;
 });
+ipcMain.handle("hostspan:doctor", () => doctorReport());
+ipcMain.handle("hostspan:choose-workspace", async () => {
+  const result = await dialog.showOpenDialog({ title: "Add HostSpan Workspace", properties: ["openDirectory"] });
+  return { canceled: result.canceled, ...(result.filePaths[0] ? { path: result.filePaths[0] } : {}) };
+});
+ipcMain.handle("hostspan:add-workspace", async (_event, input: AddWorkspaceInput) => {
+  const result = addWorkspace(input);
+  await refreshUi();
+  return result;
+});
+ipcMain.handle("hostspan:remove-workspace", async (_event, targetId: string) => {
+  const result = removeWorkspace(targetId);
+  await refreshUi();
+  return result;
+});
+ipcMain.handle("hostspan:get-autostart", () => getAutoStart());
+ipcMain.handle("hostspan:set-autostart", (_event, enabled: boolean) => setAutoStart(Boolean(enabled)));
 ipcMain.handle("hostspan:attach", (_event, input: { processId: string; readOnly: boolean }) => {
   if (process.platform === "win32") {
     openAttach(input.processId, input.readOnly);

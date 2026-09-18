@@ -3,8 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
-import { buildAdminSnapshot } from "../../src/admin/snapshot.js";
+import { addLocalWorkspace, buildAdminSnapshot, removeLocalWorkspace } from "../../src/admin/snapshot.js";
 import { daemonStatus, removeDaemonPid, writeDaemonPid } from "../../src/cli/daemon.js";
+import { loadConfig } from "../../src/config/loader.js";
 import type { HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
 import { AuditRepo } from "../../src/state/audit-repo.js";
@@ -60,11 +61,11 @@ function fixture() {
     },
   };
   writeConfigAtomic(configPath, config);
-  return { configPath, dataDir };
+  return { root, targetRoot, configPath, dataDir };
 }
 
 describe("local admin snapshot", () => {
-  it("reads targets, calls, process state, and daemon pid without mutating running records", () => {
+  it("reads targets, active work, calls, process state, and daemon pid without mutating running records", () => {
     const { configPath, dataDir } = fixture();
     const db = openDatabase(join(dataDir, "state.db"));
     const processes = new ProcessesRepo(db);
@@ -88,9 +89,12 @@ describe("local admin snapshot", () => {
       const snapshot = buildAdminSnapshot(configPath, { recent: 20 });
       expect(snapshot.daemon).toMatchObject({ running: true, pid: process.pid });
       expect(snapshot.active_process_count).toBe(1);
+      expect(snapshot.active_requests).toContainEqual(expect.objectContaining({ request_id: "req_admin" }));
+      expect(snapshot.active_processes).toContainEqual(expect.objectContaining({ process_id: "proc_admin", target_id: "local" }));
       expect(snapshot.targets).toContainEqual(expect.objectContaining({ target_id: "local", label: "Local workspace", ready: true }));
       expect(snapshot.recent_calls).toContainEqual(expect.objectContaining({ request_id: "req_admin", event_type: "request.accepted" }));
       expect(snapshot.terminal.sessions).toContainEqual(expect.objectContaining({ process_id: "proc_admin", state: "running", live: false }));
+      expect(() => removeLocalWorkspace(configPath, "local")).toThrow(/process\(es\) are active/);
 
       const readonly = new Database(join(dataDir, "state.db"), { readonly: true });
       try {
@@ -132,6 +136,7 @@ describe("local admin snapshot", () => {
     const snapshot = buildAdminSnapshot(configPath, { recent: 20 });
     expect(snapshot.state.schema_version).toBe(3);
     expect(snapshot.active_process_count).toBe(1);
+    expect(snapshot.active_processes).toContainEqual(expect.objectContaining({ process_id: "proc_legacy", backend: "native" }));
     expect(snapshot.recent_processes).toContainEqual(
       expect.objectContaining({ process_id: "proc_legacy", backend: "native", backend_ref: null, state: "running" }),
     );
@@ -144,5 +149,56 @@ describe("local admin snapshot", () => {
     } finally {
       check.close();
     }
+  });
+
+  it("adds a local workspace with explicit capabilities and removes it safely", () => {
+    const { root, configPath } = fixture();
+    const workspace = join(root, "another-workspace");
+    mkdirSync(workspace, { recursive: true });
+
+    const added = addLocalWorkspace(configPath, {
+      target_id: "another-workspace",
+      label: "Another workspace",
+      root: workspace,
+      capabilities: ["read", "terminal"],
+    });
+    expect(added).toMatchObject({
+      ok: true,
+      target_id: "another-workspace",
+      capabilities: ["read", "terminal", "exec"],
+      restart_required: true,
+    });
+
+    const afterAdd = loadConfig(configPath);
+    expect(afterAdd.targets["another-workspace"]).toMatchObject({
+      label: "Another workspace",
+      capabilities: ["read", "terminal", "exec"],
+      exec_profile: "native",
+    });
+
+    const removed = removeLocalWorkspace(configPath, "another-workspace");
+    expect(removed).toMatchObject({ ok: true, target_id: "another-workspace", restart_required: true });
+    expect(loadConfig(configPath).targets["another-workspace"]).toBeUndefined();
+  });
+
+  it("rejects duplicate roots and invalid target ids", () => {
+    const { root, targetRoot, configPath } = fixture();
+    expect(() =>
+      addLocalWorkspace(configPath, {
+        target_id: "duplicate",
+        root: targetRoot,
+        capabilities: ["read"],
+      }),
+    ).toThrow(/already registered/);
+
+    const unused = join(root, "unused");
+    mkdirSync(unused, { recursive: true });
+    expect(() =>
+      addLocalWorkspace(configPath, {
+        target_id: "Bad ID",
+        root: unused,
+        capabilities: ["read"],
+      }),
+    ).toThrow(/target_id/);
   });
 });
