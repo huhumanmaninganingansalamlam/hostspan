@@ -2,7 +2,7 @@
 
 ## Release contract
 
-- Version: `0.2.0-alpha.11`
+- Version: `0.2.0-alpha.12`
 - Toolset: `hostspan-v2`
 - MCP protocol target: `2026-07-28`
 - Platform: Linux x64 (Ubuntu 24.04 LTS / WSL2)
@@ -46,7 +46,7 @@ Multi-host routing, native Windows/macOS process adapters, GUI/browser computer-
 
 `hostspan-v2` tool names and input schemas are fixed for this Alpha line. `v2` is intentionally a breaking tool-contract revision from `hostspan-v1`: `process_start` gains optional TTY fields and `process_write` is added. Description/schema metadata changes alter `toolset_hash`; refresh the ChatGPT app after upgrading.
 
-`0.2.0-alpha.11` introduces `hostspan-v2` and tmux-backed interactive process sessions. Remote non-loopback serving still fails closed without OAuth. Existing targets do not gain terminal authority automatically: add the explicit `terminal` capability before `tty=true` is accepted. Existing non-interactive `process_start`/`process_poll`/`process_cancel` semantics remain available.
+`0.2.0-alpha.12` keeps the `hostspan-v2` 11-tool schema introduced in alpha.11 and corrects process tool metadata so `process_start` advertises `tty=true` interactive use and `process_cancel` describes both native and tmux-backed termination. Remote non-loopback serving still fails closed without OAuth. Existing targets do not gain terminal authority automatically: add the explicit `terminal` capability before `tty=true` is accepted. Existing non-interactive `process_start`/`process_poll`/`process_cancel` semantics remain available.
 
 Config schema remains version 1. The durable database schema is version 4 and adds process backend/session/deadline/output-cap metadata so tmux sessions can be reconciled after daemon restart. Database initialization uses WAL and backs up an existing database before migration.
 

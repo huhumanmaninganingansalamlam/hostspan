@@ -110,7 +110,8 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "process_start" as const,
-    description: "Start one durable non-interactive argv process through the HostSpan supervisor and optionally wait briefly.",
+    description:
+      "Start one durable process through HostSpan and optionally wait briefly; set tty=true for a tmux-backed interactive terminal on targets with terminal capability.",
     inputSchema: ProcessStartInputSchema,
     annotations: processAnnotations,
   },
@@ -128,7 +129,8 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "process_cancel" as const,
-    description: "Idempotently cancel a supervised process group with TERM followed by KILL when required.",
+    description:
+      "Idempotently stop a supervised process: terminate the native process group or close the tmux-backed interactive session as appropriate.",
     inputSchema: ProcessCancelInputSchema,
     annotations: processAnnotations,
   },
