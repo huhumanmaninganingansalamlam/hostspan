@@ -2,7 +2,7 @@
 
 ## Release contract
 
-- Version: `0.2.0-alpha.18`
+- Version: `0.2.0-alpha.19`
 - Toolset: `hostspan-v2`
 - MCP protocol target: `2026-07-28`
 - Platform: Linux x64 (Ubuntu 24.04 LTS / WSL2)
@@ -39,7 +39,7 @@
 - optional Electron tray/dashboard for daemon start/stop/restart, Doctor health, active work, workspace add/remove, login autostart, recent calls, and tmux attach
 - original vector app/tray branding with deterministic PNG/ICO/ICNS generation
 - Electron Builder packaging for Linux x64 AppImage/deb, Windows x64 NSIS/zip, and macOS arm64/x64 DMG/zip
-- packaged ASAR/CLI/native-SQLite smoke verification
+- platform-aligned packaged runtime verification: full ASAR/CLI/native-SQLite smoke on Linux/macOS and Electron/ASAR package smoke on Windows
 - tag-gated GitHub Actions release builds with version verification, portable CLI tarball, checksums, and prerelease classification
 
 ## Explicitly excluded
@@ -59,7 +59,7 @@ These items do not require a new MCP tool and are not blockers for the current L
 
 `hostspan-v2` tool names and input schemas are fixed for this Alpha line. `v2` is intentionally a breaking tool-contract revision from `hostspan-v1`: `process_start` gains optional TTY fields and `process_write` is added. Description/schema metadata changes alter `toolset_hash`; refresh the ChatGPT app after upgrading.
 
-`0.2.0-alpha.18` keeps the `hostspan-v2` 11-tool schema and toolset hash unchanged and fixes the observed GitHub-hosted release gate: Linux validation installs the required `ripgrep` and `tmux` test dependencies explicitly, CI uses the current `pnpm/setup@v2` action with a Node 22 runtime, and tmux terminal output uses a streaming exact-byte `dd` limiter plus completion draining instead of `head -c`. The latter matters on Ubuntu 24.04/tmux 3.4, where `remain-on-exit` can keep `pipe-pane` open after pane death, `head` can retain small final PTY output until EOF, and `pane_dead_status` can lag behind `pane_dead`; the HostSpan pane wrapper now persists the child exit code before exiting, with tmux status only as a compatibility fallback, so missing status becomes `unknown` rather than invented failure. Alpha.17 introduced the desktop branding, Electron Builder installers, packaged-runtime smoke verification, macOS arm64/x64 release lanes, portable CLI tarballs, and tag-driven GitHub Releases; its first remote workflow run exposed these runner-specific gaps and was intentionally not retagged. Workspace and capability configuration remains restart-gated by design. Remote non-loopback serving still fails closed without OAuth. Existing targets do not gain terminal authority automatically outside the tray convenience profile: add the explicit `terminal` capability before `tty=true` is accepted. Existing non-interactive `process_start`/`process_poll`/`process_cancel` semantics remain available.
+`0.2.0-alpha.19` keeps the `hostspan-v2` 11-tool schema and toolset hash unchanged and aligns packaged smoke verification with the documented platform boundary. The `v0.2.0-alpha.18` GitHub run proved tagged-source validation, the portable CLI package, Linux x64 packaging/smoke, and both macOS packaging/smoke lanes; its Windows x64 installer/zip build also completed, but the job then failed because it attempted the same native HostSpan CLI/config round trip used on release-qualified Unix cores. Windows desktop intentionally delegates HostSpan core operations to WSL2, so alpha.19 verifies the packaged Electron Node mode, ASAR CLI payload, and unpacked Windows binding payload without claiming native Windows core qualification. Release artifacts are uploaded before the smoke step so a future platform-only smoke failure remains diagnosable while still blocking publication. Alpha.18 also fixed the GitHub-hosted Linux dependencies and tmux 3.4 completion/output races exposed by the first alpha.17 packaging run. Workspace and capability configuration remains restart-gated by design. Remote non-loopback serving still fails closed without OAuth. Existing targets do not gain terminal authority automatically outside the tray convenience profile: add the explicit `terminal` capability before `tty=true` is accepted. Existing non-interactive `process_start`/`process_poll`/`process_cancel` semantics remain available.
 
 Config schema remains version 1. The durable database schema is version 4 and adds process backend/session/deadline/output-cap metadata so tmux sessions can be reconciled after daemon restart. Database initialization uses WAL and backs up an existing database before migration.
 

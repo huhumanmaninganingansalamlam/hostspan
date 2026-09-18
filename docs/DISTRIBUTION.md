@@ -40,7 +40,7 @@ Artifacts are written to `out/`:
 | macOS Apple Silicon | `.dmg`, `.zip` |
 | macOS Intel | `.dmg`, `.zip` |
 
-The packaged Electron executable can also run the HostSpan CLI through `ELECTRON_RUN_AS_NODE=1`; this is how the packaged tray starts/stops the durable daemon without requiring a second embedded runtime.
+On Linux and macOS, the packaged Electron executable can also run the HostSpan CLI through `ELECTRON_RUN_AS_NODE=1`; this is how the packaged tray starts/stops the durable daemon without requiring a second embedded runtime. On Windows, the tray intentionally delegates HostSpan core operations to the WSL2 `hostspan` CLI instead of claiming a native Windows core.
 
 After creating an unpacked or distributable package, verify the package rather than only the source tree:
 
@@ -48,7 +48,7 @@ After creating an unpacked or distributable package, verify the package rather t
 pnpm desktop:smoke
 ```
 
-The smoke script executes `dist/src/cli/index.js` from inside the packaged ASAR, checks the packaged version, loads the packaged `better-sqlite3` native module in an in-memory database, and runs a minimal packaged CLI/config round trip.
+On Linux and macOS, the smoke script executes `dist/src/cli/index.js` from inside the packaged ASAR, checks the packaged version, loads the packaged `better-sqlite3` native module in an in-memory database, and runs a minimal packaged CLI/config round trip. On Windows, where the desktop shell delegates the core to WSL2, the smoke verifies package structure and the Electron runtime without claiming native Windows core qualification.
 
 ## Continuous integration
 
@@ -60,17 +60,17 @@ The smoke script executes `dist/src/cli/index.js` from inside the packaged ASAR,
 2. verifies that `v<package.json version>` exactly matches the tag;
 3. runs the full `pnpm check` release gate on Ubuntu;
 4. builds Linux x64, Windows x64, macOS Apple Silicon, and macOS Intel artifacts on matching native GitHub runners;
-5. runs the packaged CLI/native-SQLite smoke on every desktop runner;
+5. runs the full packaged CLI/native-SQLite smoke on Linux/macOS and the product-aligned package/runtime smoke on Windows;
 6. packs the npm/CLI payload as `hostspan-<version>.tgz`;
 7. uploads the user-facing packages to one GitHub Release;
 8. generates `SHA256SUMS.txt`;
-9. marks tags containing `-` (for example, `v0.2.0-alpha.18`) as prereleases.
+9. marks tags containing `-` (for example, `v0.2.0-alpha.19`) as prereleases.
 
 Create a release after the intended commit is on `main`:
 
 ```bash
-git tag v0.2.0-alpha.18
-git push origin v0.2.0-alpha.18
+git tag v0.2.0-alpha.19
+git push origin v0.2.0-alpha.19
 ```
 
 Do not move or reuse a published tag. Increment `package.json`, `src/version.ts`, and `docs/RELEASE.md` together before creating the next tag.

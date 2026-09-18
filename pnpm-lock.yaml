@@ -200,6 +200,9 @@ importers:
       '@biomejs/biome':
         specifier: 2.2.4
         version: 2.2.4
+      '@electron/asar':
+        specifier: 3.4.1
+        version: 3.4.1
       '@types/better-sqlite3':
         specifier: 7.6.13
         version: 7.6.13
