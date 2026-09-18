@@ -64,13 +64,13 @@ The smoke script executes `dist/src/cli/index.js` from inside the packaged ASAR,
 6. packs the npm/CLI payload as `hostspan-<version>.tgz`;
 7. uploads the user-facing packages to one GitHub Release;
 8. generates `SHA256SUMS.txt`;
-9. marks tags containing `-` (for example, `v0.2.0-alpha.17`) as prereleases.
+9. marks tags containing `-` (for example, `v0.2.0-alpha.18`) as prereleases.
 
 Create a release after the intended commit is on `main`:
 
 ```bash
-git tag v0.2.0-alpha.17
-git push origin v0.2.0-alpha.17
+git tag v0.2.0-alpha.18
+git push origin v0.2.0-alpha.18
 ```
 
 Do not move or reuse a published tag. Increment `package.json`, `src/version.ts`, and `docs/RELEASE.md` together before creating the next tag.
