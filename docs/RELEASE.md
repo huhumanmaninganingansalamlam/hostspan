@@ -2,7 +2,7 @@
 
 ## Release contract
 
-- Version: `0.2.0-alpha.16`
+- Version: `0.2.0-alpha.17`
 - Toolset: `hostspan-v2`
 - MCP protocol target: `2026-07-28`
 - Platform: Linux x64 (Ubuntu 24.04 LTS / WSL2)
@@ -37,6 +37,10 @@
 - audit history bounded by age and `max_audit_events` (500,000 by default)
 - detached `hostspan daemon start|stop|status` management
 - optional Electron tray/dashboard for daemon start/stop/restart, Doctor health, active work, workspace add/remove, login autostart, recent calls, and tmux attach
+- original vector app/tray branding with deterministic PNG/ICO/ICNS generation
+- Electron Builder packaging for Linux x64 AppImage/deb, Windows x64 NSIS/zip, and macOS arm64/x64 DMG/zip
+- packaged ASAR/CLI/native-SQLite smoke verification
+- tag-gated GitHub Actions release builds with version verification, portable CLI tarball, checksums, and prerelease classification
 
 ## Explicitly excluded
 
@@ -44,7 +48,7 @@ Multi-host routing, native Windows/macOS process adapters, GUI/browser computer-
 
 ## Known post-Alpha work
 
-- package the Electron companion as signed/installer artifacts for Windows, macOS, and Linux;
+- configure Windows Authenticode and Apple Developer ID/notarization secrets for signed public downloads;
 - run native macOS and Windows/WSL2 desktop qualification rather than relying only on implemented platform branches;
 - extend soak duration from the current functional/concurrency evidence to multi-day steady-state runs;
 - add bounded JSONL rotation/archival for always-on installations (SQLite audit rows are already age/count bounded).
@@ -55,7 +59,7 @@ These items do not require a new MCP tool and are not blockers for the current L
 
 `hostspan-v2` tool names and input schemas are fixed for this Alpha line. `v2` is intentionally a breaking tool-contract revision from `hostspan-v1`: `process_start` gains optional TTY fields and `process_write` is added. Description/schema metadata changes alter `toolset_hash`; refresh the ChatGPT app after upgrading.
 
-`0.2.0-alpha.16` keeps the `hostspan-v2` 11-tool schema unchanged and fixes tray terminal visibility: active tmux sessions are merged into the terminal list even when newer completed processes push them outside the recent-process window. Alpha.15 closed the operations/documentation audit and made restart impact explicit. Workspace and capability configuration remains restart-gated by design. Remote non-loopback serving still fails closed without OAuth. Existing targets do not gain terminal authority automatically outside the tray convenience profile: add the explicit `terminal` capability before `tty=true` is accepted. Existing non-interactive `process_start`/`process_poll`/`process_cancel` semantics remain available.
+`0.2.0-alpha.17` keeps the `hostspan-v2` 11-tool schema and toolset hash unchanged while productizing the desktop companion: original app/tray branding, deterministic native icon generation, Electron Builder installers, packaged-runtime smoke verification, Linux packaging CI, macOS arm64/x64 release lanes, portable CLI tarballs, and tag-driven GitHub Releases. Alpha.16 fixed active-terminal visibility in the tray. Workspace and capability configuration remains restart-gated by design. Remote non-loopback serving still fails closed without OAuth. Existing targets do not gain terminal authority automatically outside the tray convenience profile: add the explicit `terminal` capability before `tty=true` is accepted. Existing non-interactive `process_start`/`process_poll`/`process_cancel` semantics remain available.
 
 Config schema remains version 1. The durable database schema is version 4 and adds process backend/session/deadline/output-cap metadata so tmux sessions can be reconciled after daemon restart. Database initialization uses WAL and backs up an existing database before migration.
 
@@ -66,6 +70,8 @@ Before publishing an Alpha build:
 ```bash
 pnpm install --frozen-lockfile
 pnpm check
+pnpm desktop:make
+pnpm desktop:smoke
 hostspan doctor
 hostspan smoke --target <approved-test-target>
 ```

@@ -1,0 +1,220 @@
+name: desktop-release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing v-prefixed tag to package and publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ github.ref }}-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate tagged source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo "tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.2
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Verify tag matches package version
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          actual="${{ steps.release.outputs.tag }}"
+          test "$actual" = "$expected" || { echo "Tag $actual does not match package version $expected"; exit 1; }
+      - name: Check
+        run: pnpm check
+
+  build:
+    name: ${{ matrix.label }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x64
+            os: ubuntu-24.04
+            artifact: linux-x64
+            arch: x64
+          - label: Windows x64
+            os: windows-latest
+            artifact: windows-x64
+            arch: x64
+          - label: macOS Apple Silicon
+            os: macos-14
+            artifact: macos-arm64
+            arch: arm64
+          - label: macOS Intel
+            os: macos-15-intel
+            artifact: macos-x64
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo "tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.2
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install Linux packaging dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y fakeroot dpkg
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          actual="${{ steps.release.outputs.tag }}"
+          test "$actual" = "$expected" || { echo "Tag $actual does not match package version $expected"; exit 1; }
+      - name: Verify runner architecture
+        shell: bash
+        run: |
+          actual="$(node -p 'process.arch')"
+          expected="${{ matrix.arch }}"
+          test "$actual" = "$expected" || { echo "Runner architecture $actual does not match expected $expected"; exit 1; }
+      - name: Build desktop artifacts
+        run: pnpm desktop:make
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Smoke packaged CLI
+        run: node scripts/smoke-packaged-cli.mjs
+      - name: Upload platform artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: hostspan-${{ matrix.artifact }}
+          path: |
+            out/*.AppImage
+            out/*.deb
+            out/*.dmg
+            out/*.zip
+            out/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  package-cli:
+    name: Package CLI
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo "tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.2
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Build CLI
+        run: pnpm build
+      - name: Pack CLI
+        shell: bash
+        run: |
+          mkdir -p out/cli
+          pnpm pack --pack-destination out/cli
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: hostspan-cli
+          path: out/cli/*.tgz
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub Release
+    needs:
+      - build
+      - package-cli
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo "tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@v7
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: release-assets
+        run: find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          else
+            args=(release create "$RELEASE_TAG" release-assets/* --verify-tag --generate-notes --title "HostSpan $RELEASE_TAG")
+            if [[ "$RELEASE_TAG" == *-* ]]; then
+              args+=(--prerelease)
+            fi
+            gh "${args[@]}"
+          fi

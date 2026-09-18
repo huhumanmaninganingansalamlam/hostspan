@@ -44,6 +44,8 @@ if (process.platform === "linux") app.commandLine.appendSwitch("disable-gpu");
 const cliPath = fileURLToPath(new URL("../cli/index.js", import.meta.url));
 const mainPath = fileURLToPath(new URL("./main.js", import.meta.url));
 const preloadPath = fileURLToPath(new URL("./preload.cjs", import.meta.url));
+const iconDir = fileURLToPath(new URL("../../../assets/icons/", import.meta.url));
+const appIconPath = join(iconDir, "app.png");
 const nodePath = process.env.HOSTSPAN_NODE ?? process.execPath;
 
 let tray: Tray | undefined;
@@ -52,6 +54,12 @@ let refreshTimer: NodeJS.Timeout | undefined;
 let quitting = false;
 
 function icon() {
+  const path = join(iconDir, process.platform === "darwin" ? "hostspanTemplate.png" : "tray.png");
+  const branded = nativeImage.createFromPath(path);
+  if (!branded.isEmpty()) {
+    if (process.platform === "darwin") branded.setTemplateImage(true);
+    return branded;
+  }
   return nativeImage.createFromDataURL(
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAA8SURBVHgB7ZAxCgAgDAMv4v9/ubg4OAhFQfBKQ5uQkBByyJxz9oA5QFZUVFS0AjYgC0gB6QAtIAekALSAbAB2FQugKf4BhwAAAABJRU5ErkJggg==",
   );
@@ -354,6 +362,7 @@ function createWindow(): BrowserWindow {
     height: 720,
     show: false,
     title: "HostSpan",
+    ...(process.platform !== "darwin" && existsSync(appIconPath) ? { icon: appIconPath } : {}),
     webPreferences: { preload: preloadPath, contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   void window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html())}`);

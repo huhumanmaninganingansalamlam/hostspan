@@ -18,6 +18,14 @@ hostspan print-toolset
 
 HostSpan `hostspan-v2` must advertise exactly 11 tools. Target permissions never remove a tool from `tools/list`; a disallowed call returns `SCOPE_DENIED`. If ChatGPT still shows the old 10-tool `hostspan-v1` schema after upgrading, Refresh the app before debugging the server.
 
+## Only read-only tools appear in one ChatGPT conversation
+
+First compare `hostspan print-toolset` with the tool schemas actually injected into that conversation. If HostSpan advertises all 11 tools but `file_patch`, `process_start`, `process_write`, and `process_cancel` are absent, the filtering occurred in the ChatGPT app/action-permission or conversation tool-injection layer before a request reached HostSpan.
+
+Check the app's enabled tools/action controls, use Refresh, explicitly select HostSpan in a new conversation, and delete/re-add the app only if the stale subset persists. Confirm the absence of a corresponding HostSpan transport/audit trace before classifying it as a server defect.
+
+Do **not** mark side-effecting tools as `readOnlyHint=true`, omit their real risk semantics to evade client controls, or hide all operations behind a misleading generic tool. These changes cannot guarantee client injection and would make confirmation/audit behavior less trustworthy.
+
 ## A call does not reach HostSpan
 
 Use:

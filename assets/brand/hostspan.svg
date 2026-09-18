@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">HostSpan app icon</title>
+  <desc id="desc">A terminal prompt spanning two brackets on a dark rounded square.</desc>
+  <defs>
+    <linearGradient id="background" x1="128" y1="96" x2="896" y2="928" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0B1220"/>
+      <stop offset="0.55" stop-color="#172554"/>
+      <stop offset="1" stop-color="#0F766E"/>
+    </linearGradient>
+    <linearGradient id="span" x1="320" y1="512" x2="704" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#5EEAD4"/>
+    </linearGradient>
+    <filter id="shadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#020617" flood-opacity="0.38"/>
+    </filter>
+  </defs>
+  <rect x="48" y="48" width="928" height="928" rx="224" fill="url(#background)"/>
+  <path d="M152 304C210 172 344 104 500 104c166 0 313 80 371 221" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="52" stroke-linecap="round"/>
+  <g filter="url(#shadow)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M362 296h-82v432h82" stroke="#F8FAFC" stroke-width="72"/>
+    <path d="M662 296h82v432h-82" stroke="#F8FAFC" stroke-width="72"/>
+    <path d="M362 512h300" stroke="url(#span)" stroke-width="72"/>
+    <path d="m421 421 91 91-91 91" stroke="#F8FAFC" stroke-width="54"/>
+    <path d="M558 603h86" stroke="#5EEAD4" stroke-width="48"/>
+  </g>
+</svg>

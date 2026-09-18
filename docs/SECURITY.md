@@ -6,6 +6,8 @@ HostSpan treats model output and repository content as untrusted input. The loca
 
 Every tool call is revalidated against the configured `target_id`, target capability, canonical target-relative path, file policy, exec profile, program/environment limits, deadlines/output limits, and idempotency ledger.
 
+Tool annotations remain truthful: file/process mutation tools are not relabeled as read-only to bypass a client's action controls. A client may filter which advertised tools it injects into a conversation, but weakening annotations or wrapping writes in a deceptively generic tool would only hide risk from the user; it would not create a dependable server-side workaround.
+
 ## Native execution is not sandboxed execution
 
 Alpha supports `mode: native` only. A native child process runs as the same OS user as HostSpan and may be able to read files outside the target or use the network. `allowed_programs` and the environment allowlist reduce accidental or model-selected behavior; they are **not** a kernel/container/VM security boundary.

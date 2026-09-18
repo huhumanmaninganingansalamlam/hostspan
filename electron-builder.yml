@@ -1,0 +1,51 @@
+appId: io.hostspan.desktop
+productName: HostSpan
+asar: true
+npmRebuild: false
+compression: maximum
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+directories:
+  output: out
+  buildResources: assets/icons
+files:
+  - dist/**/*
+  - assets/icons/**/*
+  - package.json
+asarUnpack:
+  - node_modules/better-sqlite3/prebuilds/**/*
+  - node_modules/better-sqlite3/lib/**/*
+linux:
+  executableName: hostspan-desktop
+  syncDesktopName: true
+  icon: assets/icons/app.png
+  category: Development
+  synopsis: Terminal-first MCP gateway and local HostSpan manager
+  description: Manage HostSpan, approved workspaces, active MCP operations, and shared tmux terminals.
+  maintainer: HostSpan contributors
+  vendor: HostSpan
+  target:
+    - AppImage
+    - deb
+mac:
+  icon: assets/icons/app.icns
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+    - zip
+win:
+  icon: assets/icons/app.ico
+  executableName: HostSpan
+  target:
+    - nsis
+    - zip
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: false
+  createStartMenuShortcut: true
+  shortcutName: HostSpan
+publish:
+  provider: github
+  owner: huhumanmaninganingansalamlam
+  repo: hostspan

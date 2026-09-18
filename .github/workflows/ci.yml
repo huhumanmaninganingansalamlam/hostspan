@@ -12,14 +12,46 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.2
+          run_install: false
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
-      - name: Enable Corepack
-        run: corepack enable
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Check
         run: pnpm check
+
+  desktop-package-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    needs: test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.2
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install packaging dependencies
+        run: sudo apt-get update && sudo apt-get install -y fakeroot dpkg
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Package Linux desktop app
+        run: pnpm desktop:make
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Smoke packaged CLI and native SQLite
+        run: pnpm desktop:smoke
+      - name: Verify artifacts
+        run: |
+          test -n "$(find out -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          test -n "$(find out -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          find out -maxdepth 1 -type f -printf '%f\n' | sort

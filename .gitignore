@@ -1,5 +1,7 @@
 node_modules/
 dist/
 coverage/
+out/
+assets/icons/
 *.tsbuildinfo
 .hostspan-state/

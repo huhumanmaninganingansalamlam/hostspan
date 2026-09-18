@@ -22,7 +22,7 @@ Alpha is release-qualified on Ubuntu 24.04 LTS or WSL2 on Linux x64. GUI/browser
 - `ripgrep` (`rg`) for `file_search`
 - `tmux` for targets that enable the `terminal` capability
 - systemd user services only if using `hostspan service ...`
-- Electron dependencies only if using the optional system-tray companion (`pnpm desktop`)
+- Electron dependencies only if using or packaging the optional system-tray companion (`pnpm desktop` / `pnpm desktop:make`)
 - OpenAI Secure MCP Tunnel for the standard ChatGPT Web connection path
 
 ## Build
@@ -31,6 +31,7 @@ Alpha is release-qualified on Ubuntu 24.04 LTS or WSL2 on Linux x64. GUI/browser
 corepack enable
 pnpm install --frozen-lockfile
 pnpm build
+pnpm icons
 node dist/src/cli/index.js --version
 ```
 
@@ -130,7 +131,16 @@ The optional tray companion is intentionally small: server start/stop/restart, v
 pnpm desktop
 ```
 
-Electron supplies the tray/menu-bar surface on macOS, Windows, and Linux. The HostSpan core is currently release-qualified on Linux/WSL2; on Windows the tray controls the WSL2 `hostspan` CLI. macOS core support is a preview until its process/recovery suite is release-qualified.
+The original HostSpan icon is generated from the checked-in SVG sources in `assets/brand`; platform PNG, ICO, and ICNS files are generated deterministically by `pnpm icons`. Electron supplies the tray/menu-bar surface on macOS, Windows, and Linux. The HostSpan core is currently release-qualified on Linux/WSL2; on Windows the tray controls the WSL2 `hostspan` CLI. macOS core support is a preview until its process/recovery suite is release-qualified.
+
+Create native desktop artifacts for the current operating system with:
+
+```bash
+pnpm desktop:make
+pnpm desktop:smoke
+```
+
+Linux x64 produces AppImage and Debian packages, Windows x64 produces an NSIS installer and ZIP, and macOS produces separate Apple Silicon and Intel DMG/ZIP artifacts. `desktop:smoke` executes the CLI from the packaged ASAR and opens an in-memory `better-sqlite3` database under the packaged Electron runtime, catching broken native-module packaging before release. Tagging a commit as `v<package-version>` runs the cross-platform GitHub Actions release workflow, verifies that the tag matches `package.json`, builds the four desktop architecture lanes plus a portable CLI `.tgz`, generates `SHA256SUMS.txt`, and publishes a GitHub prerelease for alpha/beta tags. Current CI artifacts are unsigned; operating-system signing and notarization credentials can be added without changing the MCP contract. See [Desktop distribution](docs/DISTRIBUTION.md).
 
 To listen on a specific interface:
 
@@ -244,6 +254,7 @@ pnpm typecheck
 pnpm lint
 pnpm test
 pnpm build
+pnpm desktop:make
 hostspan doctor
 hostspan smoke --target local-app
 ```
@@ -256,6 +267,7 @@ The contract suite reconnects and lists the fixed 11-tool `hostspan-v2` toolset 
 - [ChatGPT Web / Secure MCP Tunnel / reverse proxy](docs/CHATGPT.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Alpha release and migration notes](docs/RELEASE.md)
+- [Desktop distribution and release automation](docs/DISTRIBUTION.md)
 
 When reporting an interoperability issue, attach `hostspan doctor` output and a redacted `hostspan support-export` bundle. Process stdout/stderr is not written to audit logs or support bundles.
 

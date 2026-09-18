@@ -1,9 +1,18 @@
 {
   "name": "hostspan",
-  "version": "0.2.0-alpha.16",
+  "version": "0.2.0-alpha.17",
+  "productName": "HostSpan",
+  "desktopName": "HostSpan",
   "description": "Terminal-first MCP execution gateway for approved local targets",
+  "author": "HostSpan contributors",
+  "homepage": "https://github.com/huhumanmaninganingansalamlam/hostspan",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/huhumanmaninganingansalamlam/hostspan.git"
+  },
   "license": "Apache-2.0",
   "type": "module",
+  "main": "./dist/src/desktop/main.js",
   "engines": {
     "node": ">=22"
   },
@@ -20,9 +29,13 @@
     ".": "./dist/src/index.js"
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json",
-    "desktop": "corepack pnpm build && electron dist/src/desktop/main.js",
-    "desktop:dev": "corepack pnpm build && electron dist/src/desktop/main.js",
+    "build": "node scripts/clean.mjs dist && tsc -p tsconfig.json",
+    "icons": "node scripts/generate-icons.mjs",
+    "desktop": "corepack pnpm build && corepack pnpm icons && electron dist/src/desktop/main.js",
+    "desktop:dev": "corepack pnpm build && corepack pnpm icons && electron dist/src/desktop/main.js",
+    "desktop:dir": "corepack pnpm build && corepack pnpm icons && node scripts/clean.mjs out && electron-builder --config electron-builder.yml --dir",
+    "desktop:make": "corepack pnpm build && corepack pnpm icons && node scripts/clean.mjs out && electron-builder --config electron-builder.yml --publish never",
+    "desktop:smoke": "node scripts/smoke-packaged-cli.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:contract": "vitest run test/contract test/acceptance",
@@ -49,7 +62,10 @@
     "@types/better-sqlite3": "7.6.13",
     "@types/node": "24.7.2",
     "electron": "^44.4.1",
+    "electron-builder": "^26.15.3",
     "fast-check": "4.3.0",
+    "png2icons": "^2.0.1",
+    "sharp": "^0.35.4",
     "typescript": "5.9.3",
     "vitest": "3.2.4"
   },
