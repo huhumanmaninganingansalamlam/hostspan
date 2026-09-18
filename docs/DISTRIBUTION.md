@@ -48,7 +48,18 @@ After creating an unpacked or distributable package, verify the package rather t
 pnpm desktop:smoke
 ```
 
-On Linux and macOS, the smoke script executes `dist/src/cli/index.js` from inside the packaged ASAR, checks the packaged version, loads the packaged `better-sqlite3` native module in an in-memory database, and runs a minimal packaged CLI/config round trip. On Windows, where the desktop shell delegates the core to WSL2, the smoke verifies package structure and the Electron runtime without claiming native Windows core qualification.
+On Linux and macOS, the smoke script executes `dist/src/cli/index.js` from inside the packaged ASAR, checks the packaged version, loads the packaged `better-sqlite3` native module in an in-memory database, and runs a minimal packaged CLI/config round trip. On Windows, where the desktop shell delegates the core to WSL2, the smoke is intentionally static: it verifies the packaged PE executable, ASAR CLI/desktop/icon payloads, and unpacked Windows `better-sqlite3` binding without executing the desktop binary as a native HostSpan core.
+
+The Windows package-layout smoke can also be reproduced from Linux before tagging:
+
+```bash
+rm -rf out-win-cross
+pnpm exec electron-builder --config electron-builder.yml --win dir --x64 --config.directories.output=out-win-cross
+node scripts/smoke-packaged-cli.mjs --platform win32 --arch x64 --out-dir out-win-cross
+rm -rf out-win-cross
+```
+
+The `--platform`, `--arch`, and `--out-dir` overrides are for static package validation. Executable CLI/native-SQLite smoke remains restricted to a matching Linux/macOS host runtime.
 
 ## Continuous integration
 
@@ -64,13 +75,13 @@ On Linux and macOS, the smoke script executes `dist/src/cli/index.js` from insid
 6. packs the npm/CLI payload as `hostspan-<version>.tgz`;
 7. uploads the user-facing packages to one GitHub Release;
 8. generates `SHA256SUMS.txt`;
-9. marks tags containing `-` (for example, `v0.2.0-alpha.19`) as prereleases.
+9. marks tags containing `-` (for example, `v0.2.0-alpha.20`) as prereleases.
 
 Create a release after the intended commit is on `main`:
 
 ```bash
-git tag v0.2.0-alpha.19
-git push origin v0.2.0-alpha.19
+git tag v0.2.0-alpha.20
+git push origin v0.2.0-alpha.20
 ```
 
 Do not move or reuse a published tag. Increment `package.json`, `src/version.ts`, and `docs/RELEASE.md` together before creating the next tag.

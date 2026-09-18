@@ -2,7 +2,7 @@
 
 ## Release contract
 
-- Version: `0.2.0-alpha.19`
+- Version: `0.2.0-alpha.20`
 - Toolset: `hostspan-v2`
 - MCP protocol target: `2026-07-28`
 - Platform: Linux x64 (Ubuntu 24.04 LTS / WSL2)
@@ -59,7 +59,7 @@ These items do not require a new MCP tool and are not blockers for the current L
 
 `hostspan-v2` tool names and input schemas are fixed for this Alpha line. `v2` is intentionally a breaking tool-contract revision from `hostspan-v1`: `process_start` gains optional TTY fields and `process_write` is added. Description/schema metadata changes alter `toolset_hash`; refresh the ChatGPT app after upgrading.
 
-`0.2.0-alpha.19` keeps the `hostspan-v2` 11-tool schema and toolset hash unchanged and aligns packaged smoke verification with the documented platform boundary. The `v0.2.0-alpha.18` GitHub run proved tagged-source validation, the portable CLI package, Linux x64 packaging/smoke, and both macOS packaging/smoke lanes; its Windows x64 installer/zip build also completed, but the job then failed because it attempted the same native HostSpan CLI/config round trip used on release-qualified Unix cores. Windows desktop intentionally delegates HostSpan core operations to WSL2, so alpha.19 verifies the packaged Electron Node mode, ASAR CLI payload, and unpacked Windows binding payload without claiming native Windows core qualification. Release artifacts are uploaded before the smoke step so a future platform-only smoke failure remains diagnosable while still blocking publication. Alpha.18 also fixed the GitHub-hosted Linux dependencies and tmux 3.4 completion/output races exposed by the first alpha.17 packaging run. Workspace and capability configuration remains restart-gated by design. Remote non-loopback serving still fails closed without OAuth. Existing targets do not gain terminal authority automatically outside the tray convenience profile: add the explicit `terminal` capability before `tty=true` is accepted. Existing non-interactive `process_start`/`process_poll`/`process_cancel` semantics remain available.
+`0.2.0-alpha.20` keeps the `hostspan-v2` 11-tool schema and toolset hash unchanged and closes the remaining desktop-release gate. The `v0.2.0-alpha.19` workflow built and uploaded all four desktop lanes, while Linux and both macOS package/runtime smokes passed; publication was still blocked by the Windows post-package smoke. Windows is a WSL2-core platform, so alpha.20 removes the inappropriate packaged-EXE Node execution probe and instead verifies the Windows shell statically: PE signature, ASAR CLI/desktop/icon payloads, and the unpacked `better-sqlite3` Windows binding. The same Windows validation is reproducible from Linux cross-packaging through the smoke script's platform/output overrides. Release artifacts remain uploaded before smoke so platform failures are diagnosable while still blocking publication. Workspace and capability configuration remains restart-gated by design. Remote non-loopback serving still fails closed without OAuth. Existing targets do not gain terminal authority automatically outside the tray convenience profile: add the explicit `terminal` capability before `tty=true` is accepted. Existing non-interactive `process_start`/`process_poll`/`process_cancel` semantics remain available.
 
 Config schema remains version 1. The durable database schema is version 4 and adds process backend/session/deadline/output-cap metadata so tmux sessions can be reconciled after daemon restart. Database initialization uses WAL and backs up an existing database before migration.
 

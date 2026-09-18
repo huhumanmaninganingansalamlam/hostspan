@@ -13,7 +13,22 @@ import { fileURLToPath } from "node:url";
 import { listPackage } from "@electron/asar";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const outDir = join(root, "out");
+const args = process.argv.slice(2);
+
+function option(name, fallback) {
+	const index = args.indexOf(name);
+	return index >= 0 ? args[index + 1] : fallback;
+}
+
+const targetPlatform = option("--platform", process.platform);
+const targetArch = option("--arch", process.arch);
+const outDir = resolve(root, option("--out-dir", "out"));
+if (!["linux", "darwin", "win32"].includes(targetPlatform)) {
+	throw new Error(`Unsupported smoke platform: ${targetPlatform}`);
+}
+if (!["x64", "arm64"].includes(targetArch)) {
+	throw new Error(`Unsupported smoke architecture: ${targetArch}`);
+}
 const packageJson = JSON.parse(
 	readFileSync(join(root, "package.json"), "utf8"),
 );
@@ -30,9 +45,9 @@ function findFiles(dir, name, results = []) {
 	return results;
 }
 
-function packagedPaths(asarPath) {
+function packagedPaths(asarPath, platform) {
 	const resourcesDir = dirname(asarPath);
-	if (process.platform === "darwin") {
+	if (platform === "darwin") {
 		const contentsDir = dirname(resourcesDir);
 		return {
 			executable: join(contentsDir, "MacOS", "HostSpan"),
@@ -44,7 +59,7 @@ function packagedPaths(asarPath) {
 	return {
 		executable: join(
 			appDir,
-			process.platform === "win32" ? "HostSpan.exe" : "hostspan-desktop",
+			platform === "win32" ? "HostSpan.exe" : "hostspan-desktop",
 		),
 		cli: join(asarPath, "dist", "src", "cli", "index.js"),
 		nativeModule: join(asarPath, "node_modules", "better-sqlite3"),
@@ -67,21 +82,25 @@ function run(executable, args, extraEnv = {}) {
 	return result.stdout.trim();
 }
 
-function smokeWindowsPackage(executable, asarPath) {
-	const nodeVersion = run(executable, ["--version"]);
-	if (!nodeVersion.startsWith("v"))
-		throw new Error(`Unexpected packaged Node version output: ${nodeVersion}`);
-
+function smokeWindowsPackage(executable, asarPath, arch) {
+	const executableHeader = readFileSync(executable).subarray(0, 2).toString("ascii");
+	if (executableHeader !== "MZ") {
+		throw new Error(`Packaged Windows executable is not a PE image: ${executable}`);
+	}
 	const entries = new Set(listPackage(asarPath));
 	if (!entries.has("/dist/src/cli/index.js"))
 		throw new Error("Packaged ASAR is missing the HostSpan CLI entrypoint");
+	if (!entries.has("/dist/src/desktop/main.js"))
+		throw new Error("Packaged ASAR is missing the HostSpan desktop entrypoint");
+	if (!entries.has("/assets/icons/app.ico"))
+		throw new Error("Packaged ASAR is missing the Windows application icon payload");
 
 	const nativeBinding = join(
 		`${asarPath}.unpacked`,
 		"node_modules",
 		"better-sqlite3",
 		"prebuilds",
-		`win32-${process.arch}.node`,
+		`win32-${arch}.node`,
 	);
 	if (!existsSync(nativeBinding))
 		throw new Error(
@@ -90,17 +109,26 @@ function smokeWindowsPackage(executable, asarPath) {
 }
 
 const candidates = findFiles(outDir, "app.asar").filter(
-	(path) => path.includes("-unpacked") || path.includes(".app"),
+	(path) => {
+		if (targetPlatform === "win32") return path.includes("win-unpacked");
+		if (targetPlatform === "darwin") return path.includes(".app");
+		return path.includes("linux-unpacked");
+	},
 );
 if (candidates.length === 0)
-	throw new Error("No unpacked Electron app.asar was found under out/.");
+	throw new Error(`No ${targetPlatform}/${targetArch} Electron app.asar was found under ${outDir}.`);
 
 const asarPath = candidates[0];
-const { executable, cli, nativeModule } = packagedPaths(asarPath);
+const { executable, cli, nativeModule } = packagedPaths(asarPath, targetPlatform);
 if (!existsSync(executable))
 	throw new Error(`Packaged executable not found: ${executable}`);
 
-if (process.platform !== "win32") {
+if (targetPlatform !== "win32") {
+	if (targetPlatform !== process.platform || targetArch !== process.arch) {
+		throw new Error(
+			`Executable smoke requires the target runtime (${targetPlatform}/${targetArch}); current runtime is ${process.platform}/${process.arch}.`,
+		);
+	}
 	const version = run(executable, [cli, "--version"]);
 	if (version !== packageJson.version) {
 		throw new Error(
@@ -140,13 +168,13 @@ if (process.platform !== "win32") {
 	}
 
 	console.log(
-		`Packaged HostSpan smoke passed: ${process.platform}/${process.arch} ${packageJson.version}`,
+		`Packaged HostSpan smoke passed: ${targetPlatform}/${targetArch} ${packageJson.version}`,
 	);
 }
 
-if (process.platform === "win32") {
-	smokeWindowsPackage(executable, asarPath);
+if (targetPlatform === "win32") {
+	smokeWindowsPackage(executable, asarPath, targetArch);
 	console.log(
-		`Packaged HostSpan Windows shell smoke passed: ${process.arch} ${packageJson.version}`,
+		`Packaged HostSpan Windows shell smoke passed: ${targetArch} ${packageJson.version}`,
 	);
 }
