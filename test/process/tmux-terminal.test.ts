@@ -139,20 +139,23 @@ describe("tmux interactive process backend", () => {
       max_bytes: 64 * 1024,
     };
     const [written, joined] = await Promise.all([supervisor.write(writeInput), supervisor.write(writeInput)]);
-    expect(String(written.stdout)).toContain("HELLO world");
     expect(joined).toEqual(written);
     await expect(supervisor.write(writeInput)).resolves.toEqual(written);
     await expect(supervisor.write({ ...writeInput, chars: "duplicate" })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
-    const terminal =
-      written.state === "running"
-        ? await supervisor.poll({
-            process_id: String(started.process_id),
-            stdout_cursor: Number(written.next_stdout_cursor ?? 0),
-            stderr_cursor: 0,
-            wait_ms: 500,
-            max_bytes: 64 * 1024,
-          })
-        : written;
+    let terminal = written;
+    let transcript = String(written.stdout ?? "");
+    for (let attempt = 0; attempt < 5 && !transcript.includes("HELLO world"); attempt += 1) {
+      if (terminal.state !== "running") break;
+      terminal = await supervisor.poll({
+        process_id: String(started.process_id),
+        stdout_cursor: Number(terminal.next_stdout_cursor ?? 0),
+        stderr_cursor: 0,
+        wait_ms: 500,
+        max_bytes: 64 * 1024,
+      });
+      transcript += String(terminal.stdout ?? "");
+    }
+    expect(transcript).toContain("HELLO world");
     expect(terminal.state).toBe("succeeded");
     db.close();
   });
