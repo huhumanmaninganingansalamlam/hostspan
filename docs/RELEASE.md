@@ -2,7 +2,7 @@
 
 ## Release contract
 
-- Version: `0.2.0-alpha.13`
+- Version: `0.2.0-alpha.14`
 - Toolset: `hostspan-v2`
 - MCP protocol target: `2026-07-28`
 - Platform: Linux x64 (Ubuntu 24.04 LTS / WSL2)
@@ -46,7 +46,7 @@ Multi-host routing, native Windows/macOS process adapters, GUI/browser computer-
 
 `hostspan-v2` tool names and input schemas are fixed for this Alpha line. `v2` is intentionally a breaking tool-contract revision from `hostspan-v1`: `process_start` gains optional TTY fields and `process_write` is added. Description/schema metadata changes alter `toolset_hash`; refresh the ChatGPT app after upgrading.
 
-`0.2.0-alpha.13` keeps the `hostspan-v2` 11-tool schema unchanged and finishes the small daily-use tray management surface: restart, Doctor health, active request/process visibility, workspace add/remove with explicit capabilities, and login autostart. Alpha.12 corrected the interactive process tool metadata. Remote non-loopback serving still fails closed without OAuth. Existing targets do not gain terminal authority automatically: add the explicit `terminal` capability before `tty=true` is accepted. Existing non-interactive `process_start`/`process_poll`/`process_cancel` semantics remain available.
+`0.2.0-alpha.14` keeps the `hostspan-v2` 11-tool schema unchanged and polishes Add Workspace: Cancel is independent of form validation, all five capabilities default on, and target ID/label are optional with folder-derived defaults and collision-safe generated IDs. Alpha.13 completed the daily-use tray management surface. Remote non-loopback serving still fails closed without OAuth. Existing targets do not gain terminal authority automatically: add the explicit `terminal` capability before `tty=true` is accepted. Existing non-interactive `process_start`/`process_poll`/`process_cancel` semantics remain available.
 
 Config schema remains version 1. The durable database schema is version 4 and adds process backend/session/deadline/output-cap metadata so tmux sessions can be reconciled after daemon restart. Database initialization uses WAL and backs up an existing database before migration.
 

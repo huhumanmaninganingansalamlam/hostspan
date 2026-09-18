@@ -181,6 +181,32 @@ describe("local admin snapshot", () => {
     expect(loadConfig(configPath).targets["another-workspace"]).toBeUndefined();
   });
 
+  it("derives target id and label from the folder and avoids id collisions", () => {
+    const { root, configPath } = fixture();
+    const first = join(root, "My Project");
+    const secondParent = join(root, "nested");
+    const second = join(secondParent, "My Project");
+    mkdirSync(first, { recursive: true });
+    mkdirSync(second, { recursive: true });
+
+    const addedFirst = addLocalWorkspace(configPath, {
+      root: first,
+      capabilities: ["read", "write", "exec", "git", "terminal"],
+    });
+    expect(addedFirst).toMatchObject({ target_id: "my-project" });
+    expect(loadConfig(configPath).targets["my-project"]).toMatchObject({
+      label: "My Project",
+      capabilities: ["read", "write", "exec", "git", "terminal"],
+    });
+
+    const addedSecond = addLocalWorkspace(configPath, {
+      root: second,
+      capabilities: ["read"],
+    });
+    expect(addedSecond).toMatchObject({ target_id: "my-project-2" });
+    expect(loadConfig(configPath).targets["my-project-2"]?.label).toBe("My Project");
+  });
+
   it("rejects duplicate roots and invalid target ids", () => {
     const { root, targetRoot, configPath } = fixture();
     expect(() =>

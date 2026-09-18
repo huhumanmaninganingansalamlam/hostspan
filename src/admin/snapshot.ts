@@ -14,13 +14,34 @@ export interface AdminSnapshotOptions {
 }
 
 export interface AddWorkspaceInput {
-  target_id: string;
+  target_id?: string;
   label?: string;
   root: string;
   capabilities: Capability[];
 }
 
 const TARGET_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+export function workspaceTargetIdBase(value: string): string {
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[._-]+|[._-]+$/g, "")
+    .slice(0, 64);
+  return slug || "workspace";
+}
+
+export function uniqueWorkspaceTargetId(base: string, existing: Iterable<string>): string {
+  const taken = new Set(existing);
+  const normalized = workspaceTargetIdBase(base);
+  if (!taken.has(normalized)) return normalized;
+  for (let suffix = 2; suffix < 10_000; suffix += 1) {
+    const tail = `-${suffix}`;
+    const candidate = `${normalized.slice(0, Math.max(1, 64 - tail.length))}${tail}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  throw new Error("could not generate a unique target_id for this workspace");
+}
 
 function normalizedCapabilities(input: Capability[]): Capability[] {
   const capabilities = [...new Set(input)];
@@ -36,10 +57,6 @@ function defaultExecProfile(config: HostSpanConfig): string | undefined {
 export function addLocalWorkspace(configPath: string, input: AddWorkspaceInput) {
   const resolvedConfigPath = resolve(configPath);
   const config = loadConfig(resolvedConfigPath);
-  const targetId = input.target_id.trim();
-  if (!TARGET_ID.test(targetId)) throw new Error("target_id must use 1-64 lowercase letters, numbers, dot, underscore, or dash.");
-  if (config.targets[targetId]) throw new Error(`target already exists: ${targetId}`);
-
   const requestedRoot = resolve(input.root);
   if (!existsSync(requestedRoot) || !statSync(requestedRoot).isDirectory()) throw new Error("workspace folder does not exist.");
   const root = realpathSync(requestedRoot);
@@ -51,6 +68,15 @@ export function addLocalWorkspace(configPath: string, input: AddWorkspaceInput) 
     }
   });
   if (duplicate) throw new Error(`workspace folder is already registered as ${duplicate[0]}`);
+
+  const requestedTargetId = input.target_id?.trim() ?? "";
+  if (requestedTargetId && !TARGET_ID.test(requestedTargetId)) {
+    throw new Error("target_id must use 1-64 lowercase letters, numbers, dot, underscore, or dash.");
+  }
+  const targetId = requestedTargetId
+    ? requestedTargetId
+    : uniqueWorkspaceTargetId(basename(root), Object.keys(config.targets));
+  if (config.targets[targetId]) throw new Error(`target already exists: ${targetId}`);
 
   const capabilities = normalizedCapabilities(input.capabilities);
   if (capabilities.length === 0) throw new Error("select at least one workspace capability.");

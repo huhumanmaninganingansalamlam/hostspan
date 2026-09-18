@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Tray } from "electron";
 import {
@@ -9,6 +9,8 @@ import {
   buildAdminSnapshot,
   removeLocalWorkspace,
   resolveTerminalSession,
+  uniqueWorkspaceTargetId,
+  workspaceTargetIdBase,
   type AddWorkspaceInput,
 } from "../admin/snapshot.js";
 import { startDaemon, stopDaemon } from "../cli/daemon.js";
@@ -183,14 +185,20 @@ function addWorkspace(input: AddWorkspaceInput) {
   const capabilities = normalizedDesktopCapabilities(input.capabilities);
   if (process.platform !== "win32") return addLocalWorkspace(configPath, { ...input, capabilities });
 
+  const requestedTargetId = input.target_id?.trim() ?? "";
+  if (requestedTargetId && workspaceTargetIdBase(requestedTargetId) !== requestedTargetId) {
+    throw new Error("target_id must use 1-64 lowercase letters, numbers, dot, underscore, or dash.");
+  }
+  const current = wslJson<AdminSnapshot>(["admin", "snapshot", "--recent", "1"]);
+  const targetId = requestedTargetId || uniqueWorkspaceTargetId(basename(input.root), current.targets.map((target) => target.target_id));
   const root = wslPath(input.root);
   const args = [
     "targets",
     "add",
     "--id",
-    input.target_id,
+    targetId,
     "--label",
-    input.label?.trim() || input.target_id,
+    input.label?.trim() || basename(input.root) || targetId,
     "--root",
     root,
     "--capabilities",
@@ -222,19 +230,19 @@ function html(): string {
 <div class="card"><div class="cardhead"><b>Interactive terminals</b></div><div id="terminals"></div></div>
 <div class="card"><div class="cardhead"><b>Recent calls</b></div><div id="calls" class="scroll"></div></div>
 <dialog id="workspaceDialog">
-  <form method="dialog" id="workspaceForm">
+  <form id="workspaceForm">
     <div class="cardhead"><b>Add Workspace</b></div>
     <div class="field"><label class="title">Folder</label><div class="pathrow"><input id="wsPath" type="text" readonly required><button id="browse" type="button" class="secondary">Browse</button></div></div>
-    <div class="field"><label class="title">Target ID</label><input id="wsId" type="text" required placeholder="my-project"></div>
-    <div class="field"><label class="title">Label</label><input id="wsLabel" type="text" placeholder="My project"></div>
+    <div class="field"><label class="title">Target ID <span class="muted">(optional)</span></label><input id="wsId" type="text" placeholder="Auto-generated from folder name"></div>
+    <div class="field"><label class="title">Label <span class="muted">(optional)</span></label><input id="wsLabel" type="text" placeholder="Uses folder name"></div>
     <div class="field"><label class="title">Capabilities</label><div class="caps">
       <label><input type="checkbox" data-cap="read" checked> Read</label>
       <label><input type="checkbox" data-cap="write" checked> Write</label>
       <label><input type="checkbox" data-cap="exec" checked> Exec</label>
       <label><input type="checkbox" data-cap="git" checked> Git</label>
-      <label><input type="checkbox" data-cap="terminal"> Interactive terminal</label>
+      <label><input type="checkbox" data-cap="terminal" checked> Interactive terminal</label>
     </div><div class="muted" style="margin-top:6px">Interactive terminal grants full native terminal authority as your OS user.</div></div>
-    <div class="row" style="justify-content:flex-end"><button value="cancel" class="secondary">Cancel</button><button id="saveWorkspace" type="button">Save</button></div>
+    <div class="row" style="justify-content:flex-end"><button id="cancelWorkspace" type="button" class="secondary">Cancel</button><button id="saveWorkspace" type="button">Save</button></div>
   </form>
 </dialog>
 </main>
@@ -245,6 +253,20 @@ const esc=v=>String(v??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 const short=v=>String(v??'').slice(0,12);
 function setMessage(message,error=false){const el=e('message');el.textContent=message??'';el.className='message'+(error?' error':'')}
 function targetIdFromPath(path){const part=String(path).split(/[\\/]/).filter(Boolean).pop()||'workspace';return part.toLowerCase().replace(/[^a-z0-9._-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,64)||'workspace'}
+function folderName(path){return String(path).split(/[\\/]/).filter(Boolean).pop()||'workspace'}
+function resetWorkspaceDialog(){
+  e('workspaceForm').reset();
+  e('wsPath').value='';
+  e('wsId').value='';
+  e('wsLabel').value='';
+  e('wsId').placeholder='Auto-generated from folder name';
+  e('wsLabel').placeholder='Uses folder name';
+  document.querySelectorAll('[data-cap]').forEach(input=>{input.checked=true});
+}
+function updateWorkspaceSuggestions(path){
+  e('wsId').placeholder='Auto: '+targetIdFromPath(path);
+  e('wsLabel').placeholder='Auto: '+folderName(path);
+}
 function render(s){
   snapshot=s;
   const running=!!s.daemon?.running;
@@ -271,12 +293,15 @@ e('refresh').onclick=refresh;
 e('toggle').onclick=async()=>{try{await window.hostspan.daemon(snapshot?.daemon?.running?'stop':'start');setMessage('HostSpan '+(snapshot?.daemon?.running?'stopped.':'started.'));await refresh()}catch(err){setMessage(err.message||String(err),true)}};
 e('restart').onclick=async()=>{try{setMessage('Restarting HostSpan…');await window.hostspan.daemon('restart');setMessage('HostSpan restarted.');await refresh()}catch(err){setMessage(err.message||String(err),true)}};
 e('doctor').onclick=async()=>{try{e('healthState').textContent='Checking…';renderHealth(await window.hostspan.doctor())}catch(err){setMessage(err.message||String(err),true)}};
-e('addWorkspace').onclick=()=>e('workspaceDialog').showModal();
-e('browse').onclick=async()=>{try{const r=await window.hostspan.chooseWorkspace();if(!r.canceled&&r.path){e('wsPath').value=r.path;e('wsId').value=targetIdFromPath(r.path);e('wsLabel').value=String(r.path).split(/[\\/]/).filter(Boolean).pop()||''}}catch(err){setMessage(err.message||String(err),true)}};
+e('addWorkspace').onclick=()=>{resetWorkspaceDialog();e('workspaceDialog').showModal()};
+e('cancelWorkspace').onclick=()=>e('workspaceDialog').close();
+e('workspaceDialog').addEventListener('close',resetWorkspaceDialog);
+e('browse').onclick=async()=>{try{const r=await window.hostspan.chooseWorkspace();if(!r.canceled&&r.path){e('wsPath').value=r.path;updateWorkspaceSuggestions(r.path)}}catch(err){setMessage(err.message||String(err),true)}};
 document.querySelector('[data-cap="terminal"]').onchange=ev=>{if(ev.target.checked)document.querySelector('[data-cap="exec"]').checked=true};
 e('saveWorkspace').onclick=async()=>{try{
+  if(!e('wsPath').value){setMessage('Choose a workspace folder first.',true);return}
   const capabilities=[...document.querySelectorAll('[data-cap]:checked')].map(x=>x.dataset.cap);
-  await window.hostspan.addWorkspace({target_id:e('wsId').value.trim(),label:e('wsLabel').value.trim(),root:e('wsPath').value,capabilities});
+  await window.hostspan.addWorkspace({target_id:e('wsId').value.trim()||undefined,label:e('wsLabel').value.trim()||undefined,root:e('wsPath').value,capabilities});
   e('workspaceDialog').close();
   setMessage('Workspace saved. Restart HostSpan to apply it.');
   if(snapshot?.daemon?.running&&confirm('Restart HostSpan now to apply the workspace change?'))await window.hostspan.daemon('restart');
