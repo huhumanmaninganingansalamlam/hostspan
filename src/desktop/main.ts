@@ -17,7 +17,7 @@ import { startDaemon, stopDaemon } from "../cli/daemon.js";
 import { runDoctor, type DoctorReport } from "../cli/doctor.js";
 import { loadConfig } from "../config/loader.js";
 import type { Capability } from "../config/schema.js";
-import { TmuxTerminalManager } from "../processes/tmux-terminal.js";
+import { PtySessionManager } from "../processes/pty-session.js";
 
 declare global {
   interface Window {
@@ -186,13 +186,13 @@ async function daemonAction(action: "start" | "stop" | "restart") {
 
 async function confirmDaemonRestart(): Promise<boolean> {
   const current = await snapshot();
-  const activeNative = current.active_processes.filter((process) => process.backend !== "tmux").length;
-  const activeTmux = current.active_processes.filter((process) => process.backend === "tmux").length;
+  const activeNative = current.active_processes.filter((process) => process.backend !== "pty").length;
+  const activePty = current.active_processes.filter((process) => process.backend === "pty").length;
   const impact = [
     "HostSpan loads target and policy configuration once when the daemon starts.",
     "Restarting is the intentional boundary that applies workspace additions, removals, and capability changes atomically.",
     activeNative > 0 ? `${activeNative} active native process(es) will be stopped.` : "No active native process will be stopped.",
-    activeTmux > 0 ? `${activeTmux} tmux-backed interactive session(s) will remain alive and reconnect after restart.` : "No live tmux session needs recovery.",
+    activePty > 0 ? `${activePty} durable PTY session(s) will remain alive and reconnect after restart.` : "No live PTY session needs recovery.",
   ].join("\n\n");
   const options = {
     type: activeNative > 0 ? ("warning" as const) : ("question" as const),
@@ -318,7 +318,7 @@ function render(s){
   const requests=s.active_requests||[],processes=s.active_processes||[];
   e('activityCount').textContent=(requests.length+processes.length)+' active';
   e('activity').innerHTML=(requests.length||processes.length)?processes.map(p=>'<div class="activity"><span class="pill">'+esc(p.state)+'</span> <b>'+esc(p.target_id)+'</b> <code>'+esc(short(p.process_id))+'</code> <span class="muted">'+esc(p.backend)+'</span></div>').join('')+requests.map(r=>'<div class="activity"><span class="pill">request</span> <b>'+esc(r.metadata?.tool??'unknown')+'</b> <span class="muted">'+esc(r.metadata?.target_id??'')+' '+esc(short(r.request_id))+'</span></div>').join(''):'<div class="muted">No active work.</div>';
-  e('terminals').innerHTML=s.terminal.sessions.length?'<table><tr><th>Process</th><th>Target</th><th>State</th><th></th></tr>'+s.terminal.sessions.map(t=>'<tr><td><code>'+esc(t.process_id)+'</code></td><td>'+esc(t.target_id)+'</td><td>'+esc(t.state)+(t.live?' · live':'')+'</td><td><button data-attach="'+esc(t.process_id)+'">Attach</button> <button class="secondary" data-readonly="'+esc(t.process_id)+'">Read only</button></td></tr>').join('')+'</table>':'<div class="muted">No tmux-backed sessions.</div>';
+  e('terminals').innerHTML=s.terminal.sessions.length?'<table><tr><th>Process</th><th>Target</th><th>State</th><th></th></tr>'+s.terminal.sessions.map(t=>'<tr><td><code>'+esc(t.process_id)+'</code></td><td>'+esc(t.target_id)+'</td><td>'+esc(t.state)+(t.live?' · live':'')+'</td><td><button data-attach="'+esc(t.process_id)+'">Attach</button> <button class="secondary" data-readonly="'+esc(t.process_id)+'">Read only</button></td></tr>').join('')+'</table>':'<div class="muted">No interactive PTY sessions.</div>';
   e('calls').innerHTML=s.recent_calls.length?s.recent_calls.map(c=>'<div class="activity"><span class="muted">'+esc(c.timestamp)+'</span> <b>'+esc(c.event_type)+'</b> <code>'+esc(c.metadata?.tool??'')+'</code> <span class="'+(c.metadata?.error_code?'bad':'muted')+'">'+esc(c.metadata?.error_code??'')+'</span></div>').join(''):'<div class="muted">No recent calls.</div>';
 }
 function renderHealth(report){
@@ -432,8 +432,8 @@ ipcMain.handle("hostspan:attach", (_event, input: { processId: string; readOnly:
   if (!config.terminal) throw new Error("terminal support is not configured");
   const session = resolveTerminalSession(configPath, input.processId);
   if (!session) throw new Error(`terminal process not found: ${input.processId}`);
-  const manager = new TmuxTerminalManager(config.server.data_dir, config.terminal);
-  if (!manager.inspectSync(session.session).exists) throw new Error("tmux session is no longer live");
+  const manager = new PtySessionManager(config.server.data_dir, config.terminal);
+  if (!manager.inspectSync(session.session).exists) throw new Error("PTY session is no longer live");
   openAttach(input.processId, input.readOnly);
   return { ok: true };
 });

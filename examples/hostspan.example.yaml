@@ -25,9 +25,9 @@ retention:
   max_total_spool_bytes: 1073741824
 
 terminal:
-  backend: tmux
+  backend: pty
   max_concurrent_sessions: 4
-  history_limit_lines: 50000
+  attach_history_bytes: 65536
   max_output_bytes: 16777216
 
 targets:

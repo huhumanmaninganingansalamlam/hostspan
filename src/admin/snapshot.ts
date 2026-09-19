@@ -4,7 +4,7 @@ import Database from "better-sqlite3";
 import { loadConfig } from "../config/loader.js";
 import type { Capability, HostSpanConfig } from "../config/schema.js";
 import { writeConfigAtomic } from "../config/writer.js";
-import { TmuxTerminalManager } from "../processes/tmux-terminal.js";
+import { PtySessionManager } from "../processes/pty-session.js";
 import { TargetRegistry } from "../targets/registry.js";
 import { daemonStatus } from "../cli/daemon.js";
 import { SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
@@ -200,10 +200,10 @@ export function buildAdminSnapshot(configPath: string, options: AdminSnapshotOpt
     }
   }
 
-  const terminal = config.terminal ? new TmuxTerminalManager(config.server.data_dir, config.terminal) : undefined;
+  const terminal = config.terminal ? new PtySessionManager(config.server.data_dir, config.terminal) : undefined;
   const terminalProcessRecords = new Map<string, Record<string, unknown>>();
   for (const record of [...activeProcesses, ...recentProcesses]) {
-    if (record.backend !== "tmux" || typeof record.process_id !== "string") continue;
+    if (record.backend !== "pty" || typeof record.process_id !== "string") continue;
     if (!terminalProcessRecords.has(record.process_id)) terminalProcessRecords.set(record.process_id, record);
   }
   const terminalSessions = [...terminalProcessRecords.values()].map((record) => {
@@ -259,7 +259,7 @@ export function resolveTerminalSession(configPath: string, processId: string): {
     const schema = db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string } | undefined;
     if (!schema || Number(schema.value) < 4) return null;
     const row = db
-      .prepare("SELECT backend_ref,target_id,state FROM processes WHERE process_id=? AND backend='tmux'")
+      .prepare("SELECT backend_ref,target_id,state FROM processes WHERE process_id=? AND backend='pty'")
       .get(processId) as { backend_ref: string | null; target_id: string; state: string } | undefined;
     if (!row?.backend_ref) return null;
     return { session: row.backend_ref, target_id: row.target_id, state: row.state };

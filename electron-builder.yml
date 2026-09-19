@@ -14,13 +14,15 @@ files:
 asarUnpack:
   - node_modules/better-sqlite3/prebuilds/**/*
   - node_modules/better-sqlite3/lib/**/*
+  - node_modules/node-pty/build/Release/**/*
+  - node_modules/node-pty/prebuilds/**/*
 linux:
   executableName: hostspan-desktop
   syncDesktopName: true
   icon: assets/icons/app.png
   category: Development
   synopsis: Terminal-first MCP gateway and local HostSpan manager
-  description: Manage HostSpan, approved workspaces, active MCP operations, and shared tmux terminals.
+  description: Manage HostSpan, approved workspaces, active MCP operations, and durable PTY terminals.
   maintainer: HostSpan contributors
   vendor: HostSpan
   target:

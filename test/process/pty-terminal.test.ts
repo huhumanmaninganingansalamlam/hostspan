@@ -1,5 +1,4 @@
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,31 +6,29 @@ import { v7 as uuidv7 } from "uuid";
 import type { HostSpanConfig } from "../../src/config/schema.js";
 import type { ProcessWriteToolInput } from "../../src/mcp/schemas.js";
 import { PolicyEvaluator } from "../../src/policy/evaluator.js";
+import { PtySessionManager } from "../../src/processes/pty-session.js";
 import { recoverProcesses } from "../../src/processes/recovery.js";
 import { ProcessSupervisor } from "../../src/processes/supervisor.js";
-import { TmuxTerminalManager } from "../../src/processes/tmux-terminal.js";
 import { openDatabase } from "../../src/state/database.js";
 import { OperationsRepo } from "../../src/state/operations-repo.js";
 import { ProcessesRepo } from "../../src/state/processes-repo.js";
 import { TargetRegistry } from "../../src/targets/registry.js";
 
 const roots: string[] = [];
-const tmuxManagers: TmuxTerminalManager[] = [];
+const sessions: Array<{ terminal: PtySessionManager; session: string }> = [];
 
-afterEach(() => {
-  for (const terminal of tmuxManagers.splice(0)) {
-    // Each test uses an isolated tmux socket; killing the server cannot affect user sessions.
-    try {
-      spawnSync("tmux", ["-S", terminal.socketPath, "kill-server"], { stdio: "ignore" });
-    } catch {
-      // Best-effort isolated test cleanup.
-    }
-  }
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+afterEach(async () => {
+  for (const entry of sessions.splice(0)) entry.terminal.closeSync(entry.session);
+  await sleep(100);
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 function fixture(terminalCapability = true) {
-  const root = mkdtempSync(join(tmpdir(), "hostspan-tmux-"));
+  const root = mkdtempSync(join(tmpdir(), "hostspan-pty-"));
   roots.push(root);
   const targetRoot = join(root, "target");
   const dataDir = join(root, "state");
@@ -47,9 +44,9 @@ function fixture(terminalCapability = true) {
       max_total_spool_bytes: 64 * 1024 * 1024,
     },
     terminal: {
-      backend: "tmux",
+      backend: "pty",
       max_concurrent_sessions: 2,
-      history_limit_lines: 10_000,
+      attach_history_bytes: 64 * 1024,
       max_output_bytes: 1024 * 1024,
     },
     targets: {
@@ -82,8 +79,7 @@ function fixture(terminalCapability = true) {
   const targets = new TargetRegistry(config);
   const terminalConfig = config.terminal;
   if (!terminalConfig) throw new Error("terminal fixture configuration is missing");
-  const terminal = new TmuxTerminalManager(dataDir, terminalConfig);
-  tmuxManagers.push(terminal);
+  const terminal = new PtySessionManager(dataDir, terminalConfig);
   const supervisor = new ProcessSupervisor({
     config,
     targets,
@@ -92,18 +88,18 @@ function fixture(terminalCapability = true) {
     processes,
     terminal,
   });
-  return { config, db, operations, processes, targets, terminal, supervisor };
+  return { root, config, db, operations, processes, targets, terminal, supervisor };
 }
 
-function ttyInput(script: string) {
+function ttyInput(script: string, deadlineMs = 10_000, waitMs = 300) {
   return {
     idempotency_key: uuidv7(),
     target_id: "test",
     argv: ["node", "-e", script],
     cwd: ".",
     env: {},
-    wait_ms: 300,
-    deadline_ms: 10_000,
+    wait_ms: waitMs,
+    deadline_ms: deadlineMs,
     max_output_bytes: 1024 * 1024,
     tty: true,
     columns: 100,
@@ -111,20 +107,27 @@ function ttyInput(script: string) {
   };
 }
 
-describe("tmux interactive process backend", () => {
-  it("supports interactive input, control-friendly polling, resize, and human attach commands", async () => {
-    const { supervisor, db } = fixture();
+function track(terminal: PtySessionManager, started: Record<string, unknown>): string {
+  const session = String(started.terminal_session);
+  sessions.push({ terminal, session });
+  return session;
+}
+
+describe("durable Unix PTY interactive process backend", () => {
+  it("supports interactive input, polling, resize, attach metadata, and idempotent writes", async () => {
+    const { supervisor, terminal, db } = fixture();
     const script = [
       "const readline=require('node:readline');",
       "const rl=readline.createInterface({input:process.stdin,output:process.stdout});",
       "console.log('READY');",
       "rl.question('NAME? ',name=>{console.log('HELLO '+name);rl.close();});",
     ].join("");
-    const started = await supervisor.start(ttyInput(script), "req_tmux_start");
+    const started = await supervisor.start(ttyInput(script), "req_pty_start");
+    track(terminal, started);
     expect(started.interactive).toBe(true);
-    expect(started.backend).toBe("tmux");
-    expect(String(started.human_attach_command)).toContain("tmux -S");
-    expect(String(started.human_attach_read_only_command)).toContain("attach-session -r");
+    expect(started.backend).toBe("pty");
+    expect(String(started.human_attach_command)).toContain("hostspan terminal attach --process");
+    expect(String(started.human_attach_read_only_command)).toContain("--read-only");
 
     const cursor = Number(started.next_stdout_cursor ?? 0);
     const writeInput: ProcessWriteToolInput = {
@@ -139,37 +142,33 @@ describe("tmux interactive process backend", () => {
       max_bytes: 64 * 1024,
     };
     const [written, joined] = await Promise.all([supervisor.write(writeInput), supervisor.write(writeInput)]);
-    if (written.state !== "running") expect(String(written.stdout ?? "")).toContain("HELLO world");
     expect(joined).toEqual(written);
     await expect(supervisor.write(writeInput)).resolves.toEqual(written);
     await expect(supervisor.write({ ...writeInput, chars: "duplicate" })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
-    let terminal = written;
+
+    let current = written;
     let transcript = String(written.stdout ?? "");
-    for (let attempt = 0; attempt < 5 && !transcript.includes("HELLO world"); attempt += 1) {
-      if (terminal.state !== "running") break;
-      terminal = await supervisor.poll({
+    for (let attempt = 0; attempt < 8 && (current.state === "running" || !transcript.includes("HELLO world")); attempt += 1) {
+      current = await supervisor.poll({
         process_id: String(started.process_id),
-        stdout_cursor: Number(terminal.next_stdout_cursor ?? 0),
+        stdout_cursor: Number(current.next_stdout_cursor ?? 0),
         stderr_cursor: 0,
         wait_ms: 500,
         max_bytes: 64 * 1024,
       });
-      transcript += String(terminal.stdout ?? "");
+      transcript += String(current.stdout ?? "");
     }
     expect(transcript).toContain("HELLO world");
-    expect(terminal.state).toBe("succeeded");
+    expect(current.state).toBe("succeeded");
     db.close();
   });
 
-  it("keeps a running tmux process recoverable across HostSpan runtime restart", async () => {
+  it("keeps a live PTY process recoverable across HostSpan daemon restart", async () => {
     const first = fixture();
-    const started = await first.supervisor.start(
-      ttyInput("console.log('LIVE');setTimeout(()=>{},60000)"),
-      "req_tmux_persist_start",
-    );
+    const started = await first.supervisor.start(ttyInput("console.log('LIVE');setTimeout(()=>{},60000)"), "req_pty_persist_start");
+    const session = track(first.terminal, started);
     expect(started.state).toBe("running");
     const processId = String(started.process_id);
-    const session = String(started.terminal_session);
     first.db.close();
 
     const db = openDatabase(join(first.config.server.data_dir, "state.db"));
@@ -191,13 +190,73 @@ describe("tmux interactive process backend", () => {
     expect(polled.state).toBe("running");
     const cancelled = await supervisor.cancel({ idempotency_key: uuidv7(), process_id: processId, grace_ms: 200 });
     expect(cancelled.state).toBe("cancelled");
-    expect(first.terminal.inspectSync(session).exists).toBe(false);
+    expect(first.terminal.inspectSync(session)).toMatchObject({ exists: true, dead: true, reason: "cancel_requested" });
+    db.close();
+  });
+
+  it("preserves final PTY output before recording terminal completion", async () => {
+    const { supervisor, terminal, db } = fixture();
+    const payload = `TAIL-${"x".repeat(16_384)}-END`;
+    const started = await supervisor.start(ttyInput(`process.stdout.write(${JSON.stringify(payload)})`), "req_pty_drain");
+    track(terminal, started);
+    let current = started;
+    let transcript = String(started.stdout ?? "");
+    for (let attempt = 0; attempt < 8 && current.state === "running"; attempt += 1) {
+      current = await supervisor.poll({
+        process_id: String(started.process_id),
+        stdout_cursor: Number(current.next_stdout_cursor ?? 0),
+        stderr_cursor: 0,
+        wait_ms: 500,
+        max_bytes: 64 * 1024,
+      });
+      transcript += String(current.stdout ?? "");
+    }
+    expect(current.state).toBe("succeeded");
+    expect(transcript).toContain("TAIL-");
+    expect(transcript).toContain("-END");
+    expect(terminal.outputBytes(String(started.process_id))).toBe(Buffer.byteLength(payload));
+    db.close();
+  });
+
+  it("enforces interactive deadlines in the session worker while the daemon is absent", async () => {
+    const first = fixture();
+    const started = await first.supervisor.start(ttyInput("setTimeout(()=>{},60000)", 400, 0), "req_pty_deadline");
+    track(first.terminal, started);
+    const processId = String(started.process_id);
+    first.db.close();
+    await sleep(700);
+
+    const db = openDatabase(join(first.config.server.data_dir, "state.db"));
+    const operations = new OperationsRepo(db);
+    const processes = new ProcessesRepo(db);
+    const recovered = recoverProcesses(processes, operations, first.terminal);
+    expect(recovered).toContainEqual({ process_id: processId, state: "timed_out" });
+    expect(processes.get(processId)).toMatchObject({ state: "timed_out", reason: "deadline_exceeded" });
+    db.close();
+  });
+
+  it("classifies a vanished session worker as unknown instead of success", async () => {
+    const first = fixture();
+    const started = await first.supervisor.start(ttyInput("setTimeout(()=>{},60000)"), "req_pty_worker_crash");
+    const session = track(first.terminal, started);
+    const processId = String(started.process_id);
+    const statusPath = join(first.config.server.data_dir, "sessions", session, "status.json");
+    const status = JSON.parse(readFileSync(statusPath, "utf8")) as { worker_pid: number };
+    process.kill(status.worker_pid, "SIGKILL");
+    await sleep(150);
+    first.db.close();
+
+    const db = openDatabase(join(first.config.server.data_dir, "state.db"));
+    const operations = new OperationsRepo(db);
+    const processes = new ProcessesRepo(db);
+    expect(recoverProcesses(processes, operations, first.terminal)).toContainEqual({ process_id: processId, state: "unknown" });
+    expect(processes.get(processId)).toMatchObject({ state: "unknown", reason: "pty_session_missing_after_restart" });
     db.close();
   });
 
   it("requires an explicit terminal capability even when exec is allowed", async () => {
     const { supervisor, db } = fixture(false);
-    await expect(supervisor.start(ttyInput("setTimeout(()=>{},1000)"), "req_tmux_denied")).rejects.toMatchObject({ code: "SCOPE_DENIED" });
+    await expect(supervisor.start(ttyInput("setTimeout(()=>{},1000)"), "req_pty_denied")).rejects.toMatchObject({ code: "SCOPE_DENIED" });
     db.close();
   });
 });

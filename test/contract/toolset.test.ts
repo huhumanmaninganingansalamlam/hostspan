@@ -38,7 +38,7 @@ async function toolsListOnce(handler: ReturnType<typeof createMcpHandler>, id: n
   return tools;
 }
 
-describe("hostspan-v2 tool contract", () => {
+describe("hostspan-v3 tool contract", () => {
   it("contains exactly the fixed 11 tools with a stable digest", () => {
     const first = JSON.stringify(toolsetDocument());
     expect(toolsetDocument().tools.map((tool) => tool.name)).toEqual(TOOL_NAMES);

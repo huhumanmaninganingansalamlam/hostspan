@@ -35,9 +35,10 @@ import { HostSpanLogger } from "../observability/logger.js";
 import { buildSupportExport, writeSupportExportAtomic } from "../observability/support-export.js";
 import { PolicyEvaluator } from "../policy/evaluator.js";
 import { cleanupExpiredProcessSpools } from "../processes/output-spool.js";
+import type { InteractiveSessionManager } from "../processes/interactive-session.js";
+import { PtySessionManager } from "../processes/pty-session.js";
 import { recoverProcesses } from "../processes/recovery.js";
 import { ProcessSupervisor } from "../processes/supervisor.js";
-import { TmuxTerminalManager } from "../processes/tmux-terminal.js";
 import { AuditRepo } from "../state/audit-repo.js";
 import { databaseResponsive, openDatabase, syncTargetSnapshots, type HostSpanDatabase } from "../state/database.js";
 import { argumentHash, OperationsRepo } from "../state/operations-repo.js";
@@ -63,7 +64,7 @@ export interface HostSpanRuntime {
   audit: AuditRepo;
   logger: HostSpanLogger;
   supervisor: ProcessSupervisor;
-  terminal?: TmuxTerminalManager;
+  terminal?: InteractiveSessionManager;
   searchLimiter: SearchConcurrencyLimiter;
   searchBackendReady(): boolean;
   terminalBackendReady(): boolean;
@@ -127,6 +128,25 @@ function cachedExecutableProbe(command: string, args: string[] = ["--version"], 
   };
 }
 
+function cachedNodeModuleProbe(specifier: string, ttlMs = 5_000): () => boolean {
+  let checkedAt = 0;
+  let ready = false;
+  return () => {
+    const now = Date.now();
+    if (checkedAt === 0 || now - checkedAt >= ttlMs) {
+      const script = `import(${JSON.stringify(specifier)}).then(()=>process.exit(0)).catch(()=>process.exit(1))`;
+      ready =
+        ["linux", "darwin"].includes(process.platform) &&
+        spawnSync(process.execPath, ["-e", script], {
+          stdio: "ignore",
+          env: { ...process.env, ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}) },
+        }).status === 0;
+      checkedAt = now;
+    }
+    return ready;
+  };
+}
+
 function oauthApprovalSecretPath(configPath: string): string {
   return join(dirname(configPath), "oauth-approval-secret");
 }
@@ -172,7 +192,7 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
   ]);
   syncTargetSnapshots(db, config, targets);
   recoverPatchTransactions(targets, operations, transactions);
-  const terminal = config.terminal ? new TmuxTerminalManager(config.server.data_dir, config.terminal) : undefined;
+  const terminal = config.terminal ? new PtySessionManager(config.server.data_dir, config.terminal) : undefined;
   const recoveredProcesses = recoverProcesses(processes, operations, terminal);
   for (const recovered of recoveredProcesses) logger.info("process.recovered", recovered);
   const cleanup = cleanupExpiredProcessSpools(
@@ -190,7 +210,7 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
     config.server.search_queue_timeout_ms ?? 1_000,
   );
   const searchBackendReady = cachedExecutableProbe("rg");
-  const terminalBackendReady = cachedExecutableProbe("tmux", ["-V"]);
+  const terminalBackendReady = cachedNodeModuleProbe("node-pty");
   const oauth = config.oauth ? new OAuthService(config.oauth, oauthRepo) : undefined;
 
   const traced = async <T extends Record<string, unknown>>(
@@ -247,7 +267,7 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
             search: { name: "ripgrep", ready: searchReady },
             database: { name: "sqlite", ready: databaseResponsive(db) },
             process: { name: "linux_process_group", ready: process.platform === "linux" },
-            terminal: { name: "tmux", ready: terminalReady, configured: Boolean(config.terminal) },
+            terminal: { name: "hostspan_pty", ready: terminalReady, configured: Boolean(config.terminal) },
             search_concurrency: searchLimiter.snapshot(),
           },
           active_process_count: processes.activeCount(),
@@ -360,9 +380,9 @@ function initialConfig(): HostSpanConfig {
       max_total_spool_bytes: 1_073_741_824,
     },
     terminal: {
-      backend: "tmux",
+      backend: "pty",
       max_concurrent_sessions: 4,
-      history_limit_lines: 50_000,
+      attach_history_bytes: 65_536,
       max_output_bytes: 16_777_216,
     },
     targets: {},
@@ -591,9 +611,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       if (!config.terminal) throw new Error("terminal support is not configured.");
       const session = resolveTerminalSession(configPath, processId);
       if (!session) throw new Error(`interactive process not found: ${processId}`);
-      const manager = new TmuxTerminalManager(config.server.data_dir, config.terminal);
-      const attached = spawnSync("tmux", manager.attachArgs(session.session, has(argv, "--read-only")), { stdio: "inherit" });
-      return attached.status ?? 1;
+      const manager = new PtySessionManager(config.server.data_dir, config.terminal);
+      await manager.attach(session.session, has(argv, "--read-only"));
+      return 0;
     }
     throw new Error("terminal requires list or attach");
   }

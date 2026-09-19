@@ -53,6 +53,7 @@ function packagedPaths(asarPath, platform) {
 			executable: join(contentsDir, "MacOS", "HostSpan"),
 			cli: join(asarPath, "dist", "src", "cli", "index.js"),
 			nativeModule: join(asarPath, "node_modules", "better-sqlite3"),
+			ptyModule: join(asarPath, "node_modules", "node-pty"),
 		};
 	}
 	const appDir = dirname(resourcesDir);
@@ -63,6 +64,7 @@ function packagedPaths(asarPath, platform) {
 		),
 		cli: join(asarPath, "dist", "src", "cli", "index.js"),
 		nativeModule: join(asarPath, "node_modules", "better-sqlite3"),
+		ptyModule: join(asarPath, "node_modules", "node-pty"),
 	};
 }
 
@@ -119,7 +121,7 @@ if (candidates.length === 0)
 	throw new Error(`No ${targetPlatform}/${targetArch} Electron app.asar was found under ${outDir}.`);
 
 const asarPath = candidates[0];
-const { executable, cli, nativeModule } = packagedPaths(asarPath, targetPlatform);
+const { executable, cli, nativeModule, ptyModule } = packagedPaths(asarPath, targetPlatform);
 if (!existsSync(executable))
 	throw new Error(`Packaged executable not found: ${executable}`);
 
@@ -147,6 +149,15 @@ if (targetPlatform !== "win32") {
 	const sqlite = run(executable, ["-e", nativeProbe]);
 	if (sqlite !== "sqlite-ok")
 		throw new Error(`Unexpected SQLite probe output: ${sqlite}`);
+
+	const ptyProbe = [
+		`const pty=require(${JSON.stringify(ptyModule)});`,
+		"if(typeof pty.spawn!=='function') process.exit(4);",
+		"process.stdout.write('pty-ok');",
+	].join("");
+	const pty = run(executable, ["-e", ptyProbe]);
+	if (pty !== "pty-ok")
+		throw new Error(`Unexpected PTY probe output: ${pty}`);
 
 	const scratch = mkdtempSync(join(tmpdir(), "hostspan-packaged-smoke-"));
 	try {

@@ -1,6 +1,6 @@
 import type { OperationsRepo } from "../state/operations-repo.js";
 import type { ProcessesRepo } from "../state/processes-repo.js";
-import type { TmuxTerminalManager } from "./tmux-terminal.js";
+import type { InteractiveSessionManager } from "./interactive-session.js";
 
 export function processGroupAlive(pgid: number | null): boolean {
   if (!pgid || pgid <= 0) return false;
@@ -17,18 +17,30 @@ export function processGroupAlive(pgid: number | null): boolean {
 export function recoverProcesses(
   processes: ProcessesRepo,
   operations: OperationsRepo,
-  terminal?: TmuxTerminalManager,
-): Array<{ process_id: string; state: "running" | "succeeded" | "failed" | "timed_out" | "orphaned" | "unknown" }> {
-  const recovered: Array<{ process_id: string; state: "running" | "succeeded" | "failed" | "timed_out" | "orphaned" | "unknown" }> = [];
+  terminal?: InteractiveSessionManager,
+): Array<{ process_id: string; state: "running" | "succeeded" | "failed" | "timed_out" | "cancelled" | "orphaned" | "unknown" }> {
+  const recovered: Array<{ process_id: string; state: "running" | "succeeded" | "failed" | "timed_out" | "cancelled" | "orphaned" | "unknown" }> = [];
   for (const record of processes.active()) {
     if (record.backend === "tmux") {
+      processes.markTerminal(record.process_id, "unknown", record.exit_code, record.term_signal, "legacy_tmux_backend_unsupported", record.output_expires_at ?? undefined);
+      operations.setState(record.idempotency_key, "unknown", {
+        state: "unknown",
+        process_id: record.process_id,
+        reason: "legacy_tmux_backend_unsupported",
+        native_execution: true,
+        sandboxed: false,
+      });
+      recovered.push({ process_id: record.process_id, state: "unknown" });
+      continue;
+    }
+    if (record.backend === "pty") {
       const session = record.backend_ref;
       if (!terminal || !session) {
-        processes.markTerminal(record.process_id, "unknown", record.exit_code, record.term_signal, "tmux_recovery_backend_unavailable", record.output_expires_at ?? undefined);
+        processes.markTerminal(record.process_id, "unknown", record.exit_code, record.term_signal, "pty_recovery_backend_unavailable", record.output_expires_at ?? undefined);
         operations.setState(record.idempotency_key, "unknown", {
           state: "unknown",
           process_id: record.process_id,
-          reason: "tmux_recovery_backend_unavailable",
+          reason: "pty_recovery_backend_unavailable",
           native_execution: true,
           sandboxed: false,
         });
@@ -37,11 +49,11 @@ export function recoverProcesses(
       }
       const state = terminal.inspectSync(session);
       if (!state.exists) {
-        processes.markTerminal(record.process_id, "unknown", record.exit_code, record.term_signal, "tmux_session_missing_after_restart", record.output_expires_at ?? undefined);
+        processes.markTerminal(record.process_id, "unknown", record.exit_code, record.term_signal, "pty_session_missing_after_restart", record.output_expires_at ?? undefined);
         operations.setState(record.idempotency_key, "unknown", {
           state: "unknown",
           process_id: record.process_id,
-          reason: "tmux_session_missing_after_restart",
+          reason: "pty_session_missing_after_restart",
           native_execution: true,
           sandboxed: false,
         });
@@ -51,7 +63,7 @@ export function recoverProcesses(
       processes.setBytes(record.process_id, "stdout", terminal.outputBytes(record.process_id));
       if (record.deadline_at && record.deadline_at <= new Date().toISOString() && !state.dead) {
         terminal.closeSync(session);
-        const drained = terminal.drainOutputSync(session, record.process_id);
+        const drained = { bytes: terminal.outputBytes(record.process_id) };
         processes.setBytes(record.process_id, "stdout", drained.bytes);
         processes.markTerminal(record.process_id, "timed_out", null, null, "deadline_exceeded_during_restart", record.output_expires_at ?? undefined);
         operations.setState(record.idempotency_key, "timed_out", {
@@ -65,27 +77,41 @@ export function recoverProcesses(
         continue;
       }
       if (state.dead) {
-        const drained = terminal.drainOutputSync(session, record.process_id);
-        processes.setBytes(record.process_id, "stdout", drained.bytes);
-        const settled = state.exit_code === null ? terminal.waitForExitStatusSync(session) : state;
-        if (!settled.exists || settled.exit_code === null) {
-          processes.markTerminal(record.process_id, "unknown", null, null, "tmux_exit_status_unavailable_after_restart", record.output_expires_at ?? undefined);
+        processes.setBytes(record.process_id, "stdout", terminal.outputBytes(record.process_id));
+        const settled = state;
+        if (!settled.exists) {
+          processes.markTerminal(record.process_id, "unknown", null, null, "pty_exit_status_unavailable_after_restart", record.output_expires_at ?? undefined);
           operations.setState(record.idempotency_key, "unknown", {
             state: "unknown",
             process_id: record.process_id,
-            reason: "tmux_exit_status_unavailable_after_restart",
+            reason: "pty_exit_status_unavailable_after_restart",
             native_execution: true,
             sandboxed: false,
           });
           recovered.push({ process_id: record.process_id, state: "unknown" });
           continue;
         }
-        const terminalState = settled.exit_code === 0 ? "succeeded" : "failed";
-        processes.markTerminal(record.process_id, terminalState, settled.exit_code, null, settled.exit_code === 0 ? null : "nonzero_exit", record.output_expires_at ?? undefined);
+        const terminalState = settled.reason === "deadline_exceeded" ? "timed_out" : settled.reason === "cancel_requested" ? "cancelled" : settled.exit_code === 0 ? "succeeded" : "failed";
+        const reason = settled.reason ?? (settled.exit_code === 0 ? null : "nonzero_exit");
+        if (settled.exit_code === null && !settled.reason) {
+          processes.markTerminal(record.process_id, "unknown", null, settled.signal, "pty_exit_status_unavailable_after_restart", record.output_expires_at ?? undefined);
+          operations.setState(record.idempotency_key, "unknown", {
+            state: "unknown",
+            process_id: record.process_id,
+            reason: "pty_exit_status_unavailable_after_restart",
+            native_execution: true,
+            sandboxed: false,
+          });
+          recovered.push({ process_id: record.process_id, state: "unknown" });
+          continue;
+        }
+        processes.markTerminal(record.process_id, terminalState, settled.exit_code, settled.signal, reason, record.output_expires_at ?? undefined);
         operations.setState(record.idempotency_key, terminalState, {
           state: terminalState,
           process_id: record.process_id,
           exit_code: settled.exit_code,
+          signal: settled.signal,
+          reason,
           native_execution: true,
           sandboxed: false,
         });

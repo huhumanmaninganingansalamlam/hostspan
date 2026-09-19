@@ -142,7 +142,7 @@ describe("overload stability", () => {
     }
   });
 
-  it("migrates a schema 3 process row to the tmux-aware schema 4 shape", () => {
+  it("migrates a schema 3 process row to the interactive-backend schema 4 shape", () => {
     const root = mkdtempSync(join(tmpdir(), "hostspan-process-migration-"));
     roots.push(root);
     const path = join(root, "state.db");

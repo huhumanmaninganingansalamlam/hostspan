@@ -206,7 +206,7 @@ describe("user-managed reverse proxy", () => {
       const statusResult = status.result as { structuredContent?: Record<string, unknown> } | undefined;
       expect(statusResult?.structuredContent).toMatchObject({
         toolset_hash: TOOLSET_HASH,
-        toolset_version: "hostspan-v2",
+        toolset_version: "hostspan-v3",
       });
 
       const hiddenDiagnostics = await fetch(`${proxy.origin}/healthz`);

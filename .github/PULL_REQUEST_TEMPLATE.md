@@ -10,7 +10,7 @@ Describe the problem and the change.
 
 ## Compatibility / security
 
-- [ ] No unintended `hostspan-v2` tool name/schema/description change
+- [ ] No unintended `hostspan-v3` tool name/schema/description change
 - [ ] Native/terminal authority changes are documented
 - [ ] Side effects remain idempotent/recoverable or uncertainty is reported explicitly
 - [ ] No secrets, target contents, or raw private process output were added to logs/fixtures

@@ -111,7 +111,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "process_start" as const,
     description:
-      "Start one durable process through HostSpan and optionally wait briefly; set tty=true for a tmux-backed interactive terminal on targets with terminal capability.",
+      "Start one durable process through HostSpan and optionally wait briefly; set tty=true for a durable interactive terminal on targets with terminal capability.",
     inputSchema: ProcessStartInputSchema,
     annotations: processAnnotations,
   },
@@ -123,14 +123,14 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "process_write" as const,
-    description: "Write characters, control keys, or terminal resize updates to a tmux-backed interactive process and return incremental output.",
+    description: "Write characters, control keys, or terminal resize updates to a durable interactive process and return incremental output.",
     inputSchema: ProcessWriteInputSchema,
     annotations: processAnnotations,
   },
   {
     name: "process_cancel" as const,
     description:
-      "Idempotently stop a supervised process: terminate the native process group or close the tmux-backed interactive session as appropriate.",
+      "Idempotently stop a supervised process: terminate the native process group or close the durable interactive session as appropriate.",
     inputSchema: ProcessCancelInputSchema,
     annotations: processAnnotations,
   },

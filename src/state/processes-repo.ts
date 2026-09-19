@@ -8,7 +8,7 @@ export interface ProcessRecord {
   target_id: string;
   argv_digest: string;
   cwd_relative: string;
-  backend: "native" | "tmux";
+  backend: "native" | "pty" | "tmux";
   backend_ref: string | null;
   pid: number | null;
   pgid: number | null;

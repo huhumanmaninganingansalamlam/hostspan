@@ -30,6 +30,25 @@ function commandCheck(command: string, args: string[]): DoctorCheck {
   return { name: command, status: "pass", details: result.stdout.trim().split("\n")[0] ?? "available" };
 }
 
+function ptyRuntimeCheck(): DoctorCheck {
+  if (!(["linux", "darwin"] as NodeJS.Platform[]).includes(process.platform)) {
+    return { name: "pty_runtime", status: "fail", details: `Unix PTY runtime is unsupported on ${process.platform}.` };
+  }
+  const result = spawnSync(
+    process.execPath,
+    ["-e", "import('node-pty').then(m=>process.exit(typeof m.spawn==='function'?0:2)).catch(()=>process.exit(1))"],
+    {
+      encoding: "utf8",
+      env: { ...process.env, ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}) },
+    },
+  );
+  return {
+    name: "pty_runtime",
+    status: result.status === 0 ? "pass" : "fail",
+    details: result.status === 0 ? `node-pty available (${process.platform}/${process.arch})` : result.stderr?.trim() || "node-pty could not be loaded",
+  };
+}
+
 async function processGroupCheck(): Promise<DoctorCheck> {
   if (process.platform !== "linux") return { name: "process_group", status: "fail", details: "Alpha requires Linux/WSL2 process-group semantics." };
   const child = spawn(process.execPath, ["-e", "setTimeout(()=>{},60000)"], {
@@ -119,8 +138,7 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
     });
   }
   if (config.terminal || targets.list().some((target) => target.capabilities.includes("terminal"))) {
-    const tmux = commandCheck("tmux", ["-V"]);
-    checks.push({ ...tmux, name: "tmux" });
+    checks.push(ptyRuntimeCheck());
   }
 
   try {

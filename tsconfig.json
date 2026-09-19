@@ -4,6 +4,7 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
+    "allowJs": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "declaration": true,
@@ -15,6 +16,6 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "src/**/*.cts", "test/**/*.ts", "vitest.config.ts"],
+  "include": ["src/**/*.ts", "src/**/*.cts", "src/**/*.mjs", "test/**/*.ts", "vitest.config.ts"],
   "exclude": ["dist", "node_modules"]
 }

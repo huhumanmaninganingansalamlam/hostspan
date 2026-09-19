@@ -35,7 +35,7 @@ function fixture() {
       audit_days: 30,
       max_total_spool_bytes: 1024 * 1024,
     },
-    terminal: { backend: "tmux", max_concurrent_sessions: 2, history_limit_lines: 10_000, max_output_bytes: 1024 * 1024 },
+    terminal: { backend: "pty", max_concurrent_sessions: 2, attach_history_bytes: 64 * 1024, max_output_bytes: 1024 * 1024 },
     targets: {
       local: {
         label: "Local workspace",
@@ -75,8 +75,8 @@ describe("local admin snapshot", () => {
       target_id: "local",
       argv_digest: "sha256:test",
       cwd_relative: ".",
-      backend: "tmux",
-      backend_ref: "hs-admin",
+      backend: "pty",
+      backend_ref: "proc_admin",
       deadline_at: new Date(Date.now() + 60_000).toISOString(),
       max_output_bytes: 1024 * 1024,
     });
@@ -108,7 +108,7 @@ describe("local admin snapshot", () => {
     expect(daemonStatus(configPath).running).toBe(false);
   });
 
-  it("keeps active tmux sessions visible outside the recent-process limit", () => {
+  it("keeps active PTY sessions visible outside the recent-process limit", () => {
     const { configPath, dataDir } = fixture();
     const db = openDatabase(join(dataDir, "state.db"));
     const processes = new ProcessesRepo(db);
@@ -118,8 +118,8 @@ describe("local admin snapshot", () => {
       target_id: "local",
       argv_digest: "sha256:terminal",
       cwd_relative: ".",
-      backend: "tmux",
-      backend_ref: "hs-active-terminal",
+      backend: "pty",
+      backend_ref: "proc_active_terminal",
       deadline_at: new Date(Date.now() + 60_000).toISOString(),
       max_output_bytes: 1024 * 1024,
     });
