@@ -9,6 +9,7 @@ const brandDir = resolve(root, "assets", "brand");
 const outputDir = resolve(root, "assets", "icons");
 const appSvg = await readFile(resolve(brandDir, "hostspan.svg"));
 const traySvg = await readFile(resolve(brandDir, "hostspan-tray.svg"));
+const trayColorSvg = Buffer.from(traySvg.toString("utf8").replaceAll("#000000", "#38BDF8"));
 
 await mkdir(outputDir, { recursive: true });
 
@@ -25,8 +26,8 @@ if (!ico || !icns) throw new Error("Failed to generate native application icons.
 await writeFile(resolve(outputDir, "app.ico"), ico);
 await writeFile(resolve(outputDir, "app.icns"), icns);
 
-await sharp(appSvg).resize(32, 32).png().toFile(resolve(outputDir, "tray.png"));
-await sharp(appSvg).resize(64, 64).png().toFile(resolve(outputDir, "tray@2x.png"));
+await sharp(trayColorSvg).resize(32, 32).png().toFile(resolve(outputDir, "tray.png"));
+await sharp(trayColorSvg).resize(64, 64).png().toFile(resolve(outputDir, "tray@2x.png"));
 await sharp(traySvg).resize(16, 16).png().toFile(resolve(outputDir, "hostspanTemplate.png"));
 await sharp(traySvg).resize(32, 32).png().toFile(resolve(outputDir, "hostspanTemplate@2x.png"));
 

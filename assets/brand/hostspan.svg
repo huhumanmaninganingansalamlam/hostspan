@@ -1,50 +1,48 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
-  <title id="title">HostSpan app icon</title>
-  <desc id="desc">Two local endpoints connected through a central HostSpan gateway.</desc>
+  <title id="title">HostSpan MCP gateway icon</title>
+  <desc id="desc">Two local endpoints connected through a central protocol gateway and routing graph.</desc>
   <defs>
-    <linearGradient id="background" x1="104" y1="88" x2="920" y2="936" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#08111F"/>
-      <stop offset="0.55" stop-color="#0B2440"/>
-      <stop offset="1" stop-color="#0B3B4B"/>
+    <linearGradient id="background" x1="112" y1="96" x2="912" y2="928" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#07111F"/>
+      <stop offset="0.55" stop-color="#0A2340"/>
+      <stop offset="1" stop-color="#07394A"/>
     </linearGradient>
-    <linearGradient id="link" x1="164" y1="512" x2="860" y2="512" gradientUnits="userSpaceOnUse">
+    <linearGradient id="span" x1="146" y1="512" x2="878" y2="512" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#38BDF8"/>
       <stop offset="0.52" stop-color="#3B82F6"/>
       <stop offset="1" stop-color="#2DD4BF"/>
     </linearGradient>
-    <linearGradient id="server" x1="410" y1="338" x2="632" y2="692" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#F8FAFC"/>
-      <stop offset="1" stop-color="#DCEBFA"/>
+    <linearGradient id="hub" x1="354" y1="286" x2="678" y2="748" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#EFF8FF"/>
+      <stop offset="1" stop-color="#BFDDF8"/>
     </linearGradient>
-    <filter id="glow" x="-35%" y="-35%" width="170%" height="170%">
-      <feDropShadow dx="0" dy="22" stdDeviation="28" flood-color="#020617" flood-opacity="0.42"/>
-      <feDropShadow dx="0" dy="0" stdDeviation="20" flood-color="#38BDF8" flood-opacity="0.12"/>
+    <filter id="shadow" x="-32%" y="-32%" width="164%" height="164%">
+      <feDropShadow dx="0" dy="24" stdDeviation="30" flood-color="#020617" flood-opacity="0.44"/>
+      <feDropShadow dx="0" dy="0" stdDeviation="18" flood-color="#38BDF8" flood-opacity="0.10"/>
     </filter>
   </defs>
 
   <rect x="48" y="48" width="928" height="928" rx="224" fill="url(#background)"/>
-  <path d="M168 344C274 172 750 172 856 344" fill="none" stroke="#FFFFFF" stroke-opacity="0.06" stroke-width="46" stroke-linecap="round"/>
+  <path d="M176 340C300 190 724 190 848 340" fill="none" stroke="#FFFFFF" stroke-opacity="0.055" stroke-width="44" stroke-linecap="round"/>
 
-  <g filter="url(#glow)">
-    <path d="M264 512H398" fill="none" stroke="url(#link)" stroke-width="72" stroke-linecap="round"/>
-    <path d="M626 512H760" fill="none" stroke="url(#link)" stroke-width="72" stroke-linecap="round"/>
+  <g filter="url(#shadow)">
+    <path d="M274 512H350" fill="none" stroke="url(#span)" stroke-width="64" stroke-linecap="round"/>
+    <path d="M674 512H750" fill="none" stroke="url(#span)" stroke-width="64" stroke-linecap="round"/>
 
-    <circle cx="214" cy="512" r="92" fill="#0A1A2C" stroke="url(#link)" stroke-width="44"/>
-    <circle cx="810" cy="512" r="92" fill="#0A1A2C" stroke="url(#link)" stroke-width="44"/>
-    <circle cx="214" cy="512" r="24" fill="#E6F7FF"/>
-    <circle cx="810" cy="512" r="24" fill="#E6F7FF"/>
+    <circle cx="208" cy="512" r="88" fill="#091827" stroke="url(#span)" stroke-width="42"/>
+    <circle cx="816" cy="512" r="88" fill="#091827" stroke="url(#span)" stroke-width="42"/>
+    <circle cx="208" cy="512" r="24" fill="#F3FAFF"/>
+    <circle cx="816" cy="512" r="24" fill="#F3FAFF"/>
 
-    <rect x="366" y="290" width="292" height="444" rx="92" fill="#0A1728" stroke="url(#server)" stroke-width="42"/>
+    <path d="M512 260L682 358V666L512 764L342 666V358Z" fill="#091827" stroke="url(#hub)" stroke-width="42" stroke-linejoin="round"/>
 
-    <g fill="none" stroke-linecap="round">
-      <path d="M444 416H580" stroke="url(#link)" stroke-width="42"/>
-      <path d="M444 512H580" stroke="url(#link)" stroke-width="42"/>
-      <path d="M444 608H580" stroke="url(#link)" stroke-width="42"/>
+    <g fill="none" stroke="url(#span)" stroke-width="30" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M512 404L444 594H580Z"/>
     </g>
-    <g fill="#F8FAFC">
-      <circle cx="420" cy="416" r="14"/>
-      <circle cx="420" cy="512" r="14"/>
-      <circle cx="420" cy="608" r="14"/>
+    <g fill="#F8FCFF" stroke="#0B2037" stroke-width="12">
+      <circle cx="512" cy="404" r="32"/>
+      <circle cx="444" cy="594" r="32"/>
+      <circle cx="580" cy="594" r="32"/>
     </g>
   </g>
 </svg>

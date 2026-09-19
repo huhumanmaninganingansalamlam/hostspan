@@ -10,6 +10,8 @@
 
 HostSpan is a terminal-first MCP execution gateway for ChatGPT Web Developer Mode. It exposes a fixed `hostspan-v2` toolset for approved local targets and keeps file/process side effects verifiable and recoverable across reconnects.
 
+The HostSpan mark represents an MCP gateway spanning two local endpoints through a central protocol-routing hub. The tray uses a separate simplified bridge/hub glyph so it stays legible at 16–32 px instead of shrinking the full application artwork.
+
 HostSpan Alpha is intentionally Linux-first and **native execution is not an OS sandbox**. A native process runs with the permissions of the user running HostSpan. See [Security](SECURITY.md) before enabling `exec` on a target.
 
 ## Alpha scope
