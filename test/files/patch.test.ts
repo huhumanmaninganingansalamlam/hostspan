@@ -152,6 +152,49 @@ describe("hash-guarded patch transaction", () => {
     db.close();
   });
 
+  it("applies a valid multi-hunk unified diff", () => {
+    const { root, target, service, db } = fixture();
+    const before = "a\nb\nc\nd\ne\nf\ng\nh\n";
+    const patch = "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n@@ -6,3 +6,3 @@\n f\n-g\n+G\n h\n";
+    writeFileSync(join(root, "a.txt"), before);
+
+    const result = service.apply(target, {
+      idempotency_key: uuidv7(),
+      target_id: "test",
+      dry_run: false,
+      files: [{ path: "a.txt", expected_sha256: hash(before), unified_diff: patch }],
+      validators: [],
+    });
+
+    expect(result).toMatchObject({ state: "verified" });
+    expect(readFileSync(join(root, "a.txt"), "utf8")).toBe("a\nB\nc\nd\ne\nf\nG\nh\n");
+    db.close();
+  });
+
+  it("classifies malformed hunk counts as PATCH_REJECTED without changing the file", () => {
+    const { root, target, service, db } = fixture();
+    const before = "a\nb\nc\n";
+    writeFileSync(join(root, "a.txt"), before);
+
+    expect(() =>
+      service.apply(target, {
+        idempotency_key: uuidv7(),
+        target_id: "test",
+        dry_run: false,
+        files: [
+          {
+            path: "a.txt",
+            expected_sha256: hash(before),
+            unified_diff: "@@ -1,3 +1,4 @@\n a\n-b\n+B\n c\n",
+          },
+        ],
+        validators: [],
+      }),
+    ).toThrowError(expect.objectContaining<Partial<HostSpanError>>({ code: "PATCH_REJECTED" }));
+    expect(readFileSync(join(root, "a.txt"), "utf8")).toBe(before);
+    db.close();
+  });
+
   it("rejects reusing an idempotency key with different arguments", () => {
     const { root, target, service, db } = fixture();
     writeFileSync(join(root, "a.txt"), "a\nb\n");

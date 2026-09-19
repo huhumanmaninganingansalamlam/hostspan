@@ -2,7 +2,7 @@
 
 ## Release contract
 
-- Version: `0.2.0-alpha.22`
+- Version: `0.2.0-alpha.23`
 - Toolset: `hostspan-v2`
 - MCP protocol target: `2026-07-28`
 - Platform: Linux x64 (Ubuntu 24.04 LTS / WSL2)
@@ -59,7 +59,7 @@ These items do not require a new MCP tool and are not blockers for the current L
 
 `hostspan-v2` tool names and input schemas are fixed for this Alpha line. `v2` is intentionally a breaking tool-contract revision from `hostspan-v1`: `process_start` gains optional TTY fields and `process_write` is added. Description/schema metadata changes alter `toolset_hash`; refresh the ChatGPT app after upgrading.
 
-`0.2.0-alpha.22` keeps the `hostspan-v2` 11-tool schema and toolset hash unchanged and fixes an authority mismatch in native execution. `exec`-only targets still enforce `allowed_programs` and `env_allowlist`, but a target that also grants `terminal` no longer blocks ordinary non-interactive CLI programs such as `bash`, project CLIs, absolute executable paths, or explicit environment variables: writable terminal authority already grants the same OS-user command authority. Deadline, output, concurrency, cwd, idempotency, and durable process controls remain enforced. This removes the previous situation where a trusted terminal-enabled workspace could run a shell interactively but `process_start(..., tty=false)` rejected that same shell. Workspace and capability configuration remains restart-gated by design. Remote non-loopback serving still fails closed without OAuth.
+`0.2.0-alpha.23` keeps the `hostspan-v2` 11-tool schema and toolset hash unchanged and hardens patch error reporting. Valid multi-hunk unified diffs are explicitly regression-tested; malformed hunk headers/counts are now reported as structured `PATCH_REJECTED` errors with parser details instead of surfacing as `INTERNAL_ERROR`, and the target file remains unchanged. Alpha.22 fixed the native-exec authority mismatch so `exec+terminal` targets can run ordinary non-interactive CLI programs while `exec`-only targets retain their program/env allowlists. Workspace and capability configuration remains restart-gated by design. Remote non-loopback serving still fails closed without OAuth.
 
 Config schema remains version 1. The durable database schema is version 4 and adds process backend/session/deadline/output-cap metadata so tmux sessions can be reconciled after daemon restart. Database initialization uses WAL and backs up an existing database before migration.
 

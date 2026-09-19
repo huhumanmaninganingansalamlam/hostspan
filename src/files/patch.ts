@@ -207,7 +207,15 @@ function prepareFiles(target: TargetRuntime, input: FilePatchToolInput, policy: 
       });
     }
     const text = readTextStrict(before, guarded.relative);
-    const patched = applyPatch(text, requested.unified_diff, { autoConvertLineEndings: true });
+    let patched: string | false;
+    try {
+      patched = applyPatch(text, requested.unified_diff, { autoConvertLineEndings: true });
+    } catch (error) {
+      throw new HostSpanError("PATCH_REJECTED", `Unified diff is malformed for ${guarded.relative}.`, false, {
+        path: guarded.relative,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
     if (patched === false) throw new HostSpanError("PATCH_REJECTED", `Unified diff does not apply cleanly: ${guarded.relative}`, false, { path: guarded.relative });
     const after = Buffer.from(patched, "utf8");
     prepared.push({
