@@ -87,7 +87,7 @@ function smokeWindowsPackage(executable, asarPath, arch) {
 	if (executableHeader !== "MZ") {
 		throw new Error(`Packaged Windows executable is not a PE image: ${executable}`);
 	}
-	const entries = new Set(listPackage(asarPath));
+	const entries = new Set(listPackage(asarPath).map((entry) => entry.replaceAll("\\", "/")));
 	if (!entries.has("/dist/src/cli/index.js"))
 		throw new Error("Packaged ASAR is missing the HostSpan CLI entrypoint");
 	if (!entries.has("/dist/src/desktop/main.js"))
