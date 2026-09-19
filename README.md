@@ -1,8 +1,16 @@
 # HostSpan
 
+<p align="center">
+  <img src="assets/brand/hostspan.svg" width="128" height="128" alt="HostSpan gateway icon">
+</p>
+
+[![CI](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/ci.yml/badge.svg)](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/ci.yml)
+[![Desktop release](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/release.yml/badge.svg)](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/release.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+
 HostSpan is a terminal-first MCP execution gateway for ChatGPT Web Developer Mode. It exposes a fixed `hostspan-v2` toolset for approved local targets and keeps file/process side effects verifiable and recoverable across reconnects.
 
-HostSpan Alpha is intentionally Linux-first and **native execution is not an OS sandbox**. A native process runs with the permissions of the user running HostSpan. See [Security](docs/SECURITY.md) before enabling `exec` on a target.
+HostSpan Alpha is intentionally Linux-first and **native execution is not an OS sandbox**. A native process runs with the permissions of the user running HostSpan. See [Security](SECURITY.md) before enabling `exec` on a target.
 
 ## Alpha scope
 
@@ -265,10 +273,13 @@ The contract suite reconnects and lists the fixed 11-tool `hostspan-v2` toolset 
 
 ## Security and support
 
+- [Security policy and reporting](SECURITY.md)
 - [Security model](docs/SECURITY.md)
 - [ChatGPT Web / Secure MCP Tunnel / reverse proxy](docs/CHATGPT.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Alpha release and migration notes](docs/RELEASE.md)
+- [Contributing](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
 - [Desktop distribution and release automation](docs/DISTRIBUTION.md)
 
 When reporting an interoperability issue, attach `hostspan doctor` output and a redacted `hostspan support-export` bundle. Process stdout/stderr is not written to audit logs or support bundles.

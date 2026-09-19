@@ -2,7 +2,7 @@
 
 ## Release contract
 
-- Version: `0.2.0-alpha.23`
+- Version: `0.2.0-alpha.24`
 - Toolset: `hostspan-v2`
 - MCP protocol target: `2026-07-28`
 - Platform: Linux x64 (Ubuntu 24.04 LTS / WSL2)
@@ -37,10 +37,10 @@
 - audit history bounded by age and `max_audit_events` (500,000 by default)
 - detached `hostspan daemon start|stop|status` management
 - optional Electron tray/dashboard for daemon start/stop/restart, Doctor health, active work, workspace add/remove, login autostart, recent calls, and tmux attach
-- original vector app/tray branding with deterministic PNG/ICO/ICNS generation
+- original vector app/tray branding with deterministic PNG/ICO/ICNS generation; current mark represents a local gateway spanning two endpoints rather than a terminal prompt
 - Electron Builder packaging for Linux x64 AppImage/deb, Windows x64 NSIS/zip, and macOS arm64/x64 DMG/zip
 - platform-aligned packaged runtime verification: full ASAR/CLI/native-SQLite smoke on Linux/macOS and Electron/ASAR package smoke on Windows
-- tag-gated GitHub Actions release builds with version verification, portable CLI tarball, checksums, and prerelease classification
+- tag-gated GitHub Actions release builds with version verification, portable CLI tarball, checksums, prerelease classification, and maintained GitHub Release publishing action
 
 ## Explicitly excluded
 
@@ -59,7 +59,7 @@ These items do not require a new MCP tool and are not blockers for the current L
 
 `hostspan-v2` tool names and input schemas are fixed for this Alpha line. `v2` is intentionally a breaking tool-contract revision from `hostspan-v1`: `process_start` gains optional TTY fields and `process_write` is added. Description/schema metadata changes alter `toolset_hash`; refresh the ChatGPT app after upgrading.
 
-`0.2.0-alpha.23` keeps the `hostspan-v2` 11-tool schema and toolset hash unchanged and hardens patch error reporting. Valid multi-hunk unified diffs are explicitly regression-tested; malformed hunk headers/counts are now reported as structured `PATCH_REJECTED` errors with parser details instead of surfacing as `INTERNAL_ERROR`, and the target file remains unchanged. Alpha.22 fixed the native-exec authority mismatch so `exec+terminal` targets can run ordinary non-interactive CLI programs while `exec`-only targets retain their program/env allowlists. Workspace and capability configuration remains restart-gated by design. Remote non-loopback serving still fails closed without OAuth.
+`0.2.0-alpha.24` keeps the `hostspan-v2` 11-tool schema and toolset hash unchanged and closes desktop/open-source release polish. The app/tray mark now represents a local gateway spanning two endpoints instead of a terminal prompt, generated native icons still come deterministically from checked-in SVG sources, and the final GitHub Release publication step uses the maintained `softprops/action-gh-release@v3` action after platform artifacts and SHA-256 checksums are collected. Standard contributing, conduct, security-reporting, ownership, pull-request, Dependabot, package metadata, and README badge files are included for public repository use. Alpha.23 hardened patch error reporting and Alpha.22 aligned native exec with terminal authority. Workspace and capability configuration remains restart-gated by design. Remote non-loopback serving still fails closed without OAuth.
 
 Config schema remains version 1. The durable database schema is version 4 and adds process backend/session/deadline/output-cap metadata so tmux sessions can be reconciled after daemon restart. Database initialization uses WAL and backs up an existing database before migration.
 

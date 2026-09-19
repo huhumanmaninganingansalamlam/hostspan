@@ -1,6 +1,6 @@
 {
   "name": "hostspan",
-  "version": "0.2.0-alpha.23",
+  "version": "0.2.0-alpha.24",
   "productName": "HostSpan",
   "desktopName": "HostSpan",
   "description": "Terminal-first MCP execution gateway for approved local targets",
@@ -10,6 +10,18 @@
     "type": "git",
     "url": "git+ssh://git@github.com/huhumanmaninganingansalamlam/hostspan.git"
   },
+  "bugs": {
+    "url": "https://github.com/huhumanmaninganingansalamlam/hostspan/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "chatgpt",
+    "developer-tools",
+    "local-execution",
+    "terminal",
+    "tmux"
+  ],
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/src/desktop/main.js",

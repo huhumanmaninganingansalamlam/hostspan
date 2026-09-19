@@ -199,18 +199,16 @@ jobs:
       - name: Generate checksums
         working-directory: release-assets
         run: find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+      - name: List release assets
+        working-directory: release-assets
+        run: ls -lah
       - name: Publish release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" release-assets/* --clobber
-          else
-            args=(release create "$RELEASE_TAG" release-assets/* --verify-tag --generate-notes --title "HostSpan $RELEASE_TAG")
-            if [[ "$RELEASE_TAG" == *-* ]]; then
-              args+=(--prerelease)
-            fi
-            gh "${args[@]}"
-          fi
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: HostSpan ${{ steps.release.outputs.tag }}
+          generate_release_notes: true
+          prerelease: ${{ contains(steps.release.outputs.tag, '-') }}
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          files: release-assets/*
