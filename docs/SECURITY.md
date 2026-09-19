@@ -36,10 +36,11 @@ Do not describe Alpha as secure sandboxed execution. A future sandbox provider m
 ## Process and terminal boundary
 
 - `process_start` is the only spawn path.
-- Non-interactive commands are argv arrays with `shell=false` and remain subject to the target exec profile's `allowed_programs`, env allowlist, deadline, output, and concurrency limits.
+- Non-interactive commands are argv arrays with `shell=false`. On `exec`-only targets they remain subject to the target exec profile's `allowed_programs` and env allowlist in addition to deadline, output, and concurrency limits.
 - `tty=true` is a separate authority path: the target must explicitly grant the `terminal` capability and HostSpan uses a private tmux server/socket to own the PTY.
 - `process_write` is valid only for tmux-backed interactive processes. It can send text, selected control keys, and terminal resize updates. Every write requires its own UUIDv7 idempotency key; duplicate retries join/replay the original write, while an unprovable crash-boundary outcome becomes `PROCESS_UNKNOWN` and is never automatically retyped.
 - A writable PTY is stronger than bounded exec. A shell, REPL, debugger, SSH client, or interpreter inside the PTY can execute operations that are not constrained by the native exec profile's `allowed_programs`. The `terminal` capability therefore grants native interactive terminal authority as the HostSpan OS user.
+- When a target grants both `exec` and `terminal`, HostSpan treats that stronger terminal grant consistently: non-interactive `process_start` no longer rejects a program or explicit environment variable merely because it is absent from the exec profile allowlists. Resource/lifecycle controls still apply. This avoids a misleading policy where `bash` is forbidden in bounded exec while the same target can already start `bash` inside a writable PTY.
 - `target_id` still determines the initial working directory and the authorization decision, but once interactive terminal authority is granted it is not a filesystem sandbox. A shell can change directories or access anything available to the HostSpan OS user.
 - Side-effect submissions require a UUIDv7 idempotency key and are deduplicated in SQLite by argument hash.
 - A duplicate key with different arguments is rejected with `IDEMPOTENCY_CONFLICT`.

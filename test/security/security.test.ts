@@ -16,7 +16,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(): { root: string; configPath: string } {
+function fixture(options: { terminal?: boolean } = {}): { root: string; configPath: string } {
   const root = mkdtempSync(join(tmpdir(), "hostspan-security-"));
   roots.push(root);
   const targetRoot = join(root, "target");
@@ -38,7 +38,7 @@ function fixture(): { root: string; configPath: string } {
         label: "Local",
         provider: "local",
         root: targetRoot,
-        capabilities: ["read", "write", "exec"],
+        capabilities: options.terminal ? ["read", "write", "exec", "terminal"] : ["read", "write", "exec"],
         exec_profile: "native",
         deny_globs: ["**/.env*", "**/*.pem", "**/*.key"],
         ignore_globs: [],
@@ -130,6 +130,53 @@ describe("security and operational boundaries", () => {
           "req_env",
         ),
       ).rejects.toMatchObject({ code: "SCOPE_DENIED" });
+    } finally {
+      runtime.close();
+    }
+  });
+
+  it("keeps the program allowlist for exec-only targets", async () => {
+    const { configPath } = fixture();
+    const runtime = createRuntime(configPath);
+    try {
+      await expect(
+        runtime.handlers.process_start(
+          {
+            idempotency_key: uuidv7(),
+            target_id: "local",
+            argv: ["bash", "-lc", "printf should-not-run"],
+            cwd: ".",
+            env: {},
+            wait_ms: 100,
+            deadline_ms: 5_000,
+            max_output_bytes: 4096,
+          },
+          "req_exec_allowlist",
+        ),
+      ).rejects.toMatchObject({ code: "SCOPE_DENIED" });
+    } finally {
+      runtime.close();
+    }
+  });
+
+  it("does not make non-interactive exec weaker than terminal authority", async () => {
+    const { configPath } = fixture({ terminal: true });
+    const runtime = createRuntime(configPath);
+    try {
+      const result = await runtime.handlers.process_start(
+        {
+          idempotency_key: uuidv7(),
+          target_id: "local",
+          argv: ["bash", "-lc", "printf '%s' \"$HOSTSPAN_TEST_ENV\""],
+          cwd: ".",
+          env: { HOSTSPAN_TEST_ENV: "terminal-authority-ok" },
+          wait_ms: 1_000,
+          deadline_ms: 5_000,
+          max_output_bytes: 4096,
+        },
+        "req_terminal_authority_exec",
+      );
+      expect(result).toMatchObject({ state: "succeeded", stdout: "terminal-authority-ok", exit_code: 0, interactive: false });
     } finally {
       runtime.close();
     }

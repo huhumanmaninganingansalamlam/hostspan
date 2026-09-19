@@ -2,7 +2,7 @@
 
 ## Release contract
 
-- Version: `0.2.0-alpha.21`
+- Version: `0.2.0-alpha.22`
 - Toolset: `hostspan-v2`
 - MCP protocol target: `2026-07-28`
 - Platform: Linux x64 (Ubuntu 24.04 LTS / WSL2)
@@ -23,7 +23,7 @@
 - tmux session reconciliation across HostSpan daemon restart
 - process-group deadline/cancel, byte cursors, UTF-8-safe output spool, idempotent submission
 - SQLite WAL operation/process/transaction/audit state
-- native exec policy, env/program/output/deadline/concurrency limits
+- native exec policy with bounded exec-only allowlists, terminal-authority parity, and output/deadline/concurrency limits
 - JSONL logging, redaction, short output retention, support export
 - doctor/smoke/status/admin/service commands
 - ChatGPT Refresh/tunnel/troubleshooting documentation
@@ -59,7 +59,7 @@ These items do not require a new MCP tool and are not blockers for the current L
 
 `hostspan-v2` tool names and input schemas are fixed for this Alpha line. `v2` is intentionally a breaking tool-contract revision from `hostspan-v1`: `process_start` gains optional TTY fields and `process_write` is added. Description/schema metadata changes alter `toolset_hash`; refresh the ChatGPT app after upgrading.
 
-`0.2.0-alpha.21` keeps the `hostspan-v2` 11-tool schema and toolset hash unchanged and fixes the last Windows package-smoke portability defect. Alpha.20 correctly stopped executing the packaged Windows shell as a native HostSpan core, but `@electron/asar` constructs listed entry names with Node's platform path separator, so Windows returned backslash-separated ASAR paths while the smoke compared POSIX-style paths. Alpha.21 normalizes ASAR entry separators before asserting the CLI/desktop/icon payloads. The alpha.20 workflow still proved all four package builds and artifact uploads plus all Linux/macOS smokes; only this zero-duration Windows path assertion blocked publication. The Windows validation remains reproducible from Linux cross-packaging through the smoke script's platform/output overrides. Workspace and capability configuration remains restart-gated by design. Remote non-loopback serving still fails closed without OAuth. Existing targets do not gain terminal authority automatically outside the tray convenience profile: add the explicit `terminal` capability before `tty=true` is accepted. Existing non-interactive `process_start`/`process_poll`/`process_cancel` semantics remain available.
+`0.2.0-alpha.22` keeps the `hostspan-v2` 11-tool schema and toolset hash unchanged and fixes an authority mismatch in native execution. `exec`-only targets still enforce `allowed_programs` and `env_allowlist`, but a target that also grants `terminal` no longer blocks ordinary non-interactive CLI programs such as `bash`, project CLIs, absolute executable paths, or explicit environment variables: writable terminal authority already grants the same OS-user command authority. Deadline, output, concurrency, cwd, idempotency, and durable process controls remain enforced. This removes the previous situation where a trusted terminal-enabled workspace could run a shell interactively but `process_start(..., tty=false)` rejected that same shell. Workspace and capability configuration remains restart-gated by design. Remote non-loopback serving still fails closed without OAuth.
 
 Config schema remains version 1. The durable database schema is version 4 and adds process backend/session/deadline/output-cap metadata so tmux sessions can be reconciled after daemon restart. Database initialization uses WAL and backs up an existing database before migration.
 

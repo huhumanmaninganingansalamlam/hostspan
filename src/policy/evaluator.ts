@@ -45,11 +45,17 @@ export class PolicyEvaluator {
   validateExec(target: TargetRuntime, argv: string[], env: Record<string, string>, deadlineMs: number, maxOutputBytes: number): ExecProfile {
     const profile = this.execProfile(target);
     const program = argv[0];
-    if (!program || program.includes("/") || !profile.allowed_programs.includes(basename(program))) {
+    if (!program) {
+      throw new HostSpanError("SCOPE_DENIED", "Process argv must include a program.");
+    }
+    const hasTerminalAuthority = target.capabilities.includes("terminal");
+    if (!hasTerminalAuthority && (program.includes("/") || !profile.allowed_programs.includes(basename(program)))) {
       throw new HostSpanError("SCOPE_DENIED", `Program is not allowed by exec profile: ${program ?? "<missing>"}`);
     }
-    const deniedEnv = Object.keys(env).filter((key) => !profile.env_allowlist.includes(key));
-    if (deniedEnv.length) throw new HostSpanError("SCOPE_DENIED", `Environment variables are not allowed: ${deniedEnv.join(", ")}`);
+    if (!hasTerminalAuthority) {
+      const deniedEnv = Object.keys(env).filter((key) => !profile.env_allowlist.includes(key));
+      if (deniedEnv.length) throw new HostSpanError("SCOPE_DENIED", `Environment variables are not allowed: ${deniedEnv.join(", ")}`);
+    }
     if (deadlineMs > profile.max_deadline_ms) throw new HostSpanError("SCOPE_DENIED", "deadline_ms exceeds exec profile maximum.");
     if (maxOutputBytes > profile.max_output_bytes) throw new HostSpanError("SCOPE_DENIED", "max_output_bytes exceeds exec profile maximum.");
     return profile;

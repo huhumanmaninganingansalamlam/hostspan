@@ -43,6 +43,8 @@ targets:
 exec_profiles:
   native-dev:
     mode: native
+    # These program/env allowlists bound exec-only targets. If a target also grants
+    # `terminal`, that stronger authority permits arbitrary non-interactive programs/env too.
     allowed_programs: [git, node, npm, pnpm, python, pytest, cargo]
     env_allowlist: [LANG, LC_ALL, CI, NODE_ENV]
     default_deadline_ms: 30000

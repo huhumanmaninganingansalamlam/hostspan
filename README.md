@@ -97,6 +97,8 @@ terminal:
 
 Interactive terminal access is an explicit target capability because it is stronger than bounded `exec`: once a PTY is writable, the program inside it can become a shell, REPL, SSH client, debugger, or TUI. Start an interactive process with `process_start(..., tty=true)`. `process_poll` reads incremental output, `process_write` sends text/control keys or terminal resize updates, and `process_cancel` closes the tmux session. `process_write` also requires a UUIDv7 idempotency key so a transport retry cannot silently type the same characters twice.
 
+For an `exec`-only target, non-interactive `process_start` remains constrained by the exec profile's `allowed_programs` and `env_allowlist`. If the same target also grants `terminal`, HostSpan does not make non-interactive execution artificially weaker than the already-authorized terminal: arbitrary program paths/names and explicit environment variables are accepted, while deadline, output, concurrency, cwd, idempotency, and process-lifecycle limits still apply. Use `exec` without `terminal` when a bounded program allowlist is the desired authority model.
+
 The response includes local attach commands. A person can observe without writing:
 
 ```bash
