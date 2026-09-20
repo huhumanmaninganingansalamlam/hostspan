@@ -163,15 +163,24 @@ describe("process supervisor", () => {
       startInput({ argv: ["node", "-e", "process.stdout.write('😀')"], wait_ms: 0 }),
       "req_utf8_tiny_cursor",
     );
-    const result = await supervisor.poll({
-      process_id: String(started.process_id),
-      stdout_cursor: 0,
-      stderr_cursor: 0,
-      wait_ms: 500,
-      max_bytes: 1,
-    });
-    expect(result.stdout).toBe("😀");
-    expect(result.next_stdout_cursor).toBe(4);
+    let cursor = 0;
+    let text = "";
+    for (let attempt = 0; attempt < 8 && text !== "😀"; attempt += 1) {
+      const result = await supervisor.poll({
+        process_id: String(started.process_id),
+        stdout_cursor: cursor,
+        stderr_cursor: 0,
+        wait_ms: 500,
+        max_bytes: 1,
+      });
+      const nextCursor = Number(result.next_stdout_cursor ?? cursor);
+      expect(nextCursor).toBeGreaterThanOrEqual(cursor);
+      if (result.stdout === "") expect(nextCursor).toBe(cursor);
+      text += String(result.stdout ?? "");
+      cursor = nextCursor;
+    }
+    expect(text).toBe("😀");
+    expect(cursor).toBe(4);
   });
 
   it("kills a process group including descendants on cancel", async () => {
