@@ -129,6 +129,37 @@ jobs:
         run: pnpm desktop:make
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Smoke packaged runtime
+        run: node scripts/smoke-packaged-cli.mjs
+      - name: Install and smoke Windows NSIS
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path out -Filter 'HostSpan-*-win-x64.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'Windows NSIS installer was not produced.' }
+          $installDir = Join-Path $env:RUNNER_TEMP 'HostSpanInstalled'
+          if (Test-Path $installDir) { Remove-Item -Recurse -Force $installDir }
+          $result = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', "/D=$installDir") -Wait -PassThru
+          if ($result.ExitCode -ne 0) { throw "NSIS installer exited $($result.ExitCode)." }
+          if (-not (Test-Path (Join-Path $installDir 'HostSpan.exe'))) { throw 'Installed HostSpan.exe is missing.' }
+          node scripts/smoke-packaged-cli.mjs --platform win32 --arch "${{ matrix.arch }}" --installed-dir "$installDir"
+      - name: Install and smoke macOS DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          dmg="$(find out -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          test -n "$dmg"
+          mount="$RUNNER_TEMP/hostspan-dmg"
+          installed="$RUNNER_TEMP/HostSpan.app"
+          rm -rf "$mount" "$installed"
+          mkdir -p "$mount"
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount"
+          trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true' EXIT
+          test -d "$mount/HostSpan.app"
+          cp -R "$mount/HostSpan.app" "$installed"
+          hdiutil detach "$mount"
+          trap - EXIT
+          node scripts/smoke-packaged-cli.mjs --platform darwin --arch "${{ matrix.arch }}" --installed-dir "$installed"
       - name: Upload platform artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -141,8 +172,6 @@ jobs:
             out/*.exe
           if-no-files-found: error
           retention-days: 14
-      - name: Smoke packaged runtime
-        run: node scripts/smoke-packaged-cli.mjs
 
   package-cli:
     name: Package CLI

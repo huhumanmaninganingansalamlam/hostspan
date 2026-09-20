@@ -41,7 +41,8 @@
 - desktop first-run initialization: a fresh tray install creates the standard default config if none exists, without overwriting existing config
 - original MCP gateway/bridge vector branding with dedicated small-size tray artwork and deterministic PNG/ICO/ICNS generation
 - Electron Builder packaging for Linux x64 AppImage/deb, Windows x64 NSIS/zip, and macOS arm64/x64 DMG/zip
-- platform-aligned packaged runtime verification: full ASAR/CLI/native-SQLite smoke on Linux/macOS and Electron/ASAR package smoke on Windows
+- platform-aligned packaged runtime verification: version/SQLite/bundled-ripgrep/PTy/full-workflow smoke on native Linux, Windows, and macOS, including HostSpan `tty=true` lifecycle
+- release-matrix installed-artifact verification: silent Windows NSIS installation and macOS DMG mount/copy followed by the same runtime smoke before artifacts are uploaded
 - tag-gated GitHub Actions release builds with version verification, portable CLI tarball, checksums, prerelease classification, and maintained GitHub Release publishing action
 
 ## Explicitly excluded
@@ -62,7 +63,7 @@ These items do not require additional MCP tools. The v3 Alpha qualifies Linux x6
 
 `hostspan-v3` exposes the fixed 11-tool durable PTY lifecycle. Tool description/schema metadata is part of `toolset_hash`; refresh the ChatGPT app after upgrading.
 
-`0.3.0-alpha.1` uses HostSpan-owned durable PTY session workers, adds native Windows ConPTY/Job Object execution, keeps workspace/capability configuration restart-gated, and retains fail-closed OAuth for non-loopback serving. Linux x64, native Windows x64, and native macOS x64 all pass their full applicable test/build gates. macOS x64 additionally passes fresh installed CLI doctor/full smoke, PTY start/write/exit, packaged runtime smoke, and installed menu-bar app verification.
+`0.3.0-alpha.1` uses HostSpan-owned durable PTY session workers, adds native Windows ConPTY/Job Object execution, keeps workspace/capability configuration restart-gated, and retains fail-closed OAuth for non-loopback serving. Linux x64, native Windows x64, and native macOS x64 all pass their full applicable test/build gates. Windows x64 has been verified through a real NSIS install with installed doctor/full smoke and ConPTY lifecycle; macOS x64 has been verified through the installed menu-bar app with installed doctor/full smoke and PTY lifecycle. The release matrix repeats installed NSIS/DMG runtime smoke before publication.
 
 Config schema remains version 1 with `terminal.backend: pty` as the only interactive backend. The durable database schema remains version 4. Database initialization uses WAL and backs up an existing database before migration.
 

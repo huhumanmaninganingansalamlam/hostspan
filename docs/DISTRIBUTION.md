@@ -50,7 +50,7 @@ After creating an unpacked or distributable package, verify the package rather t
 pnpm desktop:smoke
 ```
 
-On a matching native host, the smoke script executes `dist/src/cli/index.js` from inside the packaged ASAR, checks the packaged version, opens packaged `better-sqlite3`, actually spawns a PTY through the packaged `node-pty` binding, and runs a minimal packaged CLI/config round trip. On Windows it additionally runs the Job Object probe. Cross-built Windows packages may still receive a static PE/ASAR/native-binding layout check when no native Windows runtime is available.
+On a matching native host, the smoke script executes `dist/src/cli/index.js` from inside the packaged ASAR, checks the packaged version, opens packaged `better-sqlite3`, verifies bundled ripgrep, actually spawns a PTY through the packaged `node-pty` binding, runs the full HostSpan Doctor/workflow smoke, and exercises a real HostSpan `tty=true` start/write/resize/poll lifecycle. On Windows it additionally runs the Job Object probe. Cross-built Windows packages may still receive a static PE/ASAR/native-binding layout check when no native Windows runtime is available.
 
 The Windows package-layout smoke can also be reproduced from Linux before tagging:
 
@@ -73,11 +73,12 @@ The `--platform`, `--arch`, and `--out-dir` overrides are for static package val
 2. verifies that `v<package.json version>` exactly matches the tag;
 3. runs the full `pnpm check` release gate on Ubuntu;
 4. builds Linux x64, Windows x64, macOS Apple Silicon, and macOS Intel artifacts on matching native GitHub runners;
-5. runs packaged CLI/native-SQLite/PTy smoke on each matching native runner and the Windows Job Object probe on Windows;
-6. packs the npm/CLI payload as `hostspan-<version>.tgz`;
-7. uploads the user-facing packages to one GitHub Release;
-8. generates `SHA256SUMS.txt`;
-9. marks tags containing `-` (for example, `v0.2.0-alpha.21`) as prereleases.
+5. runs packaged CLI/SQLite/ripgrep/PTy/full-workflow smoke on each matching native runner and the Windows Job Object probe on Windows;
+6. silently installs the produced Windows NSIS artifact and mounts/copies the produced macOS DMG, then reruns the same runtime smoke against the installed artifact;
+7. packs the npm/CLI payload as `hostspan-<version>.tgz`;
+8. uploads the user-facing packages to one GitHub Release only after those installed-artifact gates pass;
+9. generates `SHA256SUMS.txt`;
+10. marks tags containing `-` (for example, `v0.3.0-alpha.1`) as prereleases.
 
 Create a release after the intended commit is on `main`:
 
@@ -106,8 +107,8 @@ Packaging and native-core support are separate claims:
 | --- | --- |
 | Linux x64 / Ubuntu 24.04 | release-qualified Alpha core; Unix PTY + process groups |
 | WSL2 | uses the Linux core; not native Windows qualification |
-| Windows x64 | native Alpha core; ConPTY + Job Objects; full Windows test/build and packaged-runtime smoke passed |
-| macOS x64 | native Alpha core; full test/build, installed CLI doctor/full smoke, PTY lifecycle, packaged-runtime smoke, and installed menu-bar app verified |
+| Windows x64 | native Alpha core; ConPTY + Job Objects; full test/build, real NSIS install, installed doctor/full smoke, packaged HostSpan PTY lifecycle, and tray app launch verified |
+| macOS x64 | native Alpha core; full test/build, installed CLI doctor/full smoke, packaged HostSpan PTY lifecycle, DMG/app runtime smoke, and installed menu-bar app verified |
 | macOS arm64 | release packaging lane exists; native qualification relies on the matching release runner |
 
 Packaging success must not be described as native-core security or process-recovery qualification.

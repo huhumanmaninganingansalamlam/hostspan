@@ -13,6 +13,7 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { listPackage } from "@electron/asar";
+import { v7 as uuidv7 } from "uuid";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -25,6 +26,7 @@ function option(name, fallback) {
 const targetPlatform = option("--platform", process.platform);
 const targetArch = option("--arch", process.arch);
 const outDir = resolve(root, option("--out-dir", "out"));
+const installedDir = option("--installed-dir");
 if (!["linux", "darwin", "win32"].includes(targetPlatform)) {
 	throw new Error(`Unsupported smoke platform: ${targetPlatform}`);
 }
@@ -249,6 +251,33 @@ function smokePackagedRuntime(executable, cli, nativeModule, ptyModule, ripgrepM
 				["Packaged full smoke failed: ", JSON.stringify(workflow.steps)].join(""),
 			);
 		}
+
+		const ptyStartKey = uuidv7();
+		const ptyWriteKey = uuidv7();
+		const hostspanPtyProbe = [
+			"const {pathToFileURL}=require('node:url');",
+			`import(pathToFileURL(${JSON.stringify(cli)}).href).then(async m=>{`,
+			`const rt=m.createRuntime(${JSON.stringify(configPath)});`,
+			"try{",
+			"const ttyArgv=process.platform==='win32'?['cmd.exe','/V:ON','/Q','/D','/C','echo READY & set /p name= & echo HELLO !name!']:['/bin/sh','-lc','printf \"READY\\n\"; IFS= read -r name; printf \"HELLO %s\\n\" \"$name\"'];",
+			`const started=await rt.handlers.process_start({idempotency_key:${JSON.stringify(ptyStartKey)},target_id:'packaged-smoke',argv:ttyArgv,cwd:'.',env:{},wait_ms:700,deadline_ms:10000,max_output_bytes:65536,tty:true,columns:100,rows:30},'packaged_pty_start');`,
+			"let transcript=String(started.stdout||'');",
+			`let current=await rt.handlers.process_write({idempotency_key:${JSON.stringify(ptyWriteKey)},process_id:String(started.process_id),chars:'packaged',control_keys:['Enter'],columns:132,rows:42,stdout_cursor:Number(started.next_stdout_cursor||0),wait_ms:1000,max_bytes:65536},'packaged_pty_write');`,
+			"transcript+=String(current.stdout||'');",
+			"const attempts=process.platform==='win32'?24:8;",
+			"for(let i=0;i<attempts&&(current.state==='running'||!transcript.includes('HELLO packaged'));i++){current=await rt.handlers.process_poll({process_id:String(started.process_id),stdout_cursor:Number(current.next_stdout_cursor||0),stderr_cursor:0,wait_ms:500,max_bytes:65536},'packaged_pty_poll_'+i);transcript+=String(current.stdout||'');}",
+			"if(current.state!=='succeeded'||!transcript.includes('HELLO packaged')){console.error(JSON.stringify({started,current,transcript}));process.exitCode=11;return;}",
+			"process.stdout.write('hostspan-pty-ok');",
+			"}finally{rt.close();}",
+			"}).catch(e=>{console.error(e?.stack||String(e));process.exit(12);});",
+		].join("");
+		const hostspanPty = run(executable, ["-e", hostspanPtyProbe], {
+			HOSTSPAN_CONFIG: configPath,
+		});
+		if (hostspanPty !== "hostspan-pty-ok") {
+			throw new Error(`Unexpected HostSpan PTY lifecycle probe output: ${hostspanPty}`);
+		}
+
 		const snapshotText = run(
 			executable,
 			[cli, "admin", "snapshot", "--recent", "1"],
@@ -269,15 +298,26 @@ function smokePackagedRuntime(executable, cli, nativeModule, ptyModule, ripgrepM
 	);
 }
 
-const candidates = findFiles(outDir, "app.asar").filter(
-	(path) => {
-		if (targetPlatform === "win32") return path.includes("win-unpacked");
-		if (targetPlatform === "darwin") return path.includes(".app");
-		return path.includes("linux-unpacked");
-	},
-);
+const candidates = installedDir
+	? (() => {
+			const installedRoot = resolve(root, installedDir);
+			const asarPath =
+				targetPlatform === "darwin"
+					? join(installedRoot, "Contents", "Resources", "app.asar")
+					: join(installedRoot, "resources", "app.asar");
+			return existsSync(asarPath) ? [asarPath] : [];
+		})()
+	: findFiles(outDir, "app.asar").filter((path) => {
+			if (targetPlatform === "win32") return path.includes("win-unpacked");
+			if (targetPlatform === "darwin") return path.includes(".app");
+			return path.includes("linux-unpacked");
+		});
 if (candidates.length === 0)
-	throw new Error(`No ${targetPlatform}/${targetArch} Electron app.asar was found under ${outDir}.`);
+	throw new Error(
+		installedDir
+			? `No ${targetPlatform}/${targetArch} installed Electron app.asar was found under ${installedDir}.`
+			: `No ${targetPlatform}/${targetArch} Electron app.asar was found under ${outDir}.`,
+	);
 
 const asarPath = candidates[0];
 const { executable, cli, nativeModule, ptyModule, ripgrepModule, jobModule } = packagedPaths(asarPath, targetPlatform);
