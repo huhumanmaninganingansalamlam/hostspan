@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { v7 as uuidv7 } from "uuid";
 import { processGroupAlive, recoverProcesses, signalProcessGroup } from "../../src/processes/recovery.js";
 import { openDatabase } from "../../src/state/database.js";
@@ -11,6 +11,7 @@ import { ProcessesRepo } from "../../src/state/processes-repo.js";
 
 const roots: string[] = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -22,6 +23,25 @@ function fixture() {
 }
 
 describe("process recovery", () => {
+  it.runIf(process.platform !== "win32")("falls back to the group leader when a POSIX group signal is denied", () => {
+    const calls: Array<{ pid: number; signal: string | number }> = [];
+    vi.spyOn(process, "kill").mockImplementation((pid, signal = 0) => {
+      calls.push({ pid, signal });
+      if (pid < 0) {
+        const error = new Error("group signal denied") as NodeJS.ErrnoException;
+        error.code = "EPERM";
+        throw error;
+      }
+      return true;
+    });
+
+    expect(() => signalProcessGroup(4242, "SIGTERM")).not.toThrow();
+    expect(calls).toEqual([
+      { pid: -4242, signal: "SIGTERM" },
+      { pid: 4242, signal: "SIGTERM" },
+    ]);
+  });
+
   it("marks a launching crash boundary UNKNOWN without replaying it", () => {
     const { db, operations, processes } = fixture();
     const key = uuidv7();

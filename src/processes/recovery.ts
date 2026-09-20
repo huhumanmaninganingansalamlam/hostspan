@@ -37,7 +37,22 @@ export function signalProcessGroup(pgid: number | null, signal: NodeJS.Signals):
     process.kill(-pgid, signal);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "ESRCH") throw error;
+    if (code === "ESRCH") return;
+    if (code === "EPERM") {
+      // Some Darwin environments can reject a negative-PID process-group
+      // signal even though HostSpan still owns the group leader. Fall back to
+      // the leader itself, then let the normal group-liveness check decide
+      // whether any descendants survived. This never turns an unverifiable
+      // process tree into success.
+      try {
+        process.kill(pgid, signal);
+        return;
+      } catch (fallbackError) {
+        if ((fallbackError as NodeJS.ErrnoException).code === "ESRCH") return;
+        throw fallbackError;
+      }
+    }
+    throw error;
   }
 }
 

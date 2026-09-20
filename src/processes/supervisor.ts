@@ -178,11 +178,18 @@ export class ProcessSupervisor {
     if (TERMINAL_STATES.has(record.state)) return record.state;
     const runtime = this.runtimes.get(processId);
     if (runtime) runtime.terminating = true;
-    safeKillGroup(record.pgid, "SIGTERM");
-    let gone = record.pgid ? await waitForGroupGone(record.pgid, graceMs) : true;
-    if (!gone) {
-      safeKillGroup(record.pgid, "SIGKILL");
-      gone = record.pgid ? await waitForGroupGone(record.pgid, 1_000) : true;
+    let gone: boolean;
+    try {
+      safeKillGroup(record.pgid, "SIGTERM");
+      gone = record.pgid ? await waitForGroupGone(record.pgid, graceMs) : true;
+      if (!gone) {
+        safeKillGroup(record.pgid, "SIGKILL");
+        gone = record.pgid ? await waitForGroupGone(record.pgid, 1_000) : true;
+      }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? "unknown";
+      this.finalize(processId, "unknown", record.exit_code, record.term_signal, `${reason}:termination_error:${code}`);
+      return "unknown";
     }
     if (runtime) {
       // On Windows, Job Object kill-on-close can make the worker PID disappear
