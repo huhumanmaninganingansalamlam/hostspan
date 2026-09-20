@@ -19,6 +19,18 @@ function quoteCmdArgument(value) {
 }
 
 function run(command, args, options = {}) {
+  const npmExecPath = process.env.npm_execpath;
+  const npmNodeExecPath = process.env.npm_node_execpath;
+  if (command === "pnpm" && npmExecPath && /pnpm/i.test(basename(npmExecPath))) {
+    if (/\.[cm]?js$/i.test(npmExecPath)) {
+      return run(
+        npmNodeExecPath || process.execPath,
+        [npmExecPath, ...args],
+        options,
+      );
+    }
+    return run(npmExecPath, args, options);
+  }
   const useCmd =
     process.platform === "win32" &&
     (command === "pnpm" || command === "npm" || command.toLowerCase().endsWith(".cmd"));
@@ -90,6 +102,15 @@ try {
   }
 
   console.log(`HostSpan CLI package smoke passed: ${process.platform}/${process.arch} ${packageJson.version}`);
+} catch (error) {
+  if (process.env.GITHUB_ACTIONS === "true") {
+    const message = (error instanceof Error ? error.stack ?? error.message : String(error))
+      .replaceAll("%", "%25")
+      .replaceAll("\r", "%0D")
+      .replaceAll("\n", "%0A");
+    process.stderr.write(`::error title=HostSpan CLI package smoke failed::${message}\n`);
+  }
+  throw error;
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
