@@ -2,7 +2,7 @@ appId: io.hostspan.desktop
 productName: HostSpan
 asar: true
 npmRebuild: false
-compression: maximum
+compression: normal
 artifactName: ${productName}-${version}-${os}-${arch}.${ext}
 directories:
   output: out

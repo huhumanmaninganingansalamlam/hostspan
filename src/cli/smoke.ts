@@ -129,15 +129,18 @@ export async function runSmoke(context: SmokeContext, targetId: string): Promise
 
     if (target.capabilities.includes("exec") && target.exec_profile) {
       const profile = context.config.exec_profiles[target.exec_profile];
-      if (profile?.allowed_programs.includes("node")) {
+      const embeddedNode = Boolean(process.versions.electron) && target.capabilities.includes("terminal");
+      if (embeddedNode || profile?.allowed_programs.includes("node")) {
+        const nodeProgram = embeddedNode ? process.execPath : "node";
+        const nodeEnv = embeddedNode ? { ELECTRON_RUN_AS_NODE: "1" } : {};
         await record("short_process", async () => {
           let result = await context.handlers.process_start(
             {
               idempotency_key: uuidv7(),
               target_id: targetId,
-              argv: ["node", "-e", "process.stdout.write('smoke')"],
+              argv: [nodeProgram, "-e", "process.stdout.write('smoke')"],
               cwd: ".",
-              env: {},
+              env: nodeEnv,
               wait_ms: 1_200,
               deadline_ms: 5_000,
               max_output_bytes: 64 * 1024,
@@ -145,7 +148,8 @@ export async function runSmoke(context: SmokeContext, targetId: string): Promise
             "smoke_process_short",
           );
           let stdout = String(result.stdout ?? "");
-          for (let attempt = 0; attempt < 8 && result.state === "running"; attempt += 1) {
+          const completionAttempts = process.platform === "win32" ? 24 : 8;
+          for (let attempt = 0; attempt < completionAttempts && result.state === "running"; attempt += 1) {
             result = await context.handlers.process_poll(
               {
                 process_id: String(result.process_id),
@@ -167,9 +171,9 @@ export async function runSmoke(context: SmokeContext, targetId: string): Promise
           const input = {
             idempotency_key: key,
             target_id: targetId,
-            argv: ["node", "-e", "setTimeout(()=>{},60000)"],
+            argv: [nodeProgram, "-e", "setTimeout(()=>{},60000)"],
             cwd: ".",
-            env: {},
+            env: nodeEnv,
             wait_ms: 25,
             deadline_ms: 60_000,
             max_output_bytes: 64 * 1024,

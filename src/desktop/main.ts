@@ -17,6 +17,7 @@ import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath } from "../config/paths.js";
 import type { Capability } from "../config/schema.js";
 import { PtySessionManager } from "../processes/pty-session.js";
+import { prepareDesktopEnvironment } from "./environment.js";
 import { ensureDesktopConfig } from "./first-run.js";
 
 declare global {
@@ -404,15 +405,10 @@ app.on("window-all-closed", () => undefined);
 
 void app.whenReady().then(async () => {
   try {
+    prepareDesktopEnvironment();
     ensureDesktopConfig(configPath);
     if (process.platform === "darwin") app.dock?.hide();
     tray = new Tray(icon());
-    if (process.platform === "darwin") {
-      // Electron 44 on macOS Sonoma can position an image-only status item
-      // off-screen. A short title keeps the template icon in the visible menu
-      // bar and also gives users an unambiguous HostSpan presence indicator.
-      tray.setTitle("HS");
-    }
     tray.on("click", () => {
       const w = createWindow();
       if (w.isVisible()) w.hide();

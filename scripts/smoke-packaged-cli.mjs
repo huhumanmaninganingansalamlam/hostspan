@@ -1,10 +1,12 @@
 import {
 	existsSync,
 	lstatSync,
+	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
+	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -199,13 +201,52 @@ function smokePackagedRuntime(executable, cli, nativeModule, ptyModule, ripgrepM
 	const scratch = mkdtempSync(join(tmpdir(), "hostspan-packaged-smoke-"));
 	try {
 		const configPath = join(scratch, "config.yaml");
+		const targetRoot = join(scratch, "target");
+		mkdirSync(targetRoot);
+		writeFileSync(join(targetRoot, "README.txt"), "packaged smoke\n");
+		const gitInit = spawnSync("git", ["-C", targetRoot, "init", "-q"], {
+			encoding: "utf8",
+			windowsHide: true,
+		});
+		if (gitInit.status !== 0) {
+			throw new Error(
+				["Packaged smoke could not initialize Git target: ", gitInit.stderr || gitInit.stdout].join(""),
+			);
+		}
 		run(executable, [cli, "init"], { HOSTSPAN_CONFIG: configPath });
+		run(
+			executable,
+			[
+				cli,
+				"targets",
+				"add",
+				"--id",
+				"packaged-smoke",
+				"--root",
+				targetRoot,
+				"--capabilities",
+				"read,write,exec,git,terminal",
+				"--exec-profile",
+				"native-dev",
+			],
+			{ HOSTSPAN_CONFIG: configPath },
+		);
 		const doctor = JSON.parse(
 			run(executable, [cli, "doctor"], { HOSTSPAN_CONFIG: configPath }),
 		);
 		if (doctor.ok !== true) {
 			throw new Error(
 				`Packaged Doctor failed: ${JSON.stringify(doctor.checks)}`,
+			);
+		}
+		const workflow = JSON.parse(
+			run(executable, [cli, "smoke", "--target", "packaged-smoke"], {
+				HOSTSPAN_CONFIG: configPath,
+			}),
+		);
+		if (workflow.ok !== true) {
+			throw new Error(
+				["Packaged full smoke failed: ", JSON.stringify(workflow.steps)].join(""),
 			);
 		}
 		const snapshotText = run(
