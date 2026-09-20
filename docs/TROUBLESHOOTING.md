@@ -1,7 +1,5 @@
 # Troubleshooting
 
-> **Current Alpha vs next milestone:** the troubleshooting steps below intentionally describe the released tmux-backed Alpha. The next core milestone replaces tmux with a HostSpan-owned Unix PTY session runtime; these tmux-specific checks will be removed when that implementation passes the parity/recovery gates. WSL2 is treated as a Linux runtime and is not native Windows support.
-
 ## App is not visible in ChatGPT
 
 1. Run `hostspan doctor` and fix any `fail` checks.
@@ -18,7 +16,7 @@ Run:
 hostspan print-toolset
 ```
 
-HostSpan `hostspan-v2` must advertise exactly 11 tools. Target permissions never remove a tool from `tools/list`; a disallowed call returns `SCOPE_DENIED`. If ChatGPT still shows the old 10-tool `hostspan-v1` schema after upgrading, Refresh the app before debugging the server.
+HostSpan `hostspan-v3` must advertise exactly 11 tools. Target permissions never remove a tool from `tools/list`; a disallowed call returns `SCOPE_DENIED`. If ChatGPT still shows an older v1/v2 schema after upgrading, Refresh the app before debugging the server.
 
 ## Only read-only tools appear in one ChatGPT conversation
 
@@ -42,7 +40,7 @@ Then reproduce once. A received transport request is logged before the handler, 
 
 This is expected until the daemon restarts. HostSpan snapshots target and policy configuration at startup so one request cannot observe a partially reloaded authorization policy. The tray writes the config atomically and offers an explicit restart; after restart, `target_list` and `system_status.policy_epoch` reflect the new configuration.
 
-Before restarting, review the tray warning. Active native processes are stopped by daemon shutdown. tmux-backed interactive sessions remain alive and reconnect to the same durable `process_id` after startup.
+Before restarting, review the tray warning. Active ordinary native processes are stopped by daemon shutdown. Durable PTY interactive sessions remain alive in their session workers and reconnect to the same `process_id` after startup.
 
 ## `file_search` fails
 
@@ -66,11 +64,11 @@ The same key was previously submitted with different arguments. Do not reuse tha
 
 `orphaned` means a process group remained alive across daemon recovery but HostSpan lost normal stream ownership. `process_cancel` can still attempt process-group cleanup. If cleanup cannot be verified, the state remains non-success.
 
-tmux-backed `tty=true` processes are different: tmux owns the PTY outside the HostSpan daemon, so a surviving tmux session is reconciled back to `running` after daemon restart instead of being marked orphaned. Use `hostspan terminal list` to inspect locally.
+PTY-backed `tty=true` processes are different: a session worker owns the PTY outside the HostSpan daemon, so a surviving worker is reconciled back to `running` after daemon restart instead of being marked orphaned. Use `hostspan terminal list` to inspect locally.
 
 ## `process_write` says the process is not interactive
 
-`process_write` only accepts a process created with `process_start(..., tty=true)`. The target must include the explicit `terminal` capability and `hostspan doctor` must report tmux available.
+`process_write` only accepts a process created with `process_start(..., tty=true)`. The target must include the explicit `terminal` capability and `hostspan doctor` must report the PTY runtime available.
 
 For local observation or takeover:
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { createOAuthSetup, OAuthService, rotateOAuthApprovalSecret } from "../auth/oauth-service.js";
 import { buildAdminSnapshot, resolveTerminalSession } from "../admin/snapshot.js";
 import type { HostSpanConfig } from "../config/schema.js";
@@ -734,7 +734,17 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   throw new Error(`unknown command: ${command}`);
 }
 
-const direct = process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
+function isDirectCliEntry(argvPath: string | undefined): boolean {
+  if (!argvPath) return false;
+  const modulePath = fileURLToPath(import.meta.url);
+  try {
+    return realpathSync(argvPath) === realpathSync(modulePath);
+  } catch {
+    return resolve(argvPath) === resolve(modulePath);
+  }
+}
+
+const direct = isDirectCliEntry(process.argv[1]);
 if (direct) {
   main().then(
     (code) => {

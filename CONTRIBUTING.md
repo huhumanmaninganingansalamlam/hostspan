@@ -4,7 +4,7 @@ Thanks for helping improve HostSpan.
 
 ## Before you start
 
-HostSpan is intentionally a small, terminal-first MCP execution gateway. The fixed `hostspan-v2` tool surface is a compatibility contract, not an invitation to add one tool per feature. Prefer strengthening correctness, recovery, security boundaries, diagnostics, and platform support over growing the MCP surface.
+HostSpan is intentionally a small, terminal-first MCP execution gateway. The fixed `hostspan-v3` tool surface is a compatibility contract, not an invitation to add one tool per feature. Prefer strengthening correctness, recovery, security boundaries, diagnostics, and platform support over growing the MCP surface.
 
 For security-sensitive issues, follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
 
@@ -16,7 +16,6 @@ Requirements:
 - Corepack and pnpm 12.4.2
 - Git
 - ripgrep
-- tmux
 
 ```bash
 corepack enable
@@ -42,7 +41,7 @@ Keep changes focused and explain:
 4. tests added or updated;
 5. whether the MCP tool name/schema/description metadata changes.
 
-Breaking tool-contract changes must use a new toolset version rather than silently changing `hostspan-v2`.
+Breaking tool-contract changes must use a new toolset version rather than silently changing `hostspan-v3`.
 
 Please run `pnpm check` and `git diff --check` before opening a pull request. Packaging changes should also run the relevant desktop package smoke locally when possible.
 

@@ -145,7 +145,14 @@ function smokePackagedRuntime(executable, cli, nativeModule, ptyModule, jobModul
 	const ptyProbe = [
 		`const pty=require(${JSON.stringify(ptyModule)});`,
 		"if(typeof pty.spawn!=='function') process.exit(4);",
-		"process.stdout.write('pty-ok');",
+		"let output='';",
+		"const win=process.platform==='win32';",
+		"const program=win?(process.env.ComSpec||process.env.COMSPEC||'cmd.exe'):'/bin/sh';",
+		"const args=win?['/d','/s','/c','echo pty-spawn-ok']:['-lc','printf pty-spawn-ok'];",
+		"const child=pty.spawn(program,args,{name:'xterm-256color',cols:80,rows:24,cwd:process.cwd(),env:process.env});",
+		"const timer=setTimeout(()=>process.exit(7),5000);",
+		"child.onData(d=>{output+=d;});",
+		"child.onExit(e=>{clearTimeout(timer);if(e.exitCode!==0||!output.includes('pty-spawn-ok')){console.error(JSON.stringify({exit:e,output}));process.exit(8);}process.stdout.write('pty-ok');process.exit(0);});",
 	].join("");
 	const pty = run(executable, ["-e", ptyProbe]);
 	if (pty !== "pty-ok")

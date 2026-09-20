@@ -25,7 +25,7 @@ body:
     id: platform
     attributes:
       label: Platform
-      placeholder: Ubuntu 24.04 x64 / WSL2
+      placeholder: Ubuntu 24.04 x64 / Windows 11 x64 / macOS 14 x64
     validations:
       required: true
   - type: textarea

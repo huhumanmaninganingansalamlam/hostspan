@@ -37,23 +37,19 @@ Do not describe Alpha as secure sandboxed execution. A future sandbox provider m
 
 - `process_start` is the only spawn path.
 - Non-interactive commands are argv arrays with `shell=false`. On `exec`-only targets they remain subject to the target exec profile's `allowed_programs` and env allowlist in addition to deadline, output, and concurrency limits.
-- `tty=true` is a separate authority path: the target must explicitly grant the `terminal` capability and HostSpan uses a private tmux server/socket to own the PTY.
-- `process_write` is valid only for tmux-backed interactive processes. It can send text, selected control keys, and terminal resize updates. Every write requires its own UUIDv7 idempotency key; duplicate retries join/replay the original write, while an unprovable crash-boundary outcome becomes `PROCESS_UNKNOWN` and is never automatically retyped.
+- `tty=true` is a separate authority path: the target must explicitly grant the `terminal` capability and HostSpan launches a daemon-independent PTY session worker.
+- `process_write` is valid only for PTY-backed interactive processes. It can send text, selected control keys, and terminal resize updates. Every write requires its own UUIDv7 idempotency key; duplicate retries join/replay the original write, while an unprovable crash-boundary outcome becomes `PROCESS_UNKNOWN` and is never automatically retyped.
 - A writable PTY is stronger than bounded exec. A shell, REPL, debugger, SSH client, or interpreter inside the PTY can execute operations that are not constrained by the native exec profile's `allowed_programs`. The `terminal` capability therefore grants native interactive terminal authority as the HostSpan OS user.
 - When a target grants both `exec` and `terminal`, HostSpan treats that stronger terminal grant consistently: non-interactive `process_start` no longer rejects a program or explicit environment variable merely because it is absent from the exec profile allowlists. Resource/lifecycle controls still apply. This avoids a misleading policy where `bash` is forbidden in bounded exec while the same target can already start `bash` inside a writable PTY.
 - `target_id` still determines the initial working directory and the authorization decision, but once interactive terminal authority is granted it is not a filesystem sandbox. A shell can change directories or access anything available to the HostSpan OS user.
 - Side-effect submissions require a UUIDv7 idempotency key and are deduplicated in SQLite by argument hash.
 - A duplicate key with different arguments is rejected with `IDEMPOTENCY_CONFLICT`.
-- Linux process groups receive TERM then KILL for cancel/deadline/output-limit handling.
+- Linux process groups receive TERM then KILL for cancel/deadline/output-limit handling. Native Windows non-interactive processes are placed under a kill-on-close Job Object so descendants are controlled as one tree.
 - Crash boundaries are never converted to success. HostSpan uses `unknown` when spawn/side-effect status cannot be proven and `orphaned` when a live process group survives but daemon stream ownership was lost.
-- tmux-backed sessions intentionally survive HostSpan daemon shutdown/restart. Startup reconciliation keeps a live tmux pane `running`, records an exited pane's exit status, or uses `unknown` if the durable session reference no longer exists.
-- Human attach uses the same private tmux session. `--read-only` is the safe observation mode. Writable human attach is deliberate shared ownership: human keystrokes bypass MCP idempotency and are not individually represented as MCP operations.
-
-### Planned Unix PTY replacement
-
-The current Alpha statements above remain accurate until the migration lands. The next architecture milestone removes tmux and moves PTY ownership into a HostSpan-managed session worker whose lifetime is independent from the MCP daemon. The migration is accepted only if it preserves the same or stronger security/recovery invariants: explicit `terminal` capability, bounded sessions/output/deadlines, idempotent MCP writes, read-only attach that cannot inject input, explicit shared ownership for writable human attach, and `unknown` rather than false success at daemon/worker crash boundaries.
-
-Linux is the release-quality migration target. macOS initially receives native terminal-session contract coverage only; complete macOS core qualification remains separate. Native Windows is deferred to a later ConPTY + Job Object + Windows file/ACL security milestone. WSL2 is a Linux environment and is not evidence of native Windows security qualification.
+- PTY sessions intentionally survive HostSpan daemon shutdown/restart because the session worker owns the terminal outside the daemon lifetime. Startup reconciliation keeps a live worker `running`, records an exited session's exit status after output drain, or uses `unknown` if the durable worker reference no longer exists.
+- Human attach uses the same HostSpan PTY worker. `--read-only` is the safe observation mode. Writable human attach is deliberate shared ownership: human keystrokes bypass MCP idempotency and are not individually represented as MCP operations.
+- The PTY local IPC protocol requires per-session random authentication material. On Unix it uses a private socket path; on Windows it uses a local named pipe plus the same token check.
+- Windows path handling rejects absolute/UNC/device/ADS syntax and reparse-point escapes and rechecks file/directory identity around open/replace. The current Alpha does not claim that these checks are a kernel sandbox or stronger than native Windows filesystem permissions.
 
 ## Secrets and retention
 
@@ -101,9 +97,9 @@ Security requirements for a user-managed proxy:
 
 Reverse proxy transport does not make native execution safer. Any authenticated caller that reaches HostSpan can invoke the read/write/exec capabilities permitted by the configured target policy.
 
-The local Electron tray/dashboard does not open an additional network admin API. It reads the local config/SQLite state and invokes local daemon/terminal commands. The current Windows package delegates these operations to the WSL2 `hostspan` CLI; this is a compatibility shell over the Linux core, not native Windows support. Treat the desktop login/session as the trust boundary for that management UI.
+The local Electron tray/dashboard does not open an additional network admin API. It reads the local config/SQLite state and invokes local daemon/terminal commands on the same native host. Treat the desktop login/session as the trust boundary for that management UI.
 
-Target and policy configuration is immutable for one daemon lifetime. The tray writes workspace additions/removals atomically, but the running MCP server continues enforcing the policy snapshot it started with until an explicit restart. This is intentional: HostSpan does not partially hot-reload authorization state while requests or processes are active. Restart confirmation reports the impact before proceeding—native processes are stopped during shutdown, while tmux-backed interactive sessions survive and are reconciled after startup. Add Workspace selects all capabilities by default for the trusted-local convenience profile; this includes native `exec` and `terminal` authority, so reduce the selection for lower-trust folders.
+Target and policy configuration is immutable for one daemon lifetime. The tray writes workspace additions/removals atomically, but the running MCP server continues enforcing the policy snapshot it started with until an explicit restart. This is intentional: HostSpan does not partially hot-reload authorization state while requests or processes are active. Restart confirmation reports the impact before proceeding—ordinary native processes are stopped during shutdown, while durable PTY sessions survive and are reconciled after startup. Add Workspace selects all capabilities by default for the trusted-local convenience profile; this includes native `exec` and `terminal` authority, so reduce the selection for lower-trust folders.
 
 ## Overload boundary
 
@@ -112,7 +108,7 @@ HostSpan fails bounded rather than spawning unbounded work under request bursts:
 - `/mcp` admits at most `server.max_inflight_mcp_requests` requests at once (128 by default); excess HTTP requests receive `503` plus `Retry-After: 1`.
 - `file_search` admits at most `server.max_concurrent_searches` ripgrep children (8 by default), queues at most `server.max_queued_searches` (16), and returns retryable `SERVER_BUSY` when the queue is full or waits longer than `server.search_queue_timeout_ms` (1 second).
 - `process_start` remains separately bounded per target by the selected exec profile's `max_concurrent_processes`.
-- tmux-backed interactive sessions are separately bounded by `terminal.max_concurrent_sessions` (4 by default) per target.
+- PTY-backed interactive sessions are separately bounded by `terminal.max_concurrent_sessions` (4 by default) per target.
 - `system_status` and readiness use lightweight SQLite responsiveness checks; full `PRAGMA integrity_check` remains in `hostspan doctor` rather than running on every status request.
 - backend availability probes are cached briefly so status floods do not repeatedly spawn diagnostic child processes.
 

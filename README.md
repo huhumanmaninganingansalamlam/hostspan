@@ -8,27 +8,21 @@
 [![Desktop release](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/release.yml/badge.svg)](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/release.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
-HostSpan is a terminal-first MCP execution gateway for ChatGPT Web Developer Mode. It exposes a fixed `hostspan-v2` toolset for approved local targets and keeps file/process side effects verifiable and recoverable across reconnects.
+HostSpan is a terminal-first MCP execution gateway for ChatGPT Web Developer Mode. It exposes a fixed `hostspan-v3` toolset for approved local targets and keeps file/process side effects verifiable and recoverable across reconnects.
 
 The HostSpan mark represents an MCP gateway spanning two local endpoints through a central protocol-routing hub. The tray uses a separate simplified bridge/hub glyph so it stays legible at 16–32 px instead of shrinking the full application artwork.
 
-HostSpan Alpha is intentionally Linux-first and **native execution is not an OS sandbox**. A native process runs with the permissions of the user running HostSpan. See [Security](SECURITY.md) before enabling `exec` on a target.
+HostSpan Alpha has native Linux x64 and Windows x64 core paths. **Native execution is not an OS sandbox**: a child process runs with the permissions of the user running HostSpan. See [Security](SECURITY.md) before enabling `exec` on a target.
 
 ## Alpha scope
 
-The MCP tool registry is immutable for `hostspan-v2`:
+The MCP tool registry is immutable for `hostspan-v3`:
 
 `system_status`, `target_list`, `file_list`, `file_read`, `file_search`, `file_patch`, `git_changes`, `process_start`, `process_poll`, `process_write`, `process_cancel`.
 
-Every file/Git/process request names a persistent `target_id`; no ChatGPT session ID or temporary workspace handle is product state. File mutation uses expected SHA-256 values, dry-run/staging, per-file atomic replacement, a durable transaction journal, and postcondition hashes. Non-interactive commands use the durable native process supervisor. Interactive commands use the same `process_id` lifecycle with a tmux-backed PTY: start with `tty=true`, read through `process_poll`, write/resize through `process_write`, and close through `process_cancel`.
+Every file/Git/process request names a persistent `target_id`; no ChatGPT session ID or temporary workspace handle is product state. File mutation uses expected SHA-256 values, dry-run/staging, per-file atomic replacement, a durable transaction journal, and postcondition hashes. Non-interactive commands use the durable native process supervisor. Interactive commands use the same `process_id` lifecycle through a HostSpan-owned, daemon-independent PTY session worker: start with `tty=true`, read through `process_poll`, write/resize through `process_write`, and close through `process_cancel`.
 
-Alpha is release-qualified on Ubuntu 24.04 LTS or WSL2 on Linux x64. WSL2 is treated as a Linux runtime and is **not** native Windows support. GUI/browser computer-use, native Windows core support, full macOS core qualification, multi-host routing, LSP/CodeGraph, and claims of sandboxed execution remain out of scope. The current Alpha interactive terminal backend uses tmux; a human can attach to the exact same session locally.
-
-### Next architecture milestone: Unix PTY runtime
-
-The next core milestone removes tmux as a product dependency and replaces it with a HostSpan-owned, daemon-independent Unix PTY session runtime. Linux is the release-quality migration target. The same terminal-session contract will be exercised on native macOS runners, but passing that terminal contract alone does not declare the complete macOS core supported. Native Windows is a later milestone using ConPTY + Job Objects and Windows-specific file/security primitives; WSL2 will not be counted as Windows qualification.
-
-The migration is complete only when the new PTY runtime preserves the existing durable `process_id`, incremental output cursor, idempotent `process_write`, deadline/output caps, daemon-restart recovery, and human read-only/write attach guarantees. Once those gates pass, tmux code, configuration, dependency checks, CI installation, and documentation are removed rather than kept as a fallback backend.
+Linux x64 uses Unix PTYs and process groups. Native Windows x64 uses ConPTY plus a Job Object-backed process-tree controller. WSL2 remains a Linux runtime and is not counted as Windows qualification. Native macOS x64 has passed the PTY/session and packaged-runtime qualification used in this Alpha, while complete macOS core qualification remains separate. GUI/browser computer-use, multi-host routing, LSP/CodeGraph, and claims of sandboxed execution remain out of scope.
 
 ## Requirements
 
@@ -36,7 +30,6 @@ The migration is complete only when the new PTY runtime preserves the existing d
 - Corepack + pnpm 12.4.2
 - `git`
 - `ripgrep` (`rg`) for `file_search`
-- `tmux` for targets that enable the `terminal` capability in the current Alpha; this dependency is scheduled for removal by the Unix PTY migration
 - systemd user services only if using `hostspan service ...`
 - Electron dependencies only if using or packaging the optional system-tray companion (`pnpm desktop` / `pnpm desktop:make`)
 - OpenAI Secure MCP Tunnel for the standard ChatGPT Web connection path
@@ -103,17 +96,15 @@ retention:
   max_audit_events: 500000
 
 terminal:
-  backend: tmux
+  backend: pty
   max_concurrent_sessions: 4
-  history_limit_lines: 50000
+  attach_history_bytes: 65536
   max_output_bytes: 16777216
 ```
 
 ### Interactive terminal
 
-> Current Alpha note: the implementation below is tmux-backed. The next architecture milestone replaces tmux with the HostSpan-owned PTY session runtime described above without changing the user-facing start/poll/write/cancel lifecycle.
-
-Interactive terminal access is an explicit target capability because it is stronger than bounded `exec`: once a PTY is writable, the program inside it can become a shell, REPL, SSH client, debugger, or TUI. Start an interactive process with `process_start(..., tty=true)`. `process_poll` reads incremental output, `process_write` sends text/control keys or terminal resize updates, and `process_cancel` closes the tmux session. `process_write` also requires a UUIDv7 idempotency key so a transport retry cannot silently type the same characters twice.
+Interactive terminal access is an explicit target capability because it is stronger than bounded `exec`: once a PTY is writable, the program inside it can become a shell, REPL, SSH client, debugger, or TUI. Start an interactive process with `process_start(..., tty=true)`. `process_poll` reads incremental output, `process_write` sends text/control keys or terminal resize updates, and `process_cancel` closes the durable PTY session. `process_write` also requires a UUIDv7 idempotency key so a transport retry cannot silently type the same characters twice.
 
 For an `exec`-only target, non-interactive `process_start` remains constrained by the exec profile's `allowed_programs` and `env_allowlist`. If the same target also grants `terminal`, HostSpan does not make non-interactive execution artificially weaker than the already-authorized terminal: arbitrary program paths/names and explicit environment variables are accepted, while deadline, output, concurrency, cwd, idempotency, and process-lifecycle limits still apply. Use `exec` without `terminal` when a bounded program allowlist is the desired authority model.
 
@@ -129,7 +120,7 @@ or attach read/write when deliberate human takeover is desired:
 hostspan terminal attach --process <process_id>
 ```
 
-tmux runs on a HostSpan-private socket under the state directory, so ordinary user tmux sessions are not mixed with HostSpan sessions. tmux survives HostSpan daemon restart; HostSpan reconciles the durable `process_id` to the surviving session on startup.
+The PTY session worker has a lifetime independent from the MCP daemon. Its local IPC endpoint is authenticated with per-session random material, output is durably spooled, and HostSpan reconciles the durable `process_id` to a surviving worker after daemon restart. Human read-only/write attach uses that same HostSpan session rather than an external terminal multiplexer.
 
 ### Keep HostSpan running
 
@@ -145,13 +136,13 @@ On Linux you may still prefer the existing systemd user service commands.
 
 ### Tray companion
 
-The optional tray companion is intentionally small: server start/stop/restart, version/PID, Doctor health checks, current activity, targets/workspaces, recent calls, login autostart, and interactive terminal attach. Workspaces can be added with explicit capabilities or removed when no process is active. For the trusted-local DevSpace-replacement workflow, Add Workspace selects all five capabilities by default; uncheck any authority the workspace does not need, especially `terminal`. Target and policy configuration is intentionally snapshotted when the daemon starts, so workspace/capability changes require a daemon restart before MCP uses them. The tray explains this boundary and warns about active-process impact. In the current Alpha, tmux-backed interactive sessions remain alive and reconnect; the Unix PTY migration must preserve that behavior with HostSpan-owned session workers. It does not expose a new HTTP admin API and is not GUI computer-use.
+The optional tray companion is intentionally small: server start/stop/restart, version/PID, Doctor health checks, current activity, targets/workspaces, recent calls, login autostart, and interactive terminal attach. Workspaces can be added with explicit capabilities or removed when no process is active. For the trusted-local DevSpace-replacement workflow, Add Workspace selects all five capabilities by default; uncheck any authority the workspace does not need, especially `terminal`. Target and policy configuration is intentionally snapshotted when the daemon starts, so workspace/capability changes require a daemon restart before MCP uses them. The tray explains this boundary and warns that ordinary native processes are stopped by restart while durable PTY sessions remain alive and reconnect. It does not expose a new HTTP admin API and is not GUI computer-use.
 
 ```bash
 pnpm desktop
 ```
 
-The original HostSpan icon is generated from the checked-in SVG sources in `assets/brand`; platform PNG, ICO, and ICNS files are generated deterministically by `pnpm icons`. Electron supplies the tray/menu-bar surface on macOS, Windows, and Linux. The HostSpan core is currently release-qualified on Linux/WSL2. The existing Windows tray delegates to the WSL2 `hostspan` CLI and therefore is not native Windows core support. macOS packaging remains preview-level until the complete core is qualified; the Unix PTY milestone only adds native terminal-session contract coverage there.
+The original HostSpan icon is generated from the checked-in SVG sources in `assets/brand`; platform PNG, ICO, and ICNS files are generated deterministically by `pnpm icons`. Electron supplies the tray/menu-bar surface on macOS, Windows, and Linux. Linux x64 and native Windows x64 run the HostSpan core directly; the Windows desktop no longer delegates core operations to WSL2. macOS packaging remains preview-level until the complete core is qualified, although native x64 PTY/session and packaged-runtime verification pass.
 
 Create native desktop artifacts for the current operating system with:
 
@@ -279,7 +270,7 @@ hostspan doctor
 hostspan smoke --target local-app
 ```
 
-The contract suite reconnects and lists the fixed 11-tool `hostspan-v2` toolset 100 times. The Alpha acceptance suite also runs the 10-turn workflow 50 times and verifies stable toolset hashing and request/response trace coverage. Current Alpha tmux integration tests cover interactive input, resize/output polling, explicit terminal capability enforcement, and daemon-restart recovery. The Unix PTY migration replaces those backend-specific tests with a provider-neutral interactive-session contract suite before tmux is removed.
+The contract suite reconnects and lists the fixed 11-tool `hostspan-v3` toolset 100 times. The Alpha acceptance suite also runs the 10-turn workflow 50 times and verifies stable toolset hashing and request/response trace coverage. PTY integration tests cover interactive input, resize/output polling, output-drain ordering, explicit terminal capability enforcement, worker-crash honesty, and daemon-restart recovery. Windows additionally runs Job Object descendant-cleanup and Windows path-security tests.
 
 ## Security and support
 

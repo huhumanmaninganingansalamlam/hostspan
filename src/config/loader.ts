@@ -10,14 +10,6 @@ export function expandHome(path: string): string {
 
 export function loadConfig(path: string): HostSpanConfig {
   const raw = parseYaml(readFileSync(path, "utf8"));
-  if (raw && typeof raw === "object" && "terminal" in raw) {
-    const terminal = (raw as { terminal?: unknown }).terminal;
-    if (terminal && typeof terminal === "object") {
-      const legacy = terminal as { backend?: unknown; history_limit_lines?: unknown };
-      if (legacy.backend === "tmux") legacy.backend = "pty";
-      delete legacy.history_limit_lines;
-    }
-  }
   const config = HostSpanConfigSchema.parse(raw);
   const targets = Object.fromEntries(
     Object.entries(config.targets).map(([targetId, target]) => {

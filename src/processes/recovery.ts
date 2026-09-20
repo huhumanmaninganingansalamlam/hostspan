@@ -48,18 +48,6 @@ export function recoverProcesses(
 ): Array<{ process_id: string; state: "running" | "succeeded" | "failed" | "timed_out" | "cancelled" | "orphaned" | "unknown" }> {
   const recovered: Array<{ process_id: string; state: "running" | "succeeded" | "failed" | "timed_out" | "cancelled" | "orphaned" | "unknown" }> = [];
   for (const record of processes.active()) {
-    if (record.backend === "tmux") {
-      processes.markTerminal(record.process_id, "unknown", record.exit_code, record.term_signal, "legacy_tmux_backend_unsupported", record.output_expires_at ?? undefined);
-      operations.setState(record.idempotency_key, "unknown", {
-        state: "unknown",
-        process_id: record.process_id,
-        reason: "legacy_tmux_backend_unsupported",
-        native_execution: true,
-        sandboxed: false,
-      });
-      recovered.push({ process_id: record.process_id, state: "unknown" });
-      continue;
-    }
     if (record.backend === "pty") {
       const session = record.backend_ref;
       if (!terminal || !session) {
