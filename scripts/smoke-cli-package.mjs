@@ -62,12 +62,14 @@ const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"))
 const scratch = mkdtempSync(join(tmpdir(), "hostspan-cli-package-smoke-"));
 
 try {
+  console.log(`[package-smoke] preparing ${process.platform}/${process.arch} ${packageJson.version}`);
   let tarball = option("--tarball");
   if (tarball) {
     tarball = resolve(root, tarball);
     if (!existsSync(tarball)) throw new Error(`Tarball not found: ${tarball}`);
   } else {
     const outDir = join(scratch, "pack");
+    console.log("[package-smoke] packing current source");
     const packed = run("pnpm", ["pack", "--pack-destination", outDir]);
     const lastLine = packed.split(/\r?\n/).filter(Boolean).at(-1);
     if (!lastLine) throw new Error("pnpm pack did not report a tarball path");
@@ -80,6 +82,7 @@ try {
   }
 
   const installDir = join(scratch, "install");
+  console.log("[package-smoke] installing packed CLI into a clean prefix");
   if (process.platform === "win32") {
     mkdirSync(installDir, { recursive: true });
     writeFileSync(
@@ -96,11 +99,12 @@ try {
         "",
       ].join("\n"),
     );
-    run("pnpm", ["--dir", installDir, "add", tarball], { timeout: 180_000 });
+    run("pnpm", ["--dir", installDir, "add", tarball], { timeout: 360_000 });
   } else {
-    run("npm", ["install", "--no-audit", "--no-fund", "--prefix", installDir, tarball], { timeout: 180_000 });
+    run("npm", ["install", "--no-audit", "--no-fund", "--prefix", installDir, tarball], { timeout: 360_000 });
   }
 
+  console.log("[package-smoke] exercising installed CLI entrypoint and local admin flow");
   const bin = join(installDir, "node_modules", ".bin", process.platform === "win32" ? "hostspan.cmd" : "hostspan");
   if (!existsSync(bin)) throw new Error(`Installed HostSpan bin not found: ${bin}`);
   const version = run(bin, ["--version"]);

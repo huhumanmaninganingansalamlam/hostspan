@@ -2,7 +2,7 @@
 
 ## Release contract
 
-- Version: `0.3.0-alpha.1`
+- Version: `0.3.0-alpha.2`
 - Toolset: `hostspan-v3`
 - MCP protocol target: `2026-07-28`
 - Qualified core platforms: Linux x64 (Ubuntu 24.04 LTS / WSL2), native Windows x64, and native macOS x64
@@ -63,7 +63,7 @@ These items do not require additional MCP tools. The v3 Alpha qualifies Linux x6
 
 `hostspan-v3` exposes the fixed 11-tool durable PTY lifecycle. Tool description/schema metadata is part of `toolset_hash`; refresh the ChatGPT app after upgrading.
 
-`0.3.0-alpha.1` uses HostSpan-owned durable PTY session workers, adds native Windows ConPTY/Job Object execution, keeps workspace/capability configuration restart-gated, and retains fail-closed OAuth for non-loopback serving. Linux x64, native Windows x64, and native macOS x64 all pass their full applicable test/build gates. Windows x64 has been verified through a real NSIS install with installed doctor/full smoke and ConPTY lifecycle; macOS x64 has been verified through the installed menu-bar app with installed doctor/full smoke and PTY lifecycle. The release matrix repeats installed NSIS/DMG runtime smoke before publication.
+`0.3.0-alpha.2` uses HostSpan-owned durable PTY session workers, native Windows ConPTY/Job Object execution, and native macOS PTY/file/process support while retaining restart-gated workspace policy and fail-closed OAuth for non-loopback serving. Linux x64, native Windows x64, and native macOS x64 all pass their full applicable test/build gates. Windows x64 has been verified through a real NSIS install with installed doctor/full smoke and ConPTY lifecycle; macOS x64 has been verified through the installed menu-bar app with installed doctor/full smoke and PTY lifecycle. Alpha.2 also gives the clean Windows CLI-package install gate enough time for slower GitHub runners and emits explicit package-smoke phases. The `v0.3.0-alpha.1` workflow stopped at that Windows package-smoke gate and did not publish a GitHub Release.
 
 Config schema remains version 1 with `terminal.backend: pty` as the only interactive backend. The durable database schema remains version 4. Database initialization uses WAL and backs up an existing database before migration.
 
