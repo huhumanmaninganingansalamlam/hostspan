@@ -42,6 +42,8 @@ Artifacts are written to `out/`:
 
 On Linux, Windows, and macOS, the packaged Electron executable can also run the HostSpan CLI through `ELECTRON_RUN_AS_NODE=1`; this is how the packaged tray starts/stops the durable daemon without requiring a second embedded runtime. Native Windows no longer delegates core operations to WSL2.
 
+On first launch, the desktop app creates the normal HostSpan default config when it does not already exist. Existing config is never overwritten. This makes a fresh installer immediately able to render its tray/dashboard and lets the user add a workspace without first running `hostspan init` in a terminal.
+
 After creating an unpacked or distributable package, verify the package rather than only the source tree:
 
 ```bash

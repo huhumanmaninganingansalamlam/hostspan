@@ -7,7 +7,8 @@ import { createOAuthSetup, OAuthService, rotateOAuthApprovalSecret } from "../au
 import { buildAdminSnapshot, resolveTerminalSession } from "../admin/snapshot.js";
 import type { HostSpanConfig } from "../config/schema.js";
 import { loadConfig } from "../config/loader.js";
-import { defaultConfigPath, defaultDataDir } from "../config/paths.js";
+import { defaultConfigPath } from "../config/paths.js";
+import { createInitialConfig } from "../config/defaults.js";
 import { writeConfigAtomic } from "../config/writer.js";
 import { gitChanges } from "../files/git-changes.js";
 import { fileList } from "../files/list.js";
@@ -357,49 +358,6 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
   };
 }
 
-function initialConfig(): HostSpanConfig {
-  return {
-    schema_version: 1,
-    policy_epoch: 1,
-    server: {
-      listen_host: "127.0.0.1",
-      listen_port: 39393,
-      allowed_hosts: [],
-      data_dir: defaultDataDir(),
-      max_inflight_mcp_requests: 128,
-      max_concurrent_searches: 8,
-      max_queued_searches: 16,
-      search_queue_timeout_ms: 1_000,
-    },
-    retention: {
-      completed_process_output_ttl_minutes: 60,
-      operation_result_days: 14,
-      audit_days: 30,
-      max_audit_events: 500_000,
-      max_total_spool_bytes: 1_073_741_824,
-    },
-    terminal: {
-      backend: "pty",
-      max_concurrent_sessions: 4,
-      attach_history_bytes: 65_536,
-      max_output_bytes: 16_777_216,
-    },
-    targets: {},
-    exec_profiles: {
-      "native-dev": {
-        mode: "native",
-        allowed_programs: ["git", "node", "npm", "pnpm", "python", "pytest", "cargo"],
-        env_allowlist: ["LANG", "LC_ALL", "CI", "NODE_ENV"],
-        default_deadline_ms: 30_000,
-        max_deadline_ms: 600_000,
-        default_output_bytes: 4_194_304,
-        max_output_bytes: 67_108_864,
-        max_concurrent_processes: 4,
-      },
-    },
-  };
-}
-
 function usage(): string {
   return `HostSpan ${SERVER_VERSION}\n\nCommands:\n  init [--config PATH]\n  serve [--config PATH]\n  daemon start|stop|status [--config PATH]\n  doctor [--config PATH]\n  smoke --target TARGET [--config PATH]\n  status [--verbose] [--config PATH]\n  admin snapshot [--recent N] [--config PATH]\n  terminal list|attach --process PROCESS_ID [--read-only] [--config PATH]\n  targets list|add|remove ... [--config PATH]\n  oauth init --public-url https://host/mcp [--config PATH]\n  oauth status [--config PATH]\n  oauth rotate-secret [--config PATH]\n  policy validate [--config PATH]\n  print-toolset\n  logs [--follow] [--config PATH]\n  support-export [PATH] [--config PATH]\n  service install|start|stop|restart|status [--config PATH]\n  --version\n`;
 }
@@ -438,7 +396,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   }
   if (command === "init") {
     if (existsSync(configPath)) throw new Error(`config already exists: ${configPath}`);
-    writeConfigAtomic(configPath, initialConfig());
+    writeConfigAtomic(configPath, createInitialConfig());
     print({ ok: true, config_path: configPath, next: "hostspan targets add --id <target> --root <absolute-path>" });
     return 0;
   }

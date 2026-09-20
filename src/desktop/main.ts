@@ -17,6 +17,7 @@ import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath } from "../config/paths.js";
 import type { Capability } from "../config/schema.js";
 import { PtySessionManager } from "../processes/pty-session.js";
+import { ensureDesktopConfig } from "./first-run.js";
 
 declare global {
   interface Window {
@@ -402,19 +403,26 @@ app.on("second-instance", () => { const w = createWindow(); w.show(); w.focus();
 app.on("window-all-closed", () => undefined);
 
 void app.whenReady().then(async () => {
-  if (process.platform === "darwin") app.dock?.hide();
-  tray = new Tray(icon());
-  tray.on("click", () => {
-    const w = createWindow();
-    if (w.isVisible()) w.hide();
-    else {
-      w.show();
-      w.focus();
-    }
-  });
-  await refreshUi();
-  refreshTimer = setInterval(() => void refreshUi(), 2_000);
-  refreshTimer.unref();
+  try {
+    ensureDesktopConfig(configPath);
+    if (process.platform === "darwin") app.dock?.hide();
+    tray = new Tray(icon());
+    tray.on("click", () => {
+      const w = createWindow();
+      if (w.isVisible()) w.hide();
+      else {
+        w.show();
+        w.focus();
+      }
+    });
+    await refreshUi();
+    refreshTimer = setInterval(() => void refreshUi().catch(() => undefined), 2_000);
+    refreshTimer.unref();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    dialog.showErrorBox("HostSpan could not start", message);
+    app.quit();
+  }
 });
 
 app.on("before-quit", () => {

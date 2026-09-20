@@ -38,6 +38,7 @@
 - audit history bounded by age and `max_audit_events` (500,000 by default)
 - detached `hostspan daemon start|stop|status` management
 - optional Electron tray/dashboard for daemon start/stop/restart, Doctor health, active work, workspace add/remove, login autostart, recent calls, and PTY attach
+- desktop first-run initialization: a fresh tray install creates the standard default config if none exists, without overwriting existing config
 - original MCP gateway/bridge vector branding with dedicated small-size tray artwork and deterministic PNG/ICO/ICNS generation
 - Electron Builder packaging for Linux x64 AppImage/deb, Windows x64 NSIS/zip, and macOS arm64/x64 DMG/zip
 - platform-aligned packaged runtime verification: full ASAR/CLI/native-SQLite smoke on Linux/macOS and Electron/ASAR package smoke on Windows
