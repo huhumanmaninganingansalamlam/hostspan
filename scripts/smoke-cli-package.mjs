@@ -51,8 +51,13 @@ function run(command, args, options = {}) {
   if (result.status !== 0) {
     process.stderr.write(result.stdout ?? "");
     process.stderr.write(result.stderr ?? "");
+    const detail = [result.stderr, result.stdout]
+      .filter((value) => value?.trim())
+      .map((value) => value.trim())
+      .join("\n")
+      .slice(-4_000);
     throw new Error(
-      `${command} ${args.join(" ")} exited ${result.status}: ${result.error?.message ?? "no spawn error"}`,
+      `${command} ${args.join(" ")} exited ${result.status}: ${result.error?.message ?? "no spawn error"}${detail ? `\n${detail}` : ""}`,
     );
   }
   return result.stdout.trim();
