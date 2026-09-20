@@ -133,6 +133,27 @@ function track(terminal: PtySessionManager, started: Record<string, unknown>): s
 }
 
 describe("durable interactive PTY process backend", () => {
+  it("waits through a transient missing status while an exit is settling", async () => {
+    const { terminal, db } = fixture();
+    const snapshots = [
+      { exists: true, dead: false, exit_code: null, signal: null, reason: null, pid: 1, columns: 80, rows: 24 },
+      { exists: false, dead: false, exit_code: null, signal: null, reason: null, pid: null, columns: null, rows: null },
+      { exists: true, dead: true, exit_code: 1, signal: null, reason: "cancel_requested", pid: 1, columns: 80, rows: 24 },
+    ];
+    let index = 0;
+    terminal.inspectSync = () => {
+      const snapshot = snapshots[Math.min(index++, snapshots.length - 1)];
+      if (!snapshot) throw new Error("transient status fixture is empty");
+      return snapshot;
+    };
+    await expect(terminal.waitForExitStatus("transient", 250)).resolves.toMatchObject({
+      exists: true,
+      dead: true,
+      reason: "cancel_requested",
+    });
+    db.close();
+  });
+
   it("supports interactive input, polling, resize, attach metadata, and idempotent writes", async () => {
     const { supervisor, terminal, db } = fixture();
     const script = [

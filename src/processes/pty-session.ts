@@ -142,7 +142,7 @@ export class PtySessionManager implements InteractiveSessionManager {
   }
 
   inspectSync(session: string): InteractiveSessionSnapshot {
-    const status = this.readStatus(session);
+    let status = this.readStatus(session);
     if (!status) return this.missingSnapshot();
     if (status.status === "exited" || status.status === "failed") {
       return {
@@ -156,7 +156,32 @@ export class PtySessionManager implements InteractiveSessionManager {
         rows: status.rows,
       };
     }
-    if (!processAlive(status.worker_pid)) return this.missingSnapshot();
+    if (!processAlive(status.worker_pid)) {
+      // The worker writes its terminal status immediately before exiting.
+      // A concurrent Windows reader can still observe the previous "running"
+      // replacement while the worker PID has already disappeared. Give the
+      // final durable status a short settling window before declaring the
+      // session missing; otherwise a successful cancel can become UNKNOWN.
+      const deadline = Date.now() + (process.platform === "win32" ? 500 : 100);
+      while (Date.now() <= deadline) {
+        sleepSync(10);
+        const settled = this.readStatus(session);
+        if (settled?.status === "exited" || settled?.status === "failed") {
+          status = settled;
+          return {
+            exists: true,
+            dead: true,
+            exit_code: status.exit_code,
+            signal: status.signal,
+            reason: status.reason,
+            pid: status.pty_pid,
+            columns: status.columns,
+            rows: status.rows,
+          };
+        }
+      }
+      return this.missingSnapshot();
+    }
     return {
       exists: true,
       dead: false,
@@ -220,7 +245,8 @@ export class PtySessionManager implements InteractiveSessionManager {
   async waitForExitStatus(session: string, waitMs = 1_500): Promise<InteractiveSessionSnapshot> {
     const deadline = Date.now() + Math.max(0, waitMs);
     let state = this.inspectSync(session);
-    while (Date.now() <= deadline && state.exists && !state.dead) {
+    while (Date.now() <= deadline) {
+      if (state.exists && state.dead) return state;
       await sleep(25);
       state = this.inspectSync(session);
     }
