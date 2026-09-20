@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -80,7 +80,26 @@ try {
   }
 
   const installDir = join(scratch, "install");
-  run("npm", ["install", "--no-audit", "--no-fund", "--prefix", installDir, tarball], { timeout: 180_000 });
+  if (process.platform === "win32") {
+    mkdirSync(installDir, { recursive: true });
+    writeFileSync(
+      join(installDir, "package.json"),
+      `${JSON.stringify({ name: "hostspan-cli-package-smoke", version: "0.0.0", private: true }, null, 2)}\n`,
+    );
+    writeFileSync(
+      join(installDir, "pnpm-workspace.yaml"),
+      [
+        "allowBuilds:",
+        "  better-sqlite3: true",
+        "  koffi: true",
+        "  node-pty: true",
+        "",
+      ].join("\n"),
+    );
+    run("pnpm", ["--dir", installDir, "add", tarball], { timeout: 180_000 });
+  } else {
+    run("npm", ["install", "--no-audit", "--no-fund", "--prefix", installDir, tarball], { timeout: 180_000 });
+  }
 
   const bin = join(installDir, "node_modules", ".bin", process.platform === "win32" ? "hostspan.cmd" : "hostspan");
   if (!existsSync(bin)) throw new Error(`Installed HostSpan bin not found: ${bin}`);
