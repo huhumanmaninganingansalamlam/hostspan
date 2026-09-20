@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { v7 as uuidv7 } from "uuid";
-import { processGroupAlive, recoverProcesses } from "../../src/processes/recovery.js";
+import { processGroupAlive, recoverProcesses, signalProcessGroup } from "../../src/processes/recovery.js";
 import { openDatabase } from "../../src/state/database.js";
 import { OperationsRepo } from "../../src/state/operations-repo.js";
 import { ProcessesRepo } from "../../src/state/processes-repo.js";
@@ -49,7 +49,7 @@ describe("process recovery", () => {
     expect(recoverProcesses(processes, operations)).toEqual([{ process_id: "proc_running", state: "orphaned" }]);
     expect(processes.get("proc_running")?.state).toBe("orphaned");
     expect(processGroupAlive(pid)).toBe(true);
-    process.kill(-pid, "SIGKILL");
+    signalProcessGroup(pid, "SIGKILL");
     await new Promise<void>((resolve) => child.once("exit", () => resolve()));
     expect(processGroupAlive(pid)).toBe(false);
     db.close();

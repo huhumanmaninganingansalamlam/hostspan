@@ -6,6 +6,8 @@ import type { HostSpanConfig } from "../config/schema.js";
 import { databaseHealthy, openDatabase } from "../state/database.js";
 import { TargetRegistry } from "../targets/registry.js";
 import { TOOL_NAMES, TOOLSET_HASH } from "../mcp/registry.js";
+import { processGroupAlive, signalProcessGroup } from "../processes/recovery.js";
+import { windowsJobObjectProbe } from "../processes/windows-job-process.js";
 import { PROTOCOL_VERSION, SERVER_VERSION } from "../version.js";
 
 export interface DoctorCheck {
@@ -31,8 +33,8 @@ function commandCheck(command: string, args: string[]): DoctorCheck {
 }
 
 function ptyRuntimeCheck(): DoctorCheck {
-  if (!(["linux", "darwin"] as NodeJS.Platform[]).includes(process.platform)) {
-    return { name: "pty_runtime", status: "fail", details: `Unix PTY runtime is unsupported on ${process.platform}.` };
+  if (!(["linux", "darwin", "win32"] as NodeJS.Platform[]).includes(process.platform)) {
+    return { name: "pty_runtime", status: "fail", details: `PTY runtime is unsupported on ${process.platform}.` };
   }
   const result = spawnSync(
     process.execPath,
@@ -50,23 +52,31 @@ function ptyRuntimeCheck(): DoctorCheck {
 }
 
 async function processGroupCheck(): Promise<DoctorCheck> {
-  if (process.platform !== "linux") return { name: "process_group", status: "fail", details: "Alpha requires Linux/WSL2 process-group semantics." };
+  if (process.platform !== "linux" && process.platform !== "win32") {
+    return { name: "process_tree", status: "fail", details: `Native process-tree control is not qualified on ${process.platform}.` };
+  }
+  if (process.platform === "win32") {
+    const probe = windowsJobObjectProbe();
+    return { name: "process_tree", status: probe.ok ? "pass" : "fail", details: probe.details };
+  }
   const child = spawn(process.execPath, ["-e", "setTimeout(()=>{},60000)"], {
     detached: true,
     stdio: "ignore",
   });
   const pid = child.pid;
-  if (!pid) return { name: "process_group", status: "fail", details: "spawn did not return a PID" };
+  if (!pid) return { name: "process_tree", status: "fail", details: "spawn did not return a PID" };
   try {
-    process.kill(-pid, "SIGTERM");
+    signalProcessGroup(pid, "SIGTERM");
     await new Promise<void>((resolve) => child.once("exit", () => resolve()));
-    try {
-      process.kill(-pid, 0);
-      process.kill(-pid, "SIGKILL");
-      return { name: "process_group", status: "fail", details: "process group remained alive after SIGTERM" };
-    } catch {
-      return { name: "process_group", status: "pass", details: "detached process group spawn/TERM/reap succeeded" };
+    if (processGroupAlive(pid)) {
+      signalProcessGroup(pid, "SIGKILL");
+      return { name: "process_tree", status: "fail", details: "process tree remained alive after termination" };
     }
+    return {
+      name: "process_tree",
+      status: "pass",
+      details: "detached process group spawn/TERM/reap succeeded",
+    };
   } finally {
     child.unref();
   }
@@ -82,8 +92,8 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
   });
   checks.push({
     name: "platform",
-    status: process.platform === "linux" && process.arch === "x64" ? "pass" : "fail",
-    details: "Alpha supports Linux x64 (Ubuntu 24.04 LTS or WSL2).",
+    status: (process.platform === "linux" || process.platform === "win32") && process.arch === "x64" ? "pass" : "fail",
+    details: "Qualified core targets are Linux x64 and native Windows x64; WSL2 is treated as Linux.",
   });
   checks.push(commandCheck("rg", ["--version"]));
   checks.push(commandCheck("git", ["--version"]));
@@ -92,11 +102,15 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
   try {
     config = loadConfig(configPath);
     const mode = statSync(configPath).mode & 0o777;
-    checks.push({
-      name: "config",
-      status: (mode & 0o077) === 0 ? "pass" : "warn",
-      details: `schema valid; mode=${mode.toString(8)}${(mode & 0o077) === 0 ? "" : " (recommend 600)"}`,
-    });
+    checks.push(
+      process.platform === "win32"
+        ? { name: "config", status: "warn", details: "schema valid; POSIX mode bits are not an authoritative Windows ACL check" }
+        : {
+            name: "config",
+            status: (mode & 0o077) === 0 ? "pass" : "warn",
+            details: `schema valid; mode=${mode.toString(8)}${(mode & 0o077) === 0 ? "" : " (recommend 600)"}`,
+          },
+    );
   } catch (error) {
     checks.push({ name: "config", status: "fail", details: error instanceof Error ? error.message : String(error) });
     return { ok: false, server_version: SERVER_VERSION, protocol_version: PROTOCOL_VERSION, toolset_hash: TOOLSET_HASH, checks };

@@ -48,18 +48,23 @@ Multi-host routing, native Windows/macOS process adapters, GUI/browser computer-
 
 ## Known post-Alpha work
 
+- replace the current tmux terminal backend with a HostSpan-owned daemon-independent Unix PTY session runtime; Linux is the release-quality target, while macOS initially runs the same terminal contract without implying full-core qualification;
+- remove tmux source/config/dependency/Doctor/CI integration completely after PTY parity, output-drain, worker-crash, restart-recovery, and attach gates pass; do not retain tmux as a product fallback;
 - configure Windows Authenticode and Apple Developer ID/notarization secrets for signed public downloads;
-- run native macOS and Windows/WSL2 desktop qualification rather than relying only on implemented platform branches;
+- qualify the remaining native macOS core separately from the PTY terminal contract;
+- implement native Windows later with ConPTY + Job Objects and Windows-specific file/security primitives; WSL2 is a Linux runtime and is not native Windows qualification;
 - extend soak duration from the current functional/concurrency evidence to multi-day steady-state runs;
 - add bounded JSONL rotation/archival for always-on installations (SQLite audit rows are already age/count bounded).
 
-These items do not require a new MCP tool and are not blockers for the current Linux/WSL2 Alpha contract.
+These items do not require additional MCP tools and are not blockers for the already-published Linux/WSL2 Alpha contract. The Unix PTY migration is the next implementation milestone and receives its own parity/recovery release gates before it replaces the tmux-backed Alpha behavior.
 
 ## Compatibility and migration
 
 `hostspan-v2` tool names and input schemas are fixed for this Alpha line. `v2` is intentionally a breaking tool-contract revision from `hostspan-v1`: `process_start` gains optional TTY fields and `process_write` is added. Description/schema metadata changes alter `toolset_hash`; refresh the ChatGPT app after upgrading.
 
 `0.2.0-alpha.25` keeps the `hostspan-v2` 11-tool schema and toolset hash unchanged and refines the desktop identity around HostSpan's actual role as an MCP gateway/server. The application artwork emphasizes endpoint-to-gateway protocol routing rather than terminal imagery, and Linux/Windows tray assets are generated from a dedicated simplified bridge/hub glyph instead of downscaling the full 1024px app icon. macOS continues to use the matching monochrome template glyph. Alpha.24 finalized the open-source desktop release lane and GitHub Release publication workflow. Workspace and capability configuration remains restart-gated by design. Remote non-loopback serving still fails closed without OAuth.
+
+The planned terminal migration does not rewrite the historical `0.2.0-alpha.25` claim: this release is tmux-backed. The migration will move the public terminal descriptions to provider-neutral wording and update the toolset revision/hash explicitly rather than silently changing the existing `hostspan-v2` metadata.
 
 Config schema remains version 1. The durable database schema is version 4 and adds process backend/session/deadline/output-cap metadata so tmux sessions can be reconciled after daemon restart. Database initialization uses WAL and backs up an existing database before migration.
 

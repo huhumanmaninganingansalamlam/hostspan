@@ -12,18 +12,20 @@ export function writeConfigAtomic(path: string, input: HostSpanConfig): void {
   try {
     if (existsSync(path)) copyFileSync(path, backup);
     writeFileSync(temp, stringifyYaml(config), { mode: 0o600 });
-    const fd = openSync(temp, "r");
+    const fd = openSync(temp, "r+");
     try {
       fsyncSync(fd);
     } finally {
       closeSync(fd);
     }
     renameSync(temp, path);
-    const dirFd = openSync(dir, "r");
-    try {
-      fsyncSync(dirFd);
-    } finally {
-      closeSync(dirFd);
+    if (process.platform !== "win32") {
+      const dirFd = openSync(dir, "r");
+      try {
+        fsyncSync(dirFd);
+      } finally {
+        closeSync(dirFd);
+      }
     }
   } finally {
     rmSync(temp, { force: true });

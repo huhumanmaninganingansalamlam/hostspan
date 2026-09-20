@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
@@ -26,6 +27,7 @@ interface WorkerStatus {
   columns: number;
   rows: number;
   output_bytes: number;
+  ipc_token: string;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -40,6 +42,11 @@ function processAlive(pid: number | null | undefined): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
+}
+
+function sleepSync(ms: number): void {
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(sleeper, 0, 0, ms);
 }
 
 function shellQuote(value: string): string {
@@ -66,7 +73,7 @@ export class PtySessionManager implements InteractiveSessionManager {
   }
 
   async available(): Promise<boolean> {
-    if (!(["linux", "darwin"] as NodeJS.Platform[]).includes(process.platform)) return false;
+    if (!(["linux", "darwin", "win32"] as NodeJS.Platform[]).includes(process.platform)) return false;
     try {
       await import("node-pty");
       return existsSync(this.workerPath);
@@ -87,6 +94,7 @@ export class PtySessionManager implements InteractiveSessionManager {
     rmSync(sessionDir, { recursive: true, force: true });
     mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
     const specPath = join(sessionDir, `launch-${process.pid}.json`);
+    const ipcToken = randomBytes(32).toString("base64url");
     writeFileSync(
       specPath,
       `${JSON.stringify({
@@ -101,6 +109,7 @@ export class PtySessionManager implements InteractiveSessionManager {
         deadlineAt: input.deadlineAt,
         attachHistoryBytes: this.config.attach_history_bytes,
         socketPath: this.socketPath(session),
+        ipcToken,
         maxOutputBytes: Math.min(input.maxOutputBytes, this.config.max_output_bytes),
       })}\n`,
       { mode: 0o600 },
@@ -115,7 +124,7 @@ export class PtySessionManager implements InteractiveSessionManager {
       },
     });
     child.unref();
-    const deadline = Date.now() + 5_000;
+    const deadline = Date.now() + (process.platform === "win32" ? 10_000 : 5_000);
     while (Date.now() <= deadline) {
       const status = this.readStatus(session);
       if (status?.status === "running") return { session, pid: status.pty_pid };
@@ -123,7 +132,6 @@ export class PtySessionManager implements InteractiveSessionManager {
       if (status?.status === "failed") {
         throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", status.reason ?? "PTY worker failed to start.", true);
       }
-      if (child.pid && !processAlive(child.pid)) break;
       await sleep(25);
     }
     throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "PTY worker did not become ready.", true);
@@ -255,7 +263,13 @@ export class PtySessionManager implements InteractiveSessionManager {
         }).catch(() => undefined);
       };
       socket.once("connect", () => {
-        socket.write(`${JSON.stringify({ op: "attach", read_only: readOnly })}\n`);
+        const status = this.readStatus(session);
+        if (!status?.ipc_token) {
+          socket.destroy();
+          reject(new Error("PTY session authentication state is unavailable"));
+          return;
+        }
+        socket.write(`${JSON.stringify({ op: "attach", read_only: readOnly, token: status.ipc_token })}\n`);
       });
       socket.on("data", (chunk) => {
         if (!acknowledged) {
@@ -306,6 +320,11 @@ export class PtySessionManager implements InteractiveSessionManager {
 
   private request(session: string, payload: Record<string, unknown>): Promise<void> {
     return new Promise((resolve, reject) => {
+      const status = this.readStatus(session);
+      if (!status?.ipc_token) {
+        reject(new Error("PTY session authentication state is unavailable"));
+        return;
+      }
       const socket = createConnection(this.socketPath(session));
       let buffer = "";
       const timer = setTimeout(() => {
@@ -313,7 +332,7 @@ export class PtySessionManager implements InteractiveSessionManager {
         reject(new Error("PTY worker request timed out"));
       }, 5_000);
       timer.unref();
-      socket.once("connect", () => socket.write(`${JSON.stringify(payload)}\n`));
+      socket.once("connect", () => socket.write(`${JSON.stringify({ ...payload, token: status.ipc_token })}\n`));
       socket.on("data", (chunk) => {
         buffer += chunk.toString("utf8");
         const newline = buffer.indexOf("\n");
@@ -333,12 +352,18 @@ export class PtySessionManager implements InteractiveSessionManager {
 
   private readStatus(session: string): WorkerStatus | undefined {
     const path = this.statusPath(session);
-    if (!existsSync(path)) return undefined;
-    try {
-      return JSON.parse(readFileSync(path, "utf8")) as WorkerStatus;
-    } catch {
-      return undefined;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      if (existsSync(path)) {
+        try {
+          return JSON.parse(readFileSync(path, "utf8")) as WorkerStatus;
+        } catch {
+          // An atomic replacement can be briefly unavailable to a concurrent
+          // Windows reader. Recheck before declaring the durable session lost.
+        }
+      }
+      if (attempt < 4) sleepSync(5);
     }
+    return undefined;
   }
 
   private missingSnapshot(): InteractiveSessionSnapshot {

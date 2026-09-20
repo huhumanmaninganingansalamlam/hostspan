@@ -5,12 +5,39 @@ import type { InteractiveSessionManager } from "./interactive-session.js";
 export function processGroupAlive(pgid: number | null): boolean {
   if (!pgid || pgid <= 0) return false;
   try {
+    if (process.platform === "win32") {
+      process.kill(pgid, 0);
+      return true;
+    }
     process.kill(-pgid, 0);
     return true;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "EPERM") return true;
     return false;
+  }
+}
+
+export function signalProcessGroup(pgid: number | null, signal: NodeJS.Signals): void {
+  if (!pgid || pgid <= 0) return;
+  if (process.platform === "win32") {
+    // Windows has no general POSIX-style soft signal for an arbitrary process
+    // tree. Native HostSpan processes are owned by a dedicated Job Object
+    // worker. The caller models grace by waiting before SIGKILL; killing the
+    // worker closes the job handle and lets the kernel terminate descendants.
+    if (signal !== "SIGKILL") return;
+    try {
+      process.kill(pgid, "SIGKILL");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+    return;
+  }
+  try {
+    process.kill(-pgid, signal);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ESRCH") throw error;
   }
 }
 

@@ -13,9 +13,29 @@ import { ProcessesRepo } from "../../src/state/processes-repo.js";
 import { TargetRegistry } from "../../src/targets/registry.js";
 
 const roots: string[] = [];
+const databases: Array<ReturnType<typeof openDatabase>> = [];
+const supervisors: ProcessSupervisor[] = [];
 
-afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+afterEach(async () => {
+  for (const supervisor of supervisors.splice(0)) await supervisor.shutdown();
+  for (const db of databases.splice(0)) {
+    try {
+      if (db.open) db.close();
+    } catch {
+      // Test cleanup should not hide the primary assertion failure.
+    }
+  }
+  for (const root of roots.splice(0)) {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      try {
+        rmSync(root, { recursive: true, force: true });
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EPERM" || attempt === 39) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
+  }
 });
 
 function fixture() {
@@ -59,6 +79,7 @@ function fixture() {
     },
   };
   const db = openDatabase(join(dataDir, "state.db"));
+  databases.push(db);
   const operations = new OperationsRepo(db);
   const processes = new ProcessesRepo(db);
   const targets = new TargetRegistry(config);
@@ -69,6 +90,7 @@ function fixture() {
     operations,
     processes,
   });
+  supervisors.push(supervisor);
   return { supervisor, processes, db };
 }
 
@@ -88,17 +110,16 @@ function startInput(overrides: Partial<Parameters<ProcessSupervisor["start"]>[0]
 
 describe("process supervisor", () => {
   it("returns a terminal result for a short process", async () => {
-    const { supervisor, db } = fixture();
+    const { supervisor } = fixture();
     const result = await supervisor.start(startInput(), "req_short");
     expect(result.state).toBe("succeeded");
     expect(result.stdout).toBe("ok");
     expect(result.native_execution).toBe(true);
     expect(result.sandboxed).toBe(false);
-    db.close();
   });
 
   it("returns a process_id quickly for a long silent process and deduplicates retries", async () => {
-    const { supervisor, db } = fixture();
+    const { supervisor } = fixture();
     const input = startInput({ argv: ["node", "-e", "setTimeout(()=>{}, 60000)"], wait_ms: 20, deadline_ms: 60_000 });
     const startedAt = Date.now();
     const first = await supervisor.start(input, "req_long_1");
@@ -107,11 +128,10 @@ describe("process supervisor", () => {
     const second = await supervisor.start(input, "req_long_2");
     expect(second.process_id).toBe(first.process_id);
     expect((await supervisor.cancel({ idempotency_key: uuidv7(), process_id: String(first.process_id), grace_ms: 100 })).state).toBe("cancelled");
-    db.close();
   });
 
   it("preserves UTF-8 characters across process output chunk boundaries", async () => {
-    const { supervisor, db } = fixture();
+    const { supervisor } = fixture();
     const script = "const b=Buffer.from('😀');process.stdout.write(b.subarray(0,2));setTimeout(()=>process.stdout.write(b.subarray(2)),80)";
     const started = await supervisor.start(startInput({ argv: ["node", "-e", script], wait_ms: 0 }), "req_utf8");
     const first = await supervisor.poll({
@@ -122,19 +142,23 @@ describe("process supervisor", () => {
       max_bytes: 1024,
     });
     expect(first.stdout === "" || first.stdout === "😀").toBe(true);
-    const second = await supervisor.poll({
-      process_id: String(started.process_id),
-      stdout_cursor: first.stdout === "😀" ? Number(first.next_stdout_cursor) : 0,
-      stderr_cursor: 0,
-      wait_ms: 500,
-      max_bytes: 1024,
-    });
-    expect(`${first.stdout}${second.stdout}`).toBe("😀");
-    db.close();
+    let current = first;
+    let text = String(first.stdout ?? "");
+    for (let attempt = 0; attempt < 8 && !text.includes("😀"); attempt += 1) {
+      current = await supervisor.poll({
+        process_id: String(started.process_id),
+        stdout_cursor: Number(current.next_stdout_cursor ?? 0),
+        stderr_cursor: 0,
+        wait_ms: 500,
+        max_bytes: 1024,
+      });
+      text += String(current.stdout ?? "");
+    }
+    expect(text).toBe("😀");
   });
 
   it("advances a byte cursor even when max_bytes is smaller than one UTF-8 code point", async () => {
-    const { supervisor, db } = fixture();
+    const { supervisor } = fixture();
     const started = await supervisor.start(
       startInput({ argv: ["node", "-e", "process.stdout.write('😀')"], wait_ms: 0 }),
       "req_utf8_tiny_cursor",
@@ -148,11 +172,10 @@ describe("process supervisor", () => {
     });
     expect(result.stdout).toBe("😀");
     expect(result.next_stdout_cursor).toBe(4);
-    db.close();
   });
 
   it("kills a process group including descendants on cancel", async () => {
-    const { supervisor, processes, db } = fixture();
+    const { supervisor, processes } = fixture();
     const script = "const {spawn}=require('node:child_process');spawn('node',['-e','setTimeout(()=>{},60000)'],{stdio:'ignore'});setTimeout(()=>{},60000)";
     const started = await supervisor.start(startInput({ argv: ["node", "-e", script], wait_ms: 30, deadline_ms: 60_000 }), "req_tree");
     const record = processes.get(String(started.process_id));
@@ -160,11 +183,10 @@ describe("process supervisor", () => {
     const cancelled = await supervisor.cancel({ idempotency_key: uuidv7(), process_id: String(started.process_id), grace_ms: 50 });
     expect(cancelled.state).toBe("cancelled");
     expect(processGroupAlive(record?.pgid ?? null)).toBe(false);
-    db.close();
   });
 
   it("enforces hard deadlines and output caps", async () => {
-    const { supervisor, db } = fixture();
+    const { supervisor } = fixture();
     const timed = await supervisor.start(
       startInput({ argv: ["node", "-e", "setTimeout(()=>{},60000)"], wait_ms: 400, deadline_ms: 80 }),
       "req_timeout",
@@ -178,6 +200,5 @@ describe("process supervisor", () => {
     expect(capped.state).toBe("failed");
     expect(capped.reason).toBe("output_limit");
     expect(Buffer.byteLength(String(capped.stdout))).toBeLessThanOrEqual(128);
-    db.close();
   });
 });

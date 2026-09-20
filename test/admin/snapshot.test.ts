@@ -4,7 +4,13 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { addLocalWorkspace, buildAdminSnapshot, removeLocalWorkspace } from "../../src/admin/snapshot.js";
-import { daemonStatus, removeDaemonPid, writeDaemonPid } from "../../src/cli/daemon.js";
+import {
+  daemonStatus,
+  removeDaemonPid,
+  requestDaemonShutdown,
+  startDaemonControlServer,
+  writeDaemonPid,
+} from "../../src/cli/daemon.js";
 import { loadConfig } from "../../src/config/loader.js";
 import type { HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
@@ -65,6 +71,22 @@ function fixture() {
 }
 
 describe("local admin snapshot", () => {
+  it("uses authenticated local IPC for graceful daemon shutdown requests", async () => {
+    const { configPath } = fixture();
+    let requested = false;
+    const control = await startDaemonControlServer(configPath, () => {
+      requested = true;
+    });
+    try {
+      expect(await requestDaemonShutdown(configPath)).toBe(true);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(requested).toBe(true);
+    } finally {
+      await control.close();
+    }
+    expect(await requestDaemonShutdown(configPath)).toBe(false);
+  });
+
   it("reads targets, active work, calls, process state, and daemon pid without mutating running records", () => {
     const { configPath, dataDir } = fixture();
     const db = openDatabase(join(dataDir, "state.db"));

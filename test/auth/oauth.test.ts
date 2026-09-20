@@ -101,7 +101,7 @@ describe("OAuth protected MCP", () => {
     const result = JSON.parse(captured) as { approval_secret_file: string };
     expect(result.approval_secret_file).toBe(join(root, "config", "oauth-approval-secret"));
     expect(existsSync(result.approval_secret_file)).toBe(true);
-    expect(statSync(result.approval_secret_file).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(statSync(result.approval_secret_file).mode & 0o777).toBe(0o600);
     const credential = readFileSync(result.approval_secret_file, "utf8").trim();
     expect(credential).toMatch(/^[A-Za-z0-9_-]{40,}$/);
     expect(captured).not.toContain(credential);

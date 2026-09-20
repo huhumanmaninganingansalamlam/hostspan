@@ -21,6 +21,26 @@ function validateInput(path: string): string {
   if (isAbsolute(path) || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\")) {
     throw new HostSpanError("PATH_OUTSIDE_TARGET", "Absolute paths are not accepted; paths are relative to target root.");
   }
+  if (process.platform === "win32") {
+    const deviceName = /^(?:CON|PRN|AUX|NUL|CLOCK\$|CONIN\$|CONOUT\$|COM[1-9]|LPT[1-9])$/i;
+    for (const segment of path.replaceAll("\\", "/").split("/")) {
+      if (!segment || segment === "." || segment === "..") continue;
+      const hasReservedSyntax = Array.from(segment).some((character) => {
+        const code = character.charCodeAt(0);
+        return code <= 0x1f || '<>:"|?*'.includes(character);
+      });
+      if (hasReservedSyntax) {
+        throw new HostSpanError("PATH_OUTSIDE_TARGET", `Windows-reserved path syntax is not allowed: ${segment}`);
+      }
+      if (/[. ]$/.test(segment)) {
+        throw new HostSpanError("PATH_OUTSIDE_TARGET", `Windows paths may not end a segment with a dot or space: ${segment}`);
+      }
+      const baseName = segment.split(".", 1)[0] ?? segment;
+      if (deviceName.test(baseName)) {
+        throw new HostSpanError("PATH_OUTSIDE_TARGET", `Windows device names are not allowed in target paths: ${segment}`);
+      }
+    }
+  }
   const normalized = normalize(path || ".");
   if (normalized === ".." || normalized.startsWith(`..${sep}`)) {
     throw new HostSpanError("PATH_OUTSIDE_TARGET", "Path traversal outside the target root is not allowed.");
@@ -65,15 +85,37 @@ export function resolveTargetPath(target: TargetRuntime, input: string, _intent:
 }
 
 export interface OpenedDirectory {
-  fd: number;
+  fd: number | null;
   path: GuardedPath;
   stable_path: string;
+  dev: string;
+  ino: string;
+}
+
+function directoryHandlePath(fd: number): string {
+  if (process.platform === "linux") return `/proc/self/fd/${fd}`;
+  throw new HostSpanError("POLICY_UNENFORCEABLE", `No descriptor-relative directory path is available on ${process.platform}.`);
 }
 
 export function openDirectoryNoFollow(target: TargetRuntime, input: string, intent: PathIntent): OpenedDirectory {
   const guarded = resolveTargetPath(target, input, intent);
   if (!guarded.exists) throw new HostSpanError("FILE_NOT_FOUND", `Directory does not exist: ${input}`);
   if (!lstatSync(guarded.absolute).isDirectory()) throw new HostSpanError("FILE_NOT_FOUND", `Not a directory: ${input}`);
+  if (process.platform === "win32") {
+    const before = statSync(guarded.absolute, { bigint: true });
+    const rechecked = resolveTargetPath(target, input, intent);
+    const current = statSync(rechecked.absolute, { bigint: true });
+    if (before.dev !== current.dev || before.ino !== current.ino) {
+      throw new HostSpanError("SYMLINK_REJECTED", `Directory identity changed during open: ${input}`);
+    }
+    return {
+      fd: null,
+      path: rechecked,
+      stable_path: rechecked.absolute,
+      dev: current.dev.toString(),
+      ino: current.ino.toString(),
+    };
+  }
   const fd = openSync(guarded.absolute, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try {
     const rechecked = resolveTargetPath(target, input, intent);
@@ -82,18 +124,30 @@ export function openDirectoryNoFollow(target: TargetRuntime, input: string, inte
     if (opened.dev !== current.dev || opened.ino !== current.ino) {
       throw new HostSpanError("SYMLINK_REJECTED", `Directory identity changed during open: ${input}`);
     }
-    return { fd, path: rechecked, stable_path: `/proc/self/fd/${fd}` };
+    return {
+      fd,
+      path: rechecked,
+      stable_path: directoryHandlePath(fd),
+      dev: opened.dev.toString(),
+      ino: opened.ino.toString(),
+    };
   } catch (error) {
     closeSync(fd);
     throw error;
   }
 }
 
-export function assertDirectoryStillCurrent(target: TargetRuntime, input: string, fd: number, intent: PathIntent): void {
+export function assertDirectoryStillCurrent(target: TargetRuntime, input: string, openedDirectory: OpenedDirectory, intent: PathIntent): void {
   const rechecked = resolveTargetPath(target, input, intent);
-  const opened = fstatSync(fd, { bigint: true });
   const current = statSync(rechecked.absolute, { bigint: true });
-  if (opened.dev !== current.dev || opened.ino !== current.ino) {
+  const opened =
+    openedDirectory.fd === null
+      ? { dev: openedDirectory.dev, ino: openedDirectory.ino }
+      : (() => {
+          const stat = fstatSync(openedDirectory.fd, { bigint: true });
+          return { dev: stat.dev.toString(), ino: stat.ino.toString() };
+        })();
+  if (opened.dev !== current.dev.toString() || opened.ino !== current.ino.toString()) {
     throw new HostSpanError("SYMLINK_REJECTED", `Directory identity changed while operating on: ${input}`);
   }
 }
@@ -109,17 +163,25 @@ export function openReadNoFollow(
   const parent = openDirectoryNoFollow(target, parentRelative, "read");
   try {
     afterParentOpen?.();
-    const fd = openSync(join(parent.stable_path, basename(guarded.relative)), constants.O_RDONLY | constants.O_NOFOLLOW);
+    const fd = openSync(
+      process.platform === "win32" ? guarded.absolute : join(parent.stable_path, basename(guarded.relative)),
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+    );
     try {
       const rechecked = resolveTargetPath(target, input, "read");
-      assertDirectoryStillCurrent(target, parentRelative, parent.fd, "read");
+      assertDirectoryStillCurrent(target, parentRelative, parent, "read");
+      const opened = fstatSync(fd, { bigint: true });
+      const current = statSync(rechecked.absolute, { bigint: true });
+      if (opened.dev !== current.dev || opened.ino !== current.ino) {
+        throw new HostSpanError("SYMLINK_REJECTED", `File identity changed during open: ${input}`);
+      }
       return { fd, path: rechecked };
     } catch (error) {
       closeSync(fd);
       throw error;
     }
   } finally {
-    closeSync(parent.fd);
+    if (parent.fd !== null) closeSync(parent.fd);
   }
 }
 

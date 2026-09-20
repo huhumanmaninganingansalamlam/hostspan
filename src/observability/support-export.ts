@@ -68,7 +68,7 @@ export function writeSupportExportAtomic(path: string, payload: Record<string, u
   const temp = `${path}.tmp-${process.pid}`;
   try {
     writeFileSync(temp, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
-    const fd = openSync(temp, "r");
+    const fd = openSync(temp, "r+");
     try {
       fsyncSync(fd);
     } finally {

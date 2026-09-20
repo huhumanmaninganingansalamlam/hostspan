@@ -1,5 +1,7 @@
 # Troubleshooting
 
+> **Current Alpha vs next milestone:** the troubleshooting steps below intentionally describe the released tmux-backed Alpha. The next core milestone replaces tmux with a HostSpan-owned Unix PTY session runtime; these tmux-specific checks will be removed when that implementation passes the parity/recovery gates. WSL2 is treated as a Linux runtime and is not native Windows support.
+
 ## App is not visible in ChatGPT
 
 1. Run `hostspan doctor` and fix any `fail` checks.

@@ -72,6 +72,26 @@ describe("canonical target path guard", () => {
     }
   });
 
+  it.runIf(process.platform === "win32")("rejects Windows device aliases, ADS, drive-relative syntax, and normalization aliases", () => {
+    const { root } = tempRoot();
+    const target = targetFor(root);
+    for (const path of ["file.txt:secret", "C:drive-relative", "NUL", "con.txt", "COM1.log", "name. ", "bad|name.txt"]) {
+      expect(() => resolveTargetPath(target, path, "read"), path).toThrowError(
+        expect.objectContaining({ code: "PATH_OUTSIDE_TARGET" }),
+      );
+    }
+  });
+
+  it.runIf(process.platform === "win32")("rejects Windows directory junctions as reparse-point escapes", () => {
+    const { base, root } = tempRoot();
+    const outside = join(base, "junction-outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "secret.txt"), "secret");
+    symlinkSync(outside, join(root, "junction-link"), "junction");
+    const target = targetFor(root);
+    expect(() => resolveTargetPath(target, "junction-link/secret.txt", "read")).toThrowError(/Symlink/);
+  });
+
   it("rejects symlink files, symlink directories, and nonexistent children below a symlink", () => {
     const { base, root } = tempRoot();
     const outside = join(base, "outside");

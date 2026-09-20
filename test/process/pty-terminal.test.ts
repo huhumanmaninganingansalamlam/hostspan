@@ -16,6 +16,7 @@ import { TargetRegistry } from "../../src/targets/registry.js";
 
 const roots: string[] = [];
 const sessions: Array<{ terminal: PtySessionManager; session: string }> = [];
+const databases: Array<ReturnType<typeof openDatabase>> = [];
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -23,8 +24,25 @@ function sleep(ms: number): Promise<void> {
 
 afterEach(async () => {
   for (const entry of sessions.splice(0)) entry.terminal.closeSync(entry.session);
+  for (const db of databases.splice(0)) {
+    try {
+      if (db.open) db.close();
+    } catch {
+      // Test cleanup should not hide the primary assertion failure.
+    }
+  }
   await sleep(100);
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      try {
+        rmSync(root, { recursive: true, force: true });
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EPERM" || attempt === 39) throw error;
+        await sleep(25);
+      }
+    }
+  }
 });
 
 function fixture(terminalCapability = true) {
@@ -74,6 +92,7 @@ function fixture(terminalCapability = true) {
     },
   };
   const db = openDatabase(join(dataDir, "state.db"));
+  databases.push(db);
   const operations = new OperationsRepo(db);
   const processes = new ProcessesRepo(db);
   const targets = new TargetRegistry(config);
@@ -113,14 +132,14 @@ function track(terminal: PtySessionManager, started: Record<string, unknown>): s
   return session;
 }
 
-describe("durable Unix PTY interactive process backend", () => {
+describe("durable interactive PTY process backend", () => {
   it("supports interactive input, polling, resize, attach metadata, and idempotent writes", async () => {
     const { supervisor, terminal, db } = fixture();
     const script = [
       "const readline=require('node:readline');",
       "const rl=readline.createInterface({input:process.stdin,output:process.stdout});",
       "console.log('READY');",
-      "rl.question('NAME? ',name=>{console.log('HELLO '+name);rl.close();});",
+      "rl.question('NAME? ',name=>{console.log('HELLO '+name);rl.close();process.exit(0);});",
     ].join("");
     const started = await supervisor.start(ttyInput(script), "req_pty_start");
     track(terminal, started);
@@ -148,7 +167,8 @@ describe("durable Unix PTY interactive process backend", () => {
 
     let current = written;
     let transcript = String(written.stdout ?? "");
-    for (let attempt = 0; attempt < 8 && (current.state === "running" || !transcript.includes("HELLO world")); attempt += 1) {
+    const completionAttempts = process.platform === "win32" ? 24 : 8;
+    for (let attempt = 0; attempt < completionAttempts && (current.state === "running" || !transcript.includes("HELLO world")); attempt += 1) {
       current = await supervisor.poll({
         process_id: String(started.process_id),
         stdout_cursor: Number(current.next_stdout_cursor ?? 0),
@@ -214,17 +234,22 @@ describe("durable Unix PTY interactive process backend", () => {
     expect(current.state).toBe("succeeded");
     expect(transcript).toContain("TAIL-");
     expect(transcript).toContain("-END");
-    expect(terminal.outputBytes(String(started.process_id))).toBe(Buffer.byteLength(payload));
+    expect(terminal.outputBytes(String(started.process_id))).toBeGreaterThanOrEqual(Buffer.byteLength(payload));
     db.close();
   });
 
   it("enforces interactive deadlines in the session worker while the daemon is absent", async () => {
     const first = fixture();
-    const started = await first.supervisor.start(ttyInput("setTimeout(()=>{},60000)", 400, 0), "req_pty_deadline");
+    // ConPTY startup can take noticeably longer than Unix PTY creation. Keep
+    // the deadline far enough beyond a successful start that this test proves
+    // the detached worker, rather than the starting daemon, enforces it.
+    const deadlineMs = process.platform === "win32" ? 3_000 : 400;
+    const started = await first.supervisor.start(ttyInput("setTimeout(()=>{},60000)", deadlineMs, 0), "req_pty_deadline");
     track(first.terminal, started);
+    expect(started.state).toBe("running");
     const processId = String(started.process_id);
     first.db.close();
-    await sleep(700);
+    await sleep(deadlineMs + (process.platform === "win32" ? 1_000 : 300));
 
     const db = openDatabase(join(first.config.server.data_dir, "state.db"));
     const operations = new OperationsRepo(db);

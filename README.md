@@ -22,7 +22,13 @@ The MCP tool registry is immutable for `hostspan-v2`:
 
 Every file/Git/process request names a persistent `target_id`; no ChatGPT session ID or temporary workspace handle is product state. File mutation uses expected SHA-256 values, dry-run/staging, per-file atomic replacement, a durable transaction journal, and postcondition hashes. Non-interactive commands use the durable native process supervisor. Interactive commands use the same `process_id` lifecycle with a tmux-backed PTY: start with `tty=true`, read through `process_poll`, write/resize through `process_write`, and close through `process_cancel`.
 
-Alpha is release-qualified on Ubuntu 24.04 LTS or WSL2 on Linux x64. GUI/browser computer-use, native Windows/macOS process adapters, multi-host routing, LSP/CodeGraph, and claims of sandboxed execution remain out of scope. Interactive terminal sessions are supported through tmux; a human can attach to the exact same session locally.
+Alpha is release-qualified on Ubuntu 24.04 LTS or WSL2 on Linux x64. WSL2 is treated as a Linux runtime and is **not** native Windows support. GUI/browser computer-use, native Windows core support, full macOS core qualification, multi-host routing, LSP/CodeGraph, and claims of sandboxed execution remain out of scope. The current Alpha interactive terminal backend uses tmux; a human can attach to the exact same session locally.
+
+### Next architecture milestone: Unix PTY runtime
+
+The next core milestone removes tmux as a product dependency and replaces it with a HostSpan-owned, daemon-independent Unix PTY session runtime. Linux is the release-quality migration target. The same terminal-session contract will be exercised on native macOS runners, but passing that terminal contract alone does not declare the complete macOS core supported. Native Windows is a later milestone using ConPTY + Job Objects and Windows-specific file/security primitives; WSL2 will not be counted as Windows qualification.
+
+The migration is complete only when the new PTY runtime preserves the existing durable `process_id`, incremental output cursor, idempotent `process_write`, deadline/output caps, daemon-restart recovery, and human read-only/write attach guarantees. Once those gates pass, tmux code, configuration, dependency checks, CI installation, and documentation are removed rather than kept as a fallback backend.
 
 ## Requirements
 
@@ -30,7 +36,7 @@ Alpha is release-qualified on Ubuntu 24.04 LTS or WSL2 on Linux x64. GUI/browser
 - Corepack + pnpm 12.4.2
 - `git`
 - `ripgrep` (`rg`) for `file_search`
-- `tmux` for targets that enable the `terminal` capability
+- `tmux` for targets that enable the `terminal` capability in the current Alpha; this dependency is scheduled for removal by the Unix PTY migration
 - systemd user services only if using `hostspan service ...`
 - Electron dependencies only if using or packaging the optional system-tray companion (`pnpm desktop` / `pnpm desktop:make`)
 - OpenAI Secure MCP Tunnel for the standard ChatGPT Web connection path
@@ -105,6 +111,8 @@ terminal:
 
 ### Interactive terminal
 
+> Current Alpha note: the implementation below is tmux-backed. The next architecture milestone replaces tmux with the HostSpan-owned PTY session runtime described above without changing the user-facing start/poll/write/cancel lifecycle.
+
 Interactive terminal access is an explicit target capability because it is stronger than bounded `exec`: once a PTY is writable, the program inside it can become a shell, REPL, SSH client, debugger, or TUI. Start an interactive process with `process_start(..., tty=true)`. `process_poll` reads incremental output, `process_write` sends text/control keys or terminal resize updates, and `process_cancel` closes the tmux session. `process_write` also requires a UUIDv7 idempotency key so a transport retry cannot silently type the same characters twice.
 
 For an `exec`-only target, non-interactive `process_start` remains constrained by the exec profile's `allowed_programs` and `env_allowlist`. If the same target also grants `terminal`, HostSpan does not make non-interactive execution artificially weaker than the already-authorized terminal: arbitrary program paths/names and explicit environment variables are accepted, while deadline, output, concurrency, cwd, idempotency, and process-lifecycle limits still apply. Use `exec` without `terminal` when a bounded program allowlist is the desired authority model.
@@ -137,13 +145,13 @@ On Linux you may still prefer the existing systemd user service commands.
 
 ### Tray companion
 
-The optional tray companion is intentionally small: server start/stop/restart, version/PID, Doctor health checks, current activity, targets/workspaces, recent calls, login autostart, and interactive terminal attach. Workspaces can be added with explicit capabilities or removed when no process is active. For the trusted-local DevSpace-replacement workflow, Add Workspace selects all five capabilities by default; uncheck any authority the workspace does not need, especially `terminal`. Target and policy configuration is intentionally snapshotted when the daemon starts, so workspace/capability changes require a daemon restart before MCP uses them. The tray explains this boundary and warns that restart stops active native processes; tmux-backed interactive sessions remain alive and reconnect. It does not expose a new HTTP admin API and is not GUI computer-use.
+The optional tray companion is intentionally small: server start/stop/restart, version/PID, Doctor health checks, current activity, targets/workspaces, recent calls, login autostart, and interactive terminal attach. Workspaces can be added with explicit capabilities or removed when no process is active. For the trusted-local DevSpace-replacement workflow, Add Workspace selects all five capabilities by default; uncheck any authority the workspace does not need, especially `terminal`. Target and policy configuration is intentionally snapshotted when the daemon starts, so workspace/capability changes require a daemon restart before MCP uses them. The tray explains this boundary and warns about active-process impact. In the current Alpha, tmux-backed interactive sessions remain alive and reconnect; the Unix PTY migration must preserve that behavior with HostSpan-owned session workers. It does not expose a new HTTP admin API and is not GUI computer-use.
 
 ```bash
 pnpm desktop
 ```
 
-The original HostSpan icon is generated from the checked-in SVG sources in `assets/brand`; platform PNG, ICO, and ICNS files are generated deterministically by `pnpm icons`. Electron supplies the tray/menu-bar surface on macOS, Windows, and Linux. The HostSpan core is currently release-qualified on Linux/WSL2; on Windows the tray controls the WSL2 `hostspan` CLI. macOS core support is a preview until its process/recovery suite is release-qualified.
+The original HostSpan icon is generated from the checked-in SVG sources in `assets/brand`; platform PNG, ICO, and ICNS files are generated deterministically by `pnpm icons`. Electron supplies the tray/menu-bar surface on macOS, Windows, and Linux. The HostSpan core is currently release-qualified on Linux/WSL2. The existing Windows tray delegates to the WSL2 `hostspan` CLI and therefore is not native Windows core support. macOS packaging remains preview-level until the complete core is qualified; the Unix PTY milestone only adds native terminal-session contract coverage there.
 
 Create native desktop artifacts for the current operating system with:
 
@@ -271,7 +279,7 @@ hostspan doctor
 hostspan smoke --target local-app
 ```
 
-The contract suite reconnects and lists the fixed 11-tool `hostspan-v2` toolset 100 times. The Alpha acceptance suite also runs the 10-turn workflow 50 times and verifies stable toolset hashing and request/response trace coverage. tmux integration tests cover interactive input, resize/output polling, explicit terminal capability enforcement, and daemon-restart recovery.
+The contract suite reconnects and lists the fixed 11-tool `hostspan-v2` toolset 100 times. The Alpha acceptance suite also runs the 10-turn workflow 50 times and verifies stable toolset hashing and request/response trace coverage. Current Alpha tmux integration tests cover interactive input, resize/output polling, explicit terminal capability enforcement, and daemon-restart recovery. The Unix PTY migration replaces those backend-specific tests with a provider-neutral interactive-session contract suite before tmux is removed.
 
 ## Security and support
 

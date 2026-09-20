@@ -98,4 +98,15 @@ Signing credentials must never be committed to the repository. Add them as GitHu
 
 ## Platform scope
 
-The Linux/WSL2 HostSpan core is release-qualified. Windows uses the WSL2 HostSpan core through the native tray shell. macOS and native Windows process-provider qualification remain separate from merely producing an Electron installer. Packaging success must not be described as native-core security or process-recovery qualification.
+Packaging and native-core support are separate claims:
+
+| Environment | Current core status |
+| --- | --- |
+| Linux x64 / Ubuntu 24.04 | release-qualified Alpha core |
+| WSL2 | uses the Linux core; not native Windows support |
+| Windows x64 installer | packaged native tray shell that delegates current core operations to WSL2; not native Windows core qualification |
+| macOS arm64/x64 package | package/runtime preview; complete core qualification is still separate |
+
+The next implementation milestone removes tmux from the Unix terminal architecture. Linux must pass the full HostSpan-owned PTY session/recovery gate without tmux. macOS will run the same native PTY terminal-contract suite, but that result alone does not qualify the complete macOS file/process/security core. Native Windows remains a later ConPTY + Job Object milestone and WSL2 evidence will not be used as a substitute.
+
+Packaging success must not be described as native-core security or process-recovery qualification.

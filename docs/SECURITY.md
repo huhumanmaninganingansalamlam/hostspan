@@ -49,6 +49,12 @@ Do not describe Alpha as secure sandboxed execution. A future sandbox provider m
 - tmux-backed sessions intentionally survive HostSpan daemon shutdown/restart. Startup reconciliation keeps a live tmux pane `running`, records an exited pane's exit status, or uses `unknown` if the durable session reference no longer exists.
 - Human attach uses the same private tmux session. `--read-only` is the safe observation mode. Writable human attach is deliberate shared ownership: human keystrokes bypass MCP idempotency and are not individually represented as MCP operations.
 
+### Planned Unix PTY replacement
+
+The current Alpha statements above remain accurate until the migration lands. The next architecture milestone removes tmux and moves PTY ownership into a HostSpan-managed session worker whose lifetime is independent from the MCP daemon. The migration is accepted only if it preserves the same or stronger security/recovery invariants: explicit `terminal` capability, bounded sessions/output/deadlines, idempotent MCP writes, read-only attach that cannot inject input, explicit shared ownership for writable human attach, and `unknown` rather than false success at daemon/worker crash boundaries.
+
+Linux is the release-quality migration target. macOS initially receives native terminal-session contract coverage only; complete macOS core qualification remains separate. Native Windows is deferred to a later ConPTY + Job Object + Windows file/ACL security milestone. WSL2 is a Linux environment and is not evidence of native Windows security qualification.
+
 ## Secrets and retention
 
 Default target deny patterns cover `.env*`, private key extensions, and Git object storage. Configure additional project-specific deny globs as needed.
@@ -95,7 +101,7 @@ Security requirements for a user-managed proxy:
 
 Reverse proxy transport does not make native execution safer. Any authenticated caller that reaches HostSpan can invoke the read/write/exec capabilities permitted by the configured target policy.
 
-The local Electron tray/dashboard does not open an additional network admin API. It reads the local config/SQLite state and invokes local daemon/terminal commands. On Windows it delegates these operations to the WSL2 `hostspan` CLI. Treat the desktop login/session as the trust boundary for that management UI.
+The local Electron tray/dashboard does not open an additional network admin API. It reads the local config/SQLite state and invokes local daemon/terminal commands. The current Windows package delegates these operations to the WSL2 `hostspan` CLI; this is a compatibility shell over the Linux core, not native Windows support. Treat the desktop login/session as the trust boundary for that management UI.
 
 Target and policy configuration is immutable for one daemon lifetime. The tray writes workspace additions/removals atomically, but the running MCP server continues enforcing the policy snapshot it started with until an explicit restart. This is intentional: HostSpan does not partially hot-reload authorization state while requests or processes are active. Restart confirmation reports the impact before proceeding—native processes are stopped during shutdown, while tmux-backed interactive sessions survive and are reconciled after startup. Add Workspace selects all capabilities by default for the trusted-local convenience profile; this includes native `exec` and `terminal` authority, so reduce the selection for lower-trust folders.
 

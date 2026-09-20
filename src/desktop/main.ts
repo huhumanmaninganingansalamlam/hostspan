@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Tray } from "electron";
 import {
@@ -9,13 +9,12 @@ import {
   buildAdminSnapshot,
   removeLocalWorkspace,
   resolveTerminalSession,
-  uniqueWorkspaceTargetId,
-  workspaceTargetIdBase,
   type AddWorkspaceInput,
 } from "../admin/snapshot.js";
 import { startDaemon, stopDaemon } from "../cli/daemon.js";
 import { runDoctor, type DoctorReport } from "../cli/doctor.js";
 import { loadConfig } from "../config/loader.js";
+import { defaultConfigPath } from "../config/paths.js";
 import type { Capability } from "../config/schema.js";
 import { PtySessionManager } from "../processes/pty-session.js";
 
@@ -37,9 +36,7 @@ declare global {
   }
 }
 
-const configPath = resolve(
-  process.env.HOSTSPAN_CONFIG ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "hostspan", "config.yaml"),
-);
+const configPath = resolve(defaultConfigPath());
 if (process.platform === "linux") app.commandLine.appendSwitch("disable-gpu");
 const cliPath = fileURLToPath(new URL("../cli/index.js", import.meta.url));
 const mainPath = fileURLToPath(new URL("./main.js", import.meta.url));
@@ -69,14 +66,16 @@ function quoteShell(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
+function quotePowerShell(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
 function attachCommand(processId: string, readOnly: boolean): { command: string; args: string[] } {
-  if (process.platform === "win32") {
-    return {
-      command: "wt.exe",
-      args: ["wsl.exe", "hostspan", "terminal", "attach", "--process", processId, ...(readOnly ? ["--read-only"] : [])],
-    };
-  }
   const args = [nodePath, cliPath, "terminal", "attach", "--process", processId, ...(readOnly ? ["--read-only"] : []), "--config", configPath];
+  if (process.platform === "win32") {
+    if (spawnSync("where.exe", ["wt.exe"], { stdio: "ignore" }).status === 0) return { command: "wt.exe", args };
+    return { command: "powershell.exe", args: ["-NoExit", "-Command", `& ${args.map(quotePowerShell).join(" ")}`] };
+  }
   if (process.platform === "darwin") {
     const shell = args.map(quoteShell).join(" ");
     return { command: "osascript", args: ["-e", `tell application "Terminal" to do script ${JSON.stringify(shell)}`] };
@@ -91,7 +90,11 @@ function attachCommand(processId: string, readOnly: boolean): { command: string;
 
 function openAttach(processId: string, readOnly: boolean): void {
   const request = attachCommand(processId, readOnly);
-  const child = spawn(request.command, request.args, { detached: true, stdio: "ignore" });
+  const child = spawn(request.command, request.args, {
+    detached: true,
+    stdio: "ignore",
+    env: { ...process.env, ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}) },
+  });
   child.unref();
 }
 
@@ -142,18 +145,6 @@ X-GNOME-Autostart-enabled=true
   return app.getLoginItemSettings({ path: spec.path, args: spec.args }).openAtLogin;
 }
 
-function wslJson<T>(args: string[]): T {
-  const result = spawnSync("wsl.exe", ["hostspan", ...args], { encoding: "utf8", timeout: 10_000, maxBuffer: 4 * 1024 * 1024 });
-  if (result.status !== 0) throw new Error((result.stderr || result.error?.message || "WSL HostSpan command failed").trim());
-  return JSON.parse(result.stdout) as T;
-}
-
-function wslPath(value: string): string {
-  const result = spawnSync("wsl.exe", ["wslpath", "-u", value], { encoding: "utf8", timeout: 5_000 });
-  if (result.status !== 0) throw new Error((result.stderr || "Could not convert the selected Windows folder to a WSL path.").trim());
-  return result.stdout.trim();
-}
-
 function normalizedDesktopCapabilities(input: Capability[]): Capability[] {
   const capabilities = [...new Set(input)];
   if (capabilities.includes("terminal") && !capabilities.includes("exec")) capabilities.push("exec");
@@ -164,19 +155,11 @@ type AdminSnapshot = ReturnType<typeof buildAdminSnapshot>;
 type DesktopSnapshot = AdminSnapshot & { auto_start: boolean };
 
 async function snapshot(): Promise<DesktopSnapshot> {
-  const base =
-    process.platform === "win32" ? wslJson<AdminSnapshot>(["admin", "snapshot", "--recent", "40"]) : buildAdminSnapshot(configPath, { recent: 40 });
+  const base = buildAdminSnapshot(configPath, { recent: 40 });
   return { ...base, auto_start: getAutoStart() };
 }
 
 async function daemonAction(action: "start" | "stop" | "restart") {
-  if (process.platform === "win32") {
-    if (action === "restart") {
-      wslJson(["daemon", "stop"]);
-      return wslJson(["daemon", "start"]);
-    }
-    return wslJson(["daemon", action]);
-  }
   if (action === "restart") {
     await stopDaemon(configPath);
     return startDaemon(configPath, cliPath, nodePath);
@@ -216,39 +199,15 @@ async function restartDaemonWithConfirmation() {
 }
 
 async function doctorReport(): Promise<DoctorReport> {
-  if (process.platform === "win32") return wslJson<DoctorReport>(["doctor"]);
   return runDoctor(configPath);
 }
 
 function addWorkspace(input: AddWorkspaceInput) {
   const capabilities = normalizedDesktopCapabilities(input.capabilities);
-  if (process.platform !== "win32") return addLocalWorkspace(configPath, { ...input, capabilities });
-
-  const requestedTargetId = input.target_id?.trim() ?? "";
-  if (requestedTargetId && workspaceTargetIdBase(requestedTargetId) !== requestedTargetId) {
-    throw new Error("target_id must use 1-64 lowercase letters, numbers, dot, underscore, or dash.");
-  }
-  const current = wslJson<AdminSnapshot>(["admin", "snapshot", "--recent", "1"]);
-  const targetId = requestedTargetId || uniqueWorkspaceTargetId(basename(input.root), current.targets.map((target) => target.target_id));
-  const root = wslPath(input.root);
-  const args = [
-    "targets",
-    "add",
-    "--id",
-    targetId,
-    "--label",
-    input.label?.trim() || basename(input.root) || targetId,
-    "--root",
-    root,
-    "--capabilities",
-    capabilities.join(","),
-  ];
-  if (capabilities.includes("exec")) args.push("--exec-profile", "native-dev");
-  return wslJson([...args]);
+  return addLocalWorkspace(configPath, { ...input, capabilities });
 }
 
 function removeWorkspace(targetId: string) {
-  if (process.platform === "win32") return wslJson(["targets", "remove", "--id", targetId]);
   return removeLocalWorkspace(configPath, targetId);
 }
 
@@ -424,10 +383,6 @@ ipcMain.handle("hostspan:remove-workspace", async (_event, targetId: string) => 
 ipcMain.handle("hostspan:get-autostart", () => getAutoStart());
 ipcMain.handle("hostspan:set-autostart", (_event, enabled: boolean) => setAutoStart(Boolean(enabled)));
 ipcMain.handle("hostspan:attach", (_event, input: { processId: string; readOnly: boolean }) => {
-  if (process.platform === "win32") {
-    openAttach(input.processId, input.readOnly);
-    return { ok: true };
-  }
   const config = loadConfig(configPath);
   if (!config.terminal) throw new Error("terminal support is not configured");
   const session = resolveTerminalSession(configPath, input.processId);

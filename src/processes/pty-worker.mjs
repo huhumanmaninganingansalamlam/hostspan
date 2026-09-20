@@ -1,6 +1,7 @@
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { createServer } from "node:net";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import process from "node:process";
 
 const args = process.argv.slice(2);
@@ -17,8 +18,10 @@ const drainPath = join(sessionDir, "output-drained");
 const spoolPath = join(spec.dataDir, "spools", "processes", spec.processId, "stdout.bin");
 mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
 mkdirSync(dirname(spoolPath), { recursive: true, mode: 0o700 });
-mkdirSync(dirname(socketPath), { recursive: true, mode: 0o700 });
-rmSync(socketPath, { force: true });
+if (process.platform !== "win32") {
+  mkdirSync(dirname(socketPath), { recursive: true, mode: 0o700 });
+  rmSync(socketPath, { force: true });
+}
 rmSync(drainPath, { force: true });
 writeFileSync(spoolPath, "", { mode: 0o600 });
 
@@ -26,6 +29,7 @@ let ptyProcess;
 let outputBytes = 0;
 let terminationReason = null;
 let finished = false;
+let exitObserved = false;
 let columns = spec.columns;
 let rows = spec.rows;
 const attached = new Set();
@@ -40,6 +44,7 @@ function writeStatus(fields) {
     columns,
     rows,
     output_bytes: outputBytes,
+    ipc_token: spec.ipcToken,
     updated_at: new Date().toISOString(),
     ...fields,
   };
@@ -49,10 +54,28 @@ function writeStatus(fields) {
 }
 
 function killProcessTree(signal) {
-  if (!ptyProcess?.pid) return;
+  if (!ptyProcess) return;
+  if (process.platform === "win32") {
+    if (signal === "SIGKILL" && ptyProcess.pid > 0) {
+      const result = spawnSync("taskkill.exe", ["/PID", String(ptyProcess.pid), "/T", "/F"], {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 5_000,
+        maxBuffer: 1024 * 1024,
+      });
+      if (result.error && result.error.code !== "ENOENT") throw result.error;
+      return;
+    }
+    try {
+      ptyProcess.kill();
+    } catch {
+      // The pseudoconsole process may already have exited.
+    }
+    return;
+  }
+  if (!ptyProcess.pid) return;
   try {
-    if (process.platform !== "win32") process.kill(-ptyProcess.pid, signal);
-    else ptyProcess.kill(signal);
+    process.kill(-ptyProcess.pid, signal);
   } catch {
     try {
       ptyProcess.kill(signal);
@@ -66,9 +89,10 @@ function terminate(reason, graceMs = 500) {
   if (finished) return;
   terminationReason ??= reason;
   killProcessTree("SIGTERM");
+  const hardDelay = process.platform === "win32" ? Math.max(500, graceMs) : Math.max(0, graceMs);
   const timer = setTimeout(() => {
     if (!finished) killProcessTree("SIGKILL");
-  }, Math.max(0, graceMs));
+  }, hardDelay);
   timer.unref();
 }
 
@@ -107,6 +131,53 @@ function controlBytes(keys) {
   return keys.map((key) => map[key] ?? "").join("");
 }
 
+function windowsPathExt(env) {
+  const value = env.PATHEXT || env.Pathext || ".COM;.EXE;.BAT;.CMD";
+  return value
+    .split(";")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function executableFile(path) {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function resolveWindowsProgram(program, cwd, env) {
+  const pathValue = env.PATH || env.Path || env.path || "";
+  const extensions = windowsPathExt(env);
+  const hasExtension = extname(program) !== "";
+  const explicitPath = isAbsolute(program) || /[\\/]/.test(program);
+  const roots = explicitPath ? [cwd] : pathValue.split(delimiter).filter(Boolean);
+  for (const root of roots) {
+    const base = explicitPath ? (isAbsolute(program) ? program : resolve(cwd, program)) : join(root, program);
+    const candidates = hasExtension ? [base] : [base, ...extensions.map((extension) => `${base}${extension}`)];
+    for (const candidate of candidates) {
+      if (executableFile(candidate)) return candidate;
+    }
+  }
+  throw new Error(`File not found: ${program}`);
+}
+
+function cmdQuote(value) {
+  const meta = '&()[]{}^=;!\'+,`~|<>"';
+  if (!Array.from(value).some((character) => /\s/.test(character) || meta.includes(character))) return value;
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+function resolvePtyCommand(program, argv, cwd, env) {
+  if (process.platform !== "win32") return { program, argv };
+  const resolved = resolveWindowsProgram(program, cwd, env);
+  const extension = extname(resolved).toLowerCase();
+  if (extension !== ".cmd" && extension !== ".bat") return { program: resolved, argv };
+  const command = [cmdQuote(resolved), ...argv.map((item) => cmdQuote(String(item)))].join(" ");
+  return { program: env.ComSpec || env.COMSPEC || "C:\\Windows\\System32\\cmd.exe", argv: ["/d", "/s", "/c", command] };
+}
+
 function parseRequest(socket, initial) {
   let buffer = initial;
   const onData = (chunk) => {
@@ -133,6 +204,10 @@ function parseRequest(socket, initial) {
 }
 
 async function handleRequest(socket, request, rest) {
+  if (request.token !== spec.ipcToken) {
+    socket.end(`${JSON.stringify({ ok: false, error: "unauthorized" })}\n`);
+    return;
+  }
   if (request.op === "write") {
     if (finished) {
       socket.end(`${JSON.stringify({ ok: false, error: "session_exited" })}\n`);
@@ -188,15 +263,18 @@ async function main() {
   const pty = await import("node-pty");
   const program = spec.argv[0];
   if (!program) throw new Error("interactive argv is empty");
-  ptyProcess = pty.spawn(program, spec.argv.slice(1), {
+  const childEnv = { ...process.env, ...spec.env };
+  const command = resolvePtyCommand(program, spec.argv.slice(1), spec.cwd, childEnv);
+  ptyProcess = pty.spawn(command.program, command.argv, {
     name: process.env.TERM || "xterm-256color",
     cols: spec.columns,
     rows: spec.rows,
     cwd: spec.cwd,
-    env: { ...process.env, ...spec.env },
+    env: childEnv,
   });
   ptyProcess.onData(appendOutput);
   ptyProcess.onExit(({ exitCode, signal }) => {
+    exitObserved = true;
     const settle = setTimeout(() => {
       finished = true;
       writeFileSync(drainPath, "", { mode: 0o600 });
@@ -219,18 +297,28 @@ async function main() {
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(socketPath, () => {
-      chmodSync(socketPath, 0o600);
+      if (process.platform !== "win32") chmodSync(socketPath, 0o600);
       resolve();
     });
   });
-  writeStatus({ status: "running", exit_code: null, signal: null, reason: null, started_at: new Date().toISOString() });
 
-  const deadlineDelay = new Date(spec.deadlineAt).getTime() - Date.now();
-  if (Number.isFinite(deadlineDelay)) {
-    if (deadlineDelay <= 0) terminate("deadline_exceeded", 0);
-    else {
-      const deadlineTimer = setTimeout(() => terminate("deadline_exceeded", 500), deadlineDelay);
-      deadlineTimer.unref();
+  if (process.platform === "win32" && !exitObserved && ptyProcess.pid <= 0) {
+    const pidDeadline = Date.now() + 1_500;
+    while (!exitObserved && ptyProcess.pid <= 0 && Date.now() < pidDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  if (!exitObserved) {
+    const deadlineDelay = new Date(spec.deadlineAt).getTime() - Date.now();
+    if (Number.isFinite(deadlineDelay) && deadlineDelay <= 0) {
+      terminate("deadline_exceeded", 0);
+    } else if (!terminationReason) {
+      writeStatus({ status: "running", exit_code: null, signal: null, reason: null, started_at: new Date().toISOString() });
+      if (Number.isFinite(deadlineDelay)) {
+        const deadlineTimer = setTimeout(() => terminate("deadline_exceeded", 0), deadlineDelay);
+        deadlineTimer.unref();
+      }
     }
   }
 }

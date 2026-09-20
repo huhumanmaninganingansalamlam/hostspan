@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createOAuthSetup, OAuthService, rotateOAuthApprovalSecret } from "../auth/oauth-service.js";
 import { buildAdminSnapshot, resolveTerminalSession } from "../admin/snapshot.js";
 import type { HostSpanConfig } from "../config/schema.js";
 import { loadConfig } from "../config/loader.js";
+import { defaultConfigPath, defaultDataDir } from "../config/paths.js";
 import { writeConfigAtomic } from "../config/writer.js";
 import { gitChanges } from "../files/git-changes.js";
 import { fileList } from "../files/list.js";
@@ -48,7 +48,7 @@ import { TransactionsRepo } from "../state/transactions-repo.js";
 import { TargetRegistry } from "../targets/registry.js";
 import { PROTOCOL_VERSION, SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
 import { runDoctor } from "./doctor.js";
-import { daemonStatus, removeDaemonPid, startDaemon, stopDaemon, writeDaemonPid } from "./daemon.js";
+import { daemonStatus, removeDaemonPid, startDaemon, startDaemonControlServer, stopDaemon, writeDaemonPid } from "./daemon.js";
 import { installSystemdService, runServiceCommand } from "./service.js";
 import { runSmoke } from "./smoke.js";
 
@@ -81,7 +81,7 @@ export function runtimeReadiness(runtime: HostSpanRuntime) {
   } catch {
     databaseReady = false;
   }
-  const processReady = process.platform === "linux";
+  const processReady = (process.platform === "linux" || process.platform === "win32") && process.arch === "x64";
   const searchReady = runtime.searchBackendReady();
   const terminalReady = runtime.config.terminal ? runtime.terminalBackendReady() : true;
   return {
@@ -96,10 +96,6 @@ export function runtimeReadiness(runtime: HostSpanRuntime) {
       terminal: terminalReady,
     },
   };
-}
-
-function defaultConfigPath(): string {
-  return process.env.HOSTSPAN_CONFIG ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "hostspan", "config.yaml");
 }
 
 function flag(args: string[], name: string): string | undefined {
@@ -136,7 +132,7 @@ function cachedNodeModuleProbe(specifier: string, ttlMs = 5_000): () => boolean 
     if (checkedAt === 0 || now - checkedAt >= ttlMs) {
       const script = `import(${JSON.stringify(specifier)}).then(()=>process.exit(0)).catch(()=>process.exit(1))`;
       ready =
-        ["linux", "darwin"].includes(process.platform) &&
+        ["linux", "darwin", "win32"].includes(process.platform) &&
         spawnSync(process.execPath, ["-e", script], {
           stdio: "ignore",
           env: { ...process.env, ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}) },
@@ -266,7 +262,10 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
           backends: {
             search: { name: "ripgrep", ready: searchReady },
             database: { name: "sqlite", ready: databaseResponsive(db) },
-            process: { name: "linux_process_group", ready: process.platform === "linux" },
+            process: {
+              name: process.platform === "win32" ? "windows_process_tree" : "posix_process_group",
+              ready: (process.platform === "linux" || process.platform === "win32") && process.arch === "x64",
+            },
             terminal: { name: "hostspan_pty", ready: terminalReady, configured: Boolean(config.terminal) },
             search_concurrency: searchLimiter.snapshot(),
           },
@@ -366,7 +365,7 @@ function initialConfig(): HostSpanConfig {
       listen_host: "127.0.0.1",
       listen_port: 39393,
       allowed_hosts: [],
-      data_dir: join(homedir(), ".local", "state", "hostspan"),
+      data_dir: defaultDataDir(),
       max_inflight_mcp_requests: 128,
       max_concurrent_searches: 8,
       max_queued_searches: 16,
@@ -536,6 +535,21 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       trace: (event, metadata) => runtime.logger.info(event, metadata),
     });
     const address = await listenHostSpan(app, runtime.config.server.listen_host, runtime.config.server.listen_port);
+    let requestShutdown!: () => void;
+    const shutdownRequested = new Promise<void>((resolveShutdown) => {
+      requestShutdown = resolveShutdown;
+    });
+    const control = await startDaemonControlServer(configPath, requestShutdown);
+    const shutdown = async () => {
+      try {
+        await runtime.supervisor.shutdown();
+        await app.close();
+        runtime.close();
+      } finally {
+        await control.close();
+        removeDaemonPid(configPath);
+      }
+    };
     writeDaemonPid(configPath);
     print({
       ok: true,
@@ -549,22 +563,13 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       native_execution: true,
       sandboxed: false,
     });
-    const shutdown = async () => {
-      try {
-        await runtime.supervisor.shutdown();
-        await app.close();
-        runtime.close();
-      } finally {
-        removeDaemonPid(configPath);
-      }
-    };
-    await new Promise<void>((resolveShutdown) => {
-      const onSignal = () => {
-        void shutdown().finally(resolveShutdown);
-      };
-      process.once("SIGINT", onSignal);
-      process.once("SIGTERM", onSignal);
-    });
+    const onSignal = () => requestShutdown();
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
+    await shutdownRequested;
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+    await shutdown();
     return 0;
   }
   if (command === "status") {

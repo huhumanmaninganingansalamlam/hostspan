@@ -71,6 +71,7 @@ function sha256(buffer: Uint8Array | string): string {
 }
 
 function fsyncDirectory(path: string): void {
+  if (process.platform === "win32") return;
   const fd = openSync(path, "r");
   try {
     fsyncSync(fd);
@@ -84,7 +85,7 @@ function writeJsonAtomic(path: string, value: unknown): void {
   const temp = `${path}.tmp-${process.pid}-${Date.now()}`;
   try {
     writeFileSync(temp, `${JSON.stringify(value)}\n`, { mode: 0o600 });
-    const fd = openSync(temp, "r");
+    const fd = openSync(temp, "r+");
     try {
       fsyncSync(fd);
     } finally {
@@ -161,7 +162,7 @@ function atomicReplace(target: TargetRuntime, relativePath: string, content: Buf
   try {
     writeFileSync(temp, content, { mode: mode & 0o777 });
     chmodSync(temp, mode & 0o777);
-    const fd = openSync(temp, "r");
+    const fd = openSync(temp, "r+");
     try {
       fsyncSync(fd);
     } finally {
@@ -169,14 +170,14 @@ function atomicReplace(target: TargetRuntime, relativePath: string, content: Buf
     }
     const rechecked = recheckTargetPath(target, relativePath, "write");
     if (rechecked.absolute !== before.absolute) throw new HostSpanError("PATH_OUTSIDE_TARGET", "Path changed while preparing atomic replace.");
-    assertDirectoryStillCurrent(target, parentRelative, parent.fd, "write");
+    assertDirectoryStillCurrent(target, parentRelative, parent, "write");
     renameSync(temp, destination);
-    fsyncSync(parent.fd);
+    if (parent.fd !== null) fsyncSync(parent.fd);
     recheckTargetPath(target, relativePath, "write");
-    assertDirectoryStillCurrent(target, parentRelative, parent.fd, "write");
+    assertDirectoryStillCurrent(target, parentRelative, parent, "write");
   } finally {
     rmSync(temp, { force: true });
-    closeSync(parent.fd);
+    if (parent.fd !== null) closeSync(parent.fd);
   }
 }
 

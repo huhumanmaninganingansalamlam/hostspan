@@ -54,6 +54,7 @@ function packagedPaths(asarPath, platform) {
 			cli: join(asarPath, "dist", "src", "cli", "index.js"),
 			nativeModule: join(asarPath, "node_modules", "better-sqlite3"),
 			ptyModule: join(asarPath, "node_modules", "node-pty"),
+			jobModule: join(asarPath, "dist", "src", "processes", "windows-job-process.js"),
 		};
 	}
 	const appDir = dirname(resourcesDir);
@@ -65,6 +66,7 @@ function packagedPaths(asarPath, platform) {
 		cli: join(asarPath, "dist", "src", "cli", "index.js"),
 		nativeModule: join(asarPath, "node_modules", "better-sqlite3"),
 		ptyModule: join(asarPath, "node_modules", "node-pty"),
+		jobModule: join(asarPath, "dist", "src", "processes", "windows-job-process.js"),
 	};
 }
 
@@ -108,29 +110,19 @@ function smokeWindowsPackage(executable, asarPath, arch) {
 		throw new Error(
 			`Packaged Windows native binding not found: ${nativeBinding}`,
 		);
+	const ptyBinding = join(
+		`${asarPath}.unpacked`,
+		"node_modules",
+		"node-pty",
+		"prebuilds",
+		`win32-${arch}`,
+		"conpty.node",
+	);
+	if (!existsSync(ptyBinding))
+		throw new Error(`Packaged Windows ConPTY binding not found: ${ptyBinding}`);
 }
 
-const candidates = findFiles(outDir, "app.asar").filter(
-	(path) => {
-		if (targetPlatform === "win32") return path.includes("win-unpacked");
-		if (targetPlatform === "darwin") return path.includes(".app");
-		return path.includes("linux-unpacked");
-	},
-);
-if (candidates.length === 0)
-	throw new Error(`No ${targetPlatform}/${targetArch} Electron app.asar was found under ${outDir}.`);
-
-const asarPath = candidates[0];
-const { executable, cli, nativeModule, ptyModule } = packagedPaths(asarPath, targetPlatform);
-if (!existsSync(executable))
-	throw new Error(`Packaged executable not found: ${executable}`);
-
-if (targetPlatform !== "win32") {
-	if (targetPlatform !== process.platform || targetArch !== process.arch) {
-		throw new Error(
-			`Executable smoke requires the target runtime (${targetPlatform}/${targetArch}); current runtime is ${process.platform}/${process.arch}.`,
-		);
-	}
+function smokePackagedRuntime(executable, cli, nativeModule, ptyModule, jobModule) {
 	const version = run(executable, [cli, "--version"]);
 	if (version !== packageJson.version) {
 		throw new Error(
@@ -159,6 +151,19 @@ if (targetPlatform !== "win32") {
 	if (pty !== "pty-ok")
 		throw new Error(`Unexpected PTY probe output: ${pty}`);
 
+	if (targetPlatform === "win32") {
+		const jobProbe = [
+			"const {pathToFileURL}=require('node:url');",
+			`import(pathToFileURL(${JSON.stringify(jobModule)}).href).then(m=>{`,
+			"const r=m.windowsJobObjectProbe();",
+			"if(!r.ok){console.error(r.details);process.exit(5);}",
+			"process.stdout.write('job-ok');",
+			"}).catch(e=>{console.error(e);process.exit(6);});",
+		].join("");
+		const job = run(executable, ["-e", jobProbe]);
+		if (job !== "job-ok") throw new Error(`Unexpected Job Object probe output: ${job}`);
+	}
+
 	const scratch = mkdtempSync(join(tmpdir(), "hostspan-packaged-smoke-"));
 	try {
 		const configPath = join(scratch, "config.yaml");
@@ -183,9 +188,34 @@ if (targetPlatform !== "win32") {
 	);
 }
 
+const candidates = findFiles(outDir, "app.asar").filter(
+	(path) => {
+		if (targetPlatform === "win32") return path.includes("win-unpacked");
+		if (targetPlatform === "darwin") return path.includes(".app");
+		return path.includes("linux-unpacked");
+	},
+);
+if (candidates.length === 0)
+	throw new Error(`No ${targetPlatform}/${targetArch} Electron app.asar was found under ${outDir}.`);
+
+const asarPath = candidates[0];
+const { executable, cli, nativeModule, ptyModule, jobModule } = packagedPaths(asarPath, targetPlatform);
+if (!existsSync(executable))
+	throw new Error(`Packaged executable not found: ${executable}`);
+
 if (targetPlatform === "win32") {
 	smokeWindowsPackage(executable, asarPath, targetArch);
-	console.log(
-		`Packaged HostSpan Windows shell smoke passed: ${targetArch} ${packageJson.version}`,
+	if (targetPlatform !== process.platform || targetArch !== process.arch) {
+		console.log(
+			`Packaged HostSpan Windows static smoke passed: ${targetArch} ${packageJson.version}`,
+		);
+	}
+}
+
+if (targetPlatform === process.platform && targetArch === process.arch) {
+	smokePackagedRuntime(executable, cli, nativeModule, ptyModule, jobModule);
+} else if (targetPlatform !== "win32") {
+	throw new Error(
+		`Executable smoke requires the target runtime (${targetPlatform}/${targetArch}); current runtime is ${process.platform}/${process.arch}.`,
 	);
 }

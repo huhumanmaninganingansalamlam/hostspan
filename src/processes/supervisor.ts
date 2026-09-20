@@ -12,8 +12,9 @@ import type { ProcessesRepo, ProcessState } from "../state/processes-repo.js";
 import type { TargetRegistry } from "../targets/registry.js";
 import { resolveTargetPath } from "../files/path-guard.js";
 import { OutputSpool } from "./output-spool.js";
-import { processGroupAlive } from "./recovery.js";
+import { processGroupAlive, signalProcessGroup } from "./recovery.js";
 import type { InteractiveSessionManager } from "./interactive-session.js";
+import { spawnWindowsJobProcess, type WindowsJobReceipt } from "./windows-job-process.js";
 
 const TERMINAL_STATES = new Set<ProcessState>(["succeeded", "failed", "timed_out", "cancelled", "orphaned", "unknown"]);
 
@@ -24,6 +25,8 @@ interface RuntimeProcess {
   spool: OutputSpool;
   terminal: Promise<void>;
   resolveTerminal: () => void;
+  closed: Promise<void>;
+  resolveClosed: () => void;
   deadlineTimer?: NodeJS.Timeout;
   terminating: boolean;
   exitCode: number | null;
@@ -47,14 +50,27 @@ async function waitForGroupGone(pgid: number, timeoutMs: number): Promise<boolea
   return !processGroupAlive(pgid);
 }
 
-function safeKillGroup(pgid: number | null, signal: NodeJS.Signals): void {
-  if (!pgid || pgid <= 0) return;
-  try {
-    process.kill(-pgid, signal);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "ESRCH") throw error;
+async function waitForWindowsProcessGone(pid: number | null, timeoutMs: number): Promise<boolean> {
+  if (process.platform !== "win32" || !pid || pid <= 0) return true;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    await sleep(20);
   }
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function safeKillGroup(pgid: number | null, signal: NodeJS.Signals): void {
+  signalProcessGroup(pgid, signal);
 }
 
 export interface ProcessSupervisorOptions {
@@ -143,6 +159,10 @@ export class ProcessSupervisor {
       this.finalize(processId, "unknown", record.exit_code, record.term_signal, "interactive_session_missing_after_terminate");
       return "unknown";
     }
+    if (!settled.dead) {
+      this.finalize(processId, "unknown", record.exit_code, record.term_signal, "interactive_session_still_running_after_terminate");
+      return "unknown";
+    }
     this.finalize(processId, state, settled.exit_code, settled.signal, reason);
     return state;
   }
@@ -164,15 +184,30 @@ export class ProcessSupervisor {
       safeKillGroup(record.pgid, "SIGKILL");
       gone = record.pgid ? await waitForGroupGone(record.pgid, 1_000) : true;
     }
-    if (runtime?.child.exitCode === null && runtime?.child.signalCode === null) {
-      // Give Node one event-loop turn to reap a child whose process group just disappeared.
-      await Promise.race([runtime.terminal, sleep(25)]);
+    if (runtime) {
+      // On Windows, Job Object kill-on-close can make the worker PID disappear
+      // before Node has closed inherited stdio handles. Completion must wait
+      // for the child_process `close` event so target directories are no longer
+      // held open when cancel/deadline returns.
+      await Promise.race([runtime.closed, sleep(process.platform === "win32" ? 1_500 : 250)]);
+    }
+    const windowsTargetGone = await waitForWindowsProcessGone(record.pid, 1_500);
+    if (process.platform === "win32" && windowsTargetGone) {
+      // Job Object termination is kernel-owned, but process teardown can
+      // release cwd/file handles a moment after the target PID disappears.
+      // Do not return cancellation while ordinary follow-up file operations
+      // are still racing that teardown.
+      await sleep(100);
     }
     const refreshedRuntime = this.runtimes.get(processId);
     const exitCode = refreshedRuntime?.exitCode ?? this.options.processes.get(processId)?.exit_code ?? null;
     const signal = refreshedRuntime?.exitSignal ?? this.options.processes.get(processId)?.term_signal ?? null;
     if (!gone) {
       this.finalize(processId, "orphaned", exitCode, signal, `${reason}:process_group_still_alive`);
+      return "orphaned";
+    }
+    if (!windowsTargetGone) {
+      this.finalize(processId, "orphaned", exitCode, signal, `${reason}:windows_job_target_still_alive`);
       return "orphaned";
     }
     this.finalize(processId, state, exitCode, signal, reason);
@@ -391,6 +426,7 @@ export class ProcessSupervisor {
     });
 
     let child: SupervisedChild;
+    let windowsReady: Promise<WindowsJobReceipt> | undefined;
     try {
       const env: NodeJS.ProcessEnv = {
         PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
@@ -399,13 +435,25 @@ export class ProcessSupervisor {
       };
       const program = input.argv[0];
       if (!program) throw new HostSpanError("SCOPE_DENIED", "Process argv must include a program.");
-      child = spawn(program, input.argv.slice(1), {
-        cwd: cwd.absolute,
-        env,
-        shell: false,
-        detached: true,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      if (process.platform === "win32") {
+        const launched = spawnWindowsJobProcess({
+          dataDir: this.options.config.server.data_dir,
+          processId,
+          cwd: cwd.absolute,
+          argv: input.argv,
+          env,
+        });
+        child = launched.child;
+        windowsReady = launched.ready;
+      } else {
+        child = spawn(program, input.argv.slice(1), {
+          cwd: cwd.absolute,
+          env,
+          shell: false,
+          detached: true,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      }
     } catch (error) {
       this.options.processes.markTerminal(processId, "failed", null, null, "spawn_failed", this.expiresAt());
       this.options.operations.setState(input.idempotency_key, "failed", { state: "failed", process_id: processId, reason: "spawn_failed" }, error);
@@ -416,11 +464,17 @@ export class ProcessSupervisor {
     const terminal = new Promise<void>((resolve) => {
       resolveTerminal = resolve;
     });
+    let resolveClosed!: () => void;
+    const closed = new Promise<void>((resolve) => {
+      resolveClosed = resolve;
+    });
     const runtime: RuntimeProcess = {
       child,
       spool: new OutputSpool(this.options.config.server.data_dir, processId, input.max_output_bytes),
       terminal,
       resolveTerminal,
+      closed,
+      resolveClosed,
       terminating: false,
       exitCode: null,
       exitSignal: null,
@@ -439,36 +493,69 @@ export class ProcessSupervisor {
     child.stdout.on("data", (chunk: Buffer) => onOutput("stdout", chunk));
     child.stderr.on("data", (chunk: Buffer) => onOutput("stderr", chunk));
 
-    child.once("spawn", () => {
-      const pid = child.pid;
-      if (!pid) {
-        this.finalize(processId, "unknown", null, null, "spawn_receipt_missing_pid");
-        return;
-      }
-      this.options.processes.markRunning(processId, pid, pid);
+    const markRunning = (pid: number, groupId: number): void => {
+      const current = this.options.processes.get(processId);
+      if (!current || TERMINAL_STATES.has(current.state)) return;
+      this.options.processes.markRunning(processId, pid, groupId);
       this.options.operations.setState(input.idempotency_key, "running", { state: "running", process_id: processId });
-      this.options.logger?.info("process.started", { request_id: requestId, process_id: processId, pid, pgid: pid });
+      this.options.logger?.info("process.started", { request_id: requestId, process_id: processId, pid, pgid: groupId });
       runtime.deadlineTimer = setTimeout(() => {
-        void this.terminate(processId, "timed_out", "deadline_exceeded", 1_000);
+        void this.terminate(processId, "timed_out", "deadline_exceeded", process.platform === "win32" ? 0 : 1_000);
       }, input.deadline_ms);
       runtime.deadlineTimer.unref();
-    });
+    };
 
     child.once("error", (error) => {
+      runtime.resolveClosed();
       if (runtime.terminating) return;
       runtime.terminating = true;
       this.finalize(processId, "failed", null, null, `spawn_error:${error.message}`);
     });
 
-    child.once("exit", (code, signal) => {
+    child.once("close", (code, signal) => {
       runtime.exitCode = code;
       runtime.exitSignal = signal;
+      runtime.resolveClosed();
       if (runtime.terminating) return;
       const state: ProcessState = code === 0 ? "succeeded" : "failed";
       this.finalize(processId, state, code, signal, code === 0 ? null : "nonzero_exit");
     });
 
+    if (windowsReady) {
+      try {
+        const receipt = await windowsReady;
+        markRunning(receipt.targetPid, receipt.workerPid);
+      } catch (error) {
+        runtime.terminating = true;
+        if (child.pid) {
+          try {
+            process.kill(child.pid, "SIGKILL");
+          } catch {
+            // The worker may already have exited after reporting launch failure.
+          }
+        }
+        const current = this.options.processes.get(processId);
+        if (current && !TERMINAL_STATES.has(current.state)) {
+          this.finalize(processId, "failed", null, null, `spawn_error:${error instanceof Error ? error.message : String(error)}`);
+        }
+        throw error;
+      }
+    } else {
+      child.once("spawn", () => {
+        const pid = child.pid;
+        if (!pid) {
+          this.finalize(processId, "unknown", null, null, "spawn_receipt_missing_pid");
+          return;
+        }
+        markRunning(pid, pid);
+      });
+    }
+
     await this.waitForTerminal(processId, input.wait_ms);
+    const afterWait = this.options.processes.get(processId);
+    if (afterWait && !TERMINAL_STATES.has(afterWait.state) && deadlineAt <= new Date().toISOString()) {
+      await this.terminate(processId, "timed_out", "deadline_exceeded", process.platform === "win32" ? 0 : 1_000);
+    }
     return this.snapshot(processId, 0, 0, Math.min(input.max_output_bytes, 131_072));
   }
 

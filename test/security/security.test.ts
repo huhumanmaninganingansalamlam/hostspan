@@ -167,7 +167,7 @@ describe("security and operational boundaries", () => {
         {
           idempotency_key: uuidv7(),
           target_id: "local",
-          argv: ["bash", "-lc", "printf '%s' \"$HOSTSPAN_TEST_ENV\""],
+          argv: [process.execPath, "-e", "process.stdout.write(process.env.HOSTSPAN_TEST_ENV ?? '')"],
           cwd: ".",
           env: { HOSTSPAN_TEST_ENV: "terminal-authority-ok" },
           wait_ms: 1_000,
