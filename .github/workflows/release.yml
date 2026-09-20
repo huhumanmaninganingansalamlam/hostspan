@@ -119,6 +119,12 @@ jobs:
           actual="$(node -p 'process.arch')"
           expected="${{ matrix.arch }}"
           test "$actual" = "$expected" || { echo "Runner architecture $actual does not match expected $expected"; exit 1; }
+      - name: Core gate
+        run: pnpm check
+      - name: Audit production dependencies
+        run: pnpm audit:prod
+      - name: Smoke installed CLI package
+        run: pnpm package:smoke
       - name: Build desktop artifacts
         run: pnpm desktop:make
         env:

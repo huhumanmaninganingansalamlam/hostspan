@@ -8,9 +8,26 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+  core:
+    name: Core ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x64
+            os: ubuntu-24.04
+            arch: x64
+          - label: Windows x64
+            os: windows-latest
+            arch: x64
+          - label: macOS Apple Silicon
+            os: macos-14
+            arch: arm64
+          - label: macOS Intel
+            os: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/setup@v2
@@ -19,10 +36,14 @@ jobs:
           runtime: node@22
           cache: true
           install: false
-      - name: Install test dependencies
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
       - name: Install
         run: pnpm install --frozen-lockfile
+      - name: Verify runner architecture
+        shell: bash
+        run: |
+          actual="$(node -p 'process.arch')"
+          expected="${{ matrix.arch }}"
+          test "$actual" = "$expected" || { echo "Runner architecture $actual does not match expected $expected"; exit 1; }
       - name: Check
         run: pnpm check
       - name: Audit production dependencies
@@ -33,7 +54,7 @@ jobs:
   desktop-package-linux:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-    needs: test
+    needs: core
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/setup@v2

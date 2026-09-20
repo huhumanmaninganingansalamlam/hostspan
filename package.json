@@ -64,6 +64,7 @@
     "@modelcontextprotocol/fastify": "2.0.0",
     "@modelcontextprotocol/node": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
+    "@vscode/ripgrep": "1.18.0",
     "better-sqlite3": "13.0.3",
     "diff": "8.0.3",
     "fastify": "5.12.5",

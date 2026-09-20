@@ -1,4 +1,5 @@
-import { basename, resolve } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { basename, dirname, resolve } from "node:path";
 import type { ExecProfile, HostSpanConfig } from "../config/schema.js";
 import { HostSpanError } from "../mcp/errors.js";
 import type { TargetRuntime } from "../targets/registry.js";
@@ -17,11 +18,19 @@ function globRegex(glob: string): RegExp {
   return new RegExp(`^${pattern}$`);
 }
 
+function canonicalPolicyPath(path: string): string {
+  const absolute = resolve(path);
+  if (existsSync(absolute)) return realpathSync(absolute);
+  const parent = dirname(absolute);
+  if (existsSync(parent)) return resolve(realpathSync(parent), basename(absolute));
+  return absolute;
+}
+
 export class PolicyEvaluator {
   private readonly protectedPaths: Set<string>;
 
   constructor(private readonly config: HostSpanConfig, protectedPaths: string[] = []) {
-    this.protectedPaths = new Set(protectedPaths.map((path) => resolve(path)));
+    this.protectedPaths = new Set(protectedPaths.map(canonicalPolicyPath));
   }
 
   assertFileAllowed(target: TargetRuntime, relativePath: string, absolutePath: string, write = false): void {
@@ -29,7 +38,7 @@ export class PolicyEvaluator {
     if (target.deny_globs.some((glob) => globRegex(glob).test(normalized))) {
       throw new HostSpanError("SCOPE_DENIED", `Path is denied by target policy: ${relativePath}`);
     }
-    if (write && this.protectedPaths.has(resolve(absolutePath))) {
+    if (write && this.protectedPaths.has(canonicalPolicyPath(absolutePath))) {
       throw new HostSpanError("SCOPE_DENIED", "HostSpan admin configuration cannot be modified through MCP file tools.");
     }
   }

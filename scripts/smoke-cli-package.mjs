@@ -82,6 +82,8 @@ try {
   const configPath = join(scratch, "config", "config.yaml");
   const env = { HOSTSPAN_CONFIG: configPath };
   run(bin, ["init"], { env });
+  const doctor = JSON.parse(run(bin, ["doctor"], { env }));
+  if (doctor.ok !== true) throw new Error(`Installed CLI doctor failed: ${JSON.stringify(doctor.checks)}`);
   const snapshot = JSON.parse(run(bin, ["admin", "snapshot", "--recent", "1"], { env }));
   if (snapshot.server_version !== packageJson.version) {
     throw new Error(`Installed admin snapshot version ${snapshot.server_version} does not match package.json ${packageJson.version}`);

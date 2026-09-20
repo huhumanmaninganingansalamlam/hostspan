@@ -247,5 +247,5 @@ describe("HostSpan Alpha acceptance", () => {
     } finally {
       runtime.close();
     }
-  }, 30_000);
+  }, process.platform === "win32" ? 120_000 : 30_000);
 });

@@ -1,6 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { closeSync, mkdirSync, openSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { loadConfig } from "../config/loader.js";
 import type { HostSpanConfig } from "../config/schema.js";
 import { databaseHealthy, openDatabase } from "../state/database.js";
@@ -8,6 +10,7 @@ import { TargetRegistry } from "../targets/registry.js";
 import { TOOL_NAMES, TOOLSET_HASH } from "../mcp/registry.js";
 import { processGroupAlive, signalProcessGroup } from "../processes/recovery.js";
 import { windowsJobObjectProbe } from "../processes/windows-job-process.js";
+import { ripgrepExecutable } from "../files/ripgrep.js";
 import { PROTOCOL_VERSION, SERVER_VERSION } from "../version.js";
 
 export interface DoctorCheck {
@@ -24,21 +27,25 @@ export interface DoctorReport {
   checks: DoctorCheck[];
 }
 
-function commandCheck(command: string, args: string[]): DoctorCheck {
+function commandCheck(command: string, args: string[], name = command): DoctorCheck {
   const result = spawnSync(command, args, { encoding: "utf8" });
   if (result.error || result.status !== 0) {
-    return { name: command, status: "fail", details: result.error?.message ?? result.stderr?.trim() ?? `${command} exited ${result.status}` };
+    return { name, status: "fail", details: result.error?.message ?? result.stderr?.trim() ?? `${command} exited ${result.status}` };
   }
-  return { name: command, status: "pass", details: result.stdout.trim().split("\n")[0] ?? "available" };
+  return { name, status: "pass", details: result.stdout.trim().split("\n")[0] ?? "available" };
 }
 
 function ptyRuntimeCheck(): DoctorCheck {
   if (!(["linux", "darwin", "win32"] as NodeJS.Platform[]).includes(process.platform)) {
     return { name: "pty_runtime", status: "fail", details: `PTY runtime is unsupported on ${process.platform}.` };
   }
+  const nodePtyUrl = pathToFileURL(createRequire(import.meta.url).resolve("node-pty")).href;
   const result = spawnSync(
     process.execPath,
-    ["-e", "import('node-pty').then(m=>process.exit(typeof m.spawn==='function'?0:2)).catch(()=>process.exit(1))"],
+    [
+      "-e",
+      `import(${JSON.stringify(nodePtyUrl)}).then(m=>process.exit(typeof m.spawn==='function'?0:2)).catch(error=>{console.error(error?.stack||String(error));process.exit(1)})`,
+    ],
     {
       encoding: "utf8",
       env: { ...process.env, ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}) },
@@ -52,7 +59,7 @@ function ptyRuntimeCheck(): DoctorCheck {
 }
 
 async function processGroupCheck(): Promise<DoctorCheck> {
-  if (process.platform !== "linux" && process.platform !== "win32") {
+  if (process.platform !== "linux" && process.platform !== "darwin" && process.platform !== "win32") {
     return { name: "process_tree", status: "fail", details: `Native process-tree control is not qualified on ${process.platform}.` };
   }
   if (process.platform === "win32") {
@@ -92,10 +99,14 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
   });
   checks.push({
     name: "platform",
-    status: (process.platform === "linux" || process.platform === "win32") && process.arch === "x64" ? "pass" : "fail",
-    details: "Qualified core targets are Linux x64 and native Windows x64; WSL2 is treated as Linux.",
+    status:
+      ((process.platform === "linux" || process.platform === "win32") && process.arch === "x64") ||
+      (process.platform === "darwin" && (process.arch === "x64" || process.arch === "arm64"))
+        ? "pass"
+        : "fail",
+    details: "Qualified core targets are Linux x64, native Windows x64, and macOS x64/arm64; WSL2 is treated as Linux.",
   });
-  checks.push(commandCheck("rg", ["--version"]));
+  checks.push(commandCheck(ripgrepExecutable(), ["--version"], "rg"));
   checks.push(commandCheck("git", ["--version"]));
 
   let config: HostSpanConfig;

@@ -5,6 +5,7 @@ import { statSync } from "node:fs";
 import { HostSpanError } from "../mcp/errors.js";
 import type { TargetRuntime } from "../targets/registry.js";
 import { resolveTargetPath } from "./path-guard.js";
+import { ripgrepExecutable } from "./ripgrep.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -133,7 +134,7 @@ export async function fileSearch(target: TargetRuntime, input: FileSearchInput) 
   args.push("--", input.query, ...searchPaths);
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync("rg", args, {
+    ({ stdout } = await execFileAsync(ripgrepExecutable(), args, {
       cwd: target.root_real,
       encoding: "utf8",
       timeout: input.deadline_ms,

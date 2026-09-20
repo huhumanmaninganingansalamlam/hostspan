@@ -2,6 +2,7 @@ import { constants, lstatSync, openSync, closeSync, realpathSync, existsSync, st
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { HostSpanError } from "../mcp/errors.js";
 import type { TargetRuntime } from "../targets/registry.js";
+import { darwinOpenAt } from "./darwin-fs.js";
 
 export type PathIntent = "list" | "read" | "search" | "write" | "exec";
 
@@ -127,7 +128,7 @@ export function openDirectoryNoFollow(target: TargetRuntime, input: string, inte
     return {
       fd,
       path: rechecked,
-      stable_path: directoryHandlePath(fd),
+      stable_path: process.platform === "linux" ? directoryHandlePath(fd) : rechecked.absolute,
       dev: opened.dev.toString(),
       ino: opened.ino.toString(),
     };
@@ -163,10 +164,14 @@ export function openReadNoFollow(
   const parent = openDirectoryNoFollow(target, parentRelative, "read");
   try {
     afterParentOpen?.();
-    const fd = openSync(
-      process.platform === "win32" ? guarded.absolute : join(parent.stable_path, basename(guarded.relative)),
-      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
-    );
+    const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
+    const fd =
+      process.platform === "darwin"
+        ? (() => {
+            if (parent.fd === null) throw new HostSpanError("POLICY_UNENFORCEABLE", "Darwin directory handle is unavailable.");
+            return darwinOpenAt(parent.fd, basename(guarded.relative), flags);
+          })()
+        : openSync(process.platform === "win32" ? guarded.absolute : join(parent.stable_path, basename(guarded.relative)), flags);
     try {
       const rechecked = resolveTargetPath(target, input, "read");
       assertDirectoryStillCurrent(target, parentRelative, parent, "read");

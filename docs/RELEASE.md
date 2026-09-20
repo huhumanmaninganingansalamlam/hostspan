@@ -5,7 +5,7 @@
 - Version: `0.3.0-alpha.1`
 - Toolset: `hostspan-v3`
 - MCP protocol target: `2026-07-28`
-- Qualified core platforms: Linux x64 (Ubuntu 24.04 LTS / WSL2) and native Windows x64
+- Qualified core platforms: Linux x64 (Ubuntu 24.04 LTS / WSL2), native Windows x64, and native macOS x64
 - Client target: ChatGPT Web Developer Mode
 - Transport: loopback HostSpan + OpenAI Secure MCP Tunnel; optional user-managed HTTPS reverse proxy/ingress
 
@@ -46,23 +46,23 @@
 
 ## Explicitly excluded
 
-Multi-host routing, complete native macOS core qualification, GUI/browser computer-use, LSP/CodeGraph, MCP aggregation, scheduler, and an OS sandbox. The small tray/dashboard is a local management surface, not computer-use automation.
+Multi-host routing, GUI/browser computer-use, LSP/CodeGraph, MCP aggregation, scheduler, and an OS sandbox. The small tray/dashboard is a local management surface, not computer-use automation.
 
 ## Known post-Alpha work
 
 - configure Windows Authenticode and Apple Developer ID/notarization secrets for signed public downloads;
-- qualify the remaining native macOS core separately from the PTY terminal contract;
+- qualify macOS arm64 on the matching release runner and add signing/notarization credentials;
 - continue Windows file/ACL hardening beyond the current Alpha path/reparse/identity checks; WSL2 remains a Linux runtime and is not native Windows qualification;
 - extend soak duration from the current functional/concurrency evidence to multi-day steady-state runs;
 - add bounded JSONL rotation/archival for always-on installations (SQLite audit rows are already age/count bounded).
 
-These items do not require additional MCP tools. The v3 Alpha qualifies Linux x64 plus native Windows x64 process/terminal paths.
+These items do not require additional MCP tools. The v3 Alpha qualifies Linux x64, native Windows x64, and native macOS x64 core paths.
 
 ## Compatibility and migration
 
 `hostspan-v3` exposes the fixed 11-tool durable PTY lifecycle. Tool description/schema metadata is part of `toolset_hash`; refresh the ChatGPT app after upgrading.
 
-`0.3.0-alpha.1` uses HostSpan-owned durable PTY session workers, adds native Windows ConPTY/Job Object execution, keeps workspace/capability configuration restart-gated, and retains fail-closed OAuth for non-loopback serving. Linux x64 and native Windows x64 both run the full test/build gate; native macOS x64 has separately passed the PTY session suite, CLI tarball smoke, and packaged runtime smoke.
+`0.3.0-alpha.1` uses HostSpan-owned durable PTY session workers, adds native Windows ConPTY/Job Object execution, keeps workspace/capability configuration restart-gated, and retains fail-closed OAuth for non-loopback serving. Linux x64, native Windows x64, and native macOS x64 all pass their full applicable test/build gates. macOS x64 additionally passes fresh installed CLI doctor/full smoke, PTY start/write/exit, packaged runtime smoke, and installed menu-bar app verification.
 
 Config schema remains version 1 with `terminal.backend: pty` as the only interactive backend. The durable database schema remains version 4. Database initialization uses WAL and backs up an existing database before migration.
 

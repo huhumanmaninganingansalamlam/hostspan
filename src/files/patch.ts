@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import {
   chmodSync,
   closeSync,
+  constants,
   existsSync,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   mkdirSync,
@@ -28,6 +30,7 @@ import {
   openReadNoFollow,
   recheckTargetPath,
 } from "./path-guard.js";
+import { darwinOpenAt, darwinRenameAt, darwinUnlinkAtIfExists } from "./darwin-fs.js";
 import { sha256File } from "./read.js";
 
 interface PreparedFile {
@@ -157,26 +160,51 @@ function atomicReplace(target: TargetRuntime, relativePath: string, content: Buf
   const before = recheckTargetPath(target, relativePath, "write");
   const parentRelative = dirname(before.relative);
   const parent = openDirectoryNoFollow(target, parentRelative, "write");
-  const temp = join(parent.stable_path, `.hostspan-${process.pid}-${uuidv7()}.tmp`);
-  const destination = join(parent.stable_path, basename(before.relative));
+  const tempName = `.hostspan-${process.pid}-${uuidv7()}.tmp`;
+  const destinationName = basename(before.relative);
+  const temp = join(parent.stable_path, tempName);
+  const destination = join(parent.stable_path, destinationName);
   try {
-    writeFileSync(temp, content, { mode: mode & 0o777 });
-    chmodSync(temp, mode & 0o777);
-    const fd = openSync(temp, "r+");
-    try {
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
+    if (process.platform === "darwin") {
+      if (parent.fd === null) throw new HostSpanError("POLICY_UNENFORCEABLE", "Darwin directory handle is unavailable.");
+      const flags =
+        constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_EXCL |
+        (constants.O_NOFOLLOW ?? 0);
+      const fd = darwinOpenAt(parent.fd, tempName, flags, mode & 0o777);
+      try {
+        writeFileSync(fd, content);
+        fchmodSync(fd, mode & 0o777);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+    } else {
+      writeFileSync(temp, content, { mode: mode & 0o777 });
+      chmodSync(temp, mode & 0o777);
+      const fd = openSync(temp, "r+");
+      try {
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
     }
     const rechecked = recheckTargetPath(target, relativePath, "write");
     if (rechecked.absolute !== before.absolute) throw new HostSpanError("PATH_OUTSIDE_TARGET", "Path changed while preparing atomic replace.");
     assertDirectoryStillCurrent(target, parentRelative, parent, "write");
-    renameSync(temp, destination);
+    if (process.platform === "darwin") {
+      if (parent.fd === null) throw new HostSpanError("POLICY_UNENFORCEABLE", "Darwin directory handle is unavailable.");
+      darwinRenameAt(parent.fd, tempName, destinationName);
+    } else {
+      renameSync(temp, destination);
+    }
     if (parent.fd !== null) fsyncSync(parent.fd);
     recheckTargetPath(target, relativePath, "write");
     assertDirectoryStillCurrent(target, parentRelative, parent, "write");
   } finally {
-    rmSync(temp, { force: true });
+    if (process.platform === "darwin" && parent.fd !== null) darwinUnlinkAtIfExists(parent.fd, tempName);
+    else rmSync(temp, { force: true });
     if (parent.fd !== null) closeSync(parent.fd);
   }
 }

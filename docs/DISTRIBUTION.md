@@ -107,7 +107,7 @@ Packaging and native-core support are separate claims:
 | Linux x64 / Ubuntu 24.04 | release-qualified Alpha core; Unix PTY + process groups |
 | WSL2 | uses the Linux core; not native Windows qualification |
 | Windows x64 | native Alpha core; ConPTY + Job Objects; full Windows test/build and packaged-runtime smoke passed |
-| macOS x64 | PTY session contract, CLI tarball, and packaged-runtime smoke passed; complete core qualification is still separate |
-| macOS arm64 | release packaging lane exists; native PTY/package qualification relies on the release runner |
+| macOS x64 | native Alpha core; full test/build, installed CLI doctor/full smoke, PTY lifecycle, packaged-runtime smoke, and installed menu-bar app verified |
+| macOS arm64 | release packaging lane exists; native qualification relies on the matching release runner |
 
 Packaging success must not be described as native-core security or process-recovery qualification.

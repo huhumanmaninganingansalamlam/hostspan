@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createOAuthSetup, OAuthService, rotateOAuthApprovalSecret } from "../auth/oauth-service.js";
 import { buildAdminSnapshot, resolveTerminalSession } from "../admin/snapshot.js";
 import type { HostSpanConfig } from "../config/schema.js";
@@ -16,6 +17,7 @@ import { FilePatchService, recoverPatchTransactions } from "../files/patch.js";
 import { resolveTargetPath } from "../files/path-guard.js";
 import { fileRead } from "../files/read.js";
 import { fileSearch, SearchConcurrencyLimiter } from "../files/search.js";
+import { ripgrepExecutable } from "../files/ripgrep.js";
 import { asHostSpanError } from "../mcp/errors.js";
 import { TOOL_NAMES, TOOLSET_HASH, toolsetDocument, type HostSpanToolHandlers } from "../mcp/registry.js";
 import { createHostSpanHttpServer, listenHostSpan } from "../mcp/server.js";
@@ -82,7 +84,9 @@ export function runtimeReadiness(runtime: HostSpanRuntime) {
   } catch {
     databaseReady = false;
   }
-  const processReady = (process.platform === "linux" || process.platform === "win32") && process.arch === "x64";
+  const processReady =
+    ((process.platform === "linux" || process.platform === "win32") && process.arch === "x64") ||
+    (process.platform === "darwin" && (process.arch === "x64" || process.arch === "arm64"));
   const searchReady = runtime.searchBackendReady();
   const terminalReady = runtime.config.terminal ? runtime.terminalBackendReady() : true;
   return {
@@ -126,12 +130,13 @@ function cachedExecutableProbe(command: string, args: string[] = ["--version"], 
 }
 
 function cachedNodeModuleProbe(specifier: string, ttlMs = 5_000): () => boolean {
+  const resolvedUrl = pathToFileURL(createRequire(import.meta.url).resolve(specifier)).href;
   let checkedAt = 0;
   let ready = false;
   return () => {
     const now = Date.now();
     if (checkedAt === 0 || now - checkedAt >= ttlMs) {
-      const script = `import(${JSON.stringify(specifier)}).then(()=>process.exit(0)).catch(()=>process.exit(1))`;
+      const script = `import(${JSON.stringify(resolvedUrl)}).then(()=>process.exit(0)).catch(()=>process.exit(1))`;
       ready =
         ["linux", "darwin", "win32"].includes(process.platform) &&
         spawnSync(process.execPath, ["-e", script], {
@@ -206,7 +211,7 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
     config.server.max_queued_searches ?? 16,
     config.server.search_queue_timeout_ms ?? 1_000,
   );
-  const searchBackendReady = cachedExecutableProbe("rg");
+  const searchBackendReady = cachedExecutableProbe(ripgrepExecutable());
   const terminalBackendReady = cachedNodeModuleProbe("node-pty");
   const oauth = config.oauth ? new OAuthService(config.oauth, oauthRepo) : undefined;
 
@@ -265,7 +270,9 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
             database: { name: "sqlite", ready: databaseResponsive(db) },
             process: {
               name: process.platform === "win32" ? "windows_process_tree" : "posix_process_group",
-              ready: (process.platform === "linux" || process.platform === "win32") && process.arch === "x64",
+              ready:
+                ((process.platform === "linux" || process.platform === "win32") && process.arch === "x64") ||
+                (process.platform === "darwin" && (process.arch === "x64" || process.arch === "arm64")),
             },
             terminal: { name: "hostspan_pty", ready: terminalReady, configured: Boolean(config.terminal) },
             search_concurrency: searchLimiter.snapshot(),

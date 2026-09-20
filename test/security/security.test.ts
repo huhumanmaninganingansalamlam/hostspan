@@ -163,7 +163,7 @@ describe("security and operational boundaries", () => {
     const { configPath } = fixture({ terminal: true });
     const runtime = createRuntime(configPath);
     try {
-      const result = await runtime.handlers.process_start(
+      let result = await runtime.handlers.process_start(
         {
           idempotency_key: uuidv7(),
           target_id: "local",
@@ -176,7 +176,26 @@ describe("security and operational boundaries", () => {
         },
         "req_terminal_authority_exec",
       );
-      expect(result).toMatchObject({ state: "succeeded", stdout: "terminal-authority-ok", exit_code: 0, interactive: false });
+      let stdout = String(result.stdout ?? "");
+      for (let attempt = 0; attempt < 12 && result.state === "running"; attempt += 1) {
+        result = await runtime.handlers.process_poll(
+          {
+            process_id: String(result.process_id),
+            stdout_cursor: Number(result.next_stdout_cursor ?? 0),
+            stderr_cursor: Number(result.next_stderr_cursor ?? 0),
+            wait_ms: 500,
+            max_bytes: 4096,
+          },
+          `req_terminal_authority_poll_${attempt}`,
+        );
+        stdout += String(result.stdout ?? "");
+      }
+      expect({ ...result, stdout }).toMatchObject({
+        state: "succeeded",
+        stdout: "terminal-authority-ok",
+        exit_code: 0,
+        interactive: false,
+      });
     } finally {
       runtime.close();
     }

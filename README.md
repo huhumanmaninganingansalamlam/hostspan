@@ -12,7 +12,7 @@ HostSpan is a terminal-first MCP execution gateway for ChatGPT Web Developer Mod
 
 The HostSpan mark represents an MCP gateway spanning two local endpoints through a central protocol-routing hub. The tray uses a separate simplified bridge/hub glyph so it stays legible at 16–32 px instead of shrinking the full application artwork.
 
-HostSpan Alpha has native Linux x64 and Windows x64 core paths. **Native execution is not an OS sandbox**: a child process runs with the permissions of the user running HostSpan. See [Security](SECURITY.md) before enabling `exec` on a target.
+HostSpan Alpha has native Linux x64, Windows x64, and macOS x64 core paths. **Native execution is not an OS sandbox**: a child process runs with the permissions of the user running HostSpan. See [Security](SECURITY.md) before enabling `exec` on a target.
 
 ## Alpha scope
 
@@ -22,7 +22,7 @@ The MCP tool registry is immutable for `hostspan-v3`:
 
 Every file/Git/process request names a persistent `target_id`; no ChatGPT session ID or temporary workspace handle is product state. File mutation uses expected SHA-256 values, dry-run/staging, per-file atomic replacement, a durable transaction journal, and postcondition hashes. Non-interactive commands use the durable native process supervisor. Interactive commands use the same `process_id` lifecycle through a HostSpan-owned, daemon-independent PTY session worker: start with `tty=true`, read through `process_poll`, write/resize through `process_write`, and close through `process_cancel`.
 
-Linux x64 uses Unix PTYs and process groups. Native Windows x64 uses ConPTY plus a Job Object-backed process-tree controller. WSL2 remains a Linux runtime and is not counted as Windows qualification. Native macOS x64 has passed the PTY/session and packaged-runtime qualification used in this Alpha, while complete macOS core qualification remains separate. GUI/browser computer-use, multi-host routing, LSP/CodeGraph, and claims of sandboxed execution remain out of scope.
+Linux x64 and macOS x64 use Unix PTYs and POSIX process groups. Native Windows x64 uses ConPTY plus a Job Object-backed process-tree controller. WSL2 remains a Linux runtime and is not counted as Windows qualification. Linux x64, native Windows x64, and native macOS x64 have passed the full Alpha core gate, installed CLI smoke, and packaged-runtime verification. macOS arm64 remains release-runner qualified rather than locally hardware-qualified. GUI/browser computer-use, multi-host routing, LSP/CodeGraph, and claims of sandboxed execution remain out of scope.
 
 ## Requirements
 
@@ -142,7 +142,7 @@ The optional tray companion is intentionally small: server start/stop/restart, v
 pnpm desktop
 ```
 
-The original HostSpan icon is generated from the checked-in SVG sources in `assets/brand`; platform PNG, ICO, and ICNS files are generated deterministically by `pnpm icons`. Electron supplies the tray/menu-bar surface on macOS, Windows, and Linux. Linux x64 and native Windows x64 run the HostSpan core directly; the Windows desktop no longer delegates core operations to WSL2. macOS packaging remains preview-level until the complete core is qualified, although native x64 PTY/session and packaged-runtime verification pass.
+The original HostSpan icon is generated from the checked-in SVG sources in `assets/brand`; platform PNG, ICO, and ICNS files are generated deterministically by `pnpm icons`. Electron supplies the tray/menu-bar surface on macOS, Windows, and Linux. Linux x64, native Windows x64, and native macOS x64 run the HostSpan core directly; the Windows desktop does not delegate core operations to WSL2. The macOS x64 app has been installed and launched from `~/Applications/HostSpan.app`, including a live menu-bar status item.
 
 Create native desktop artifacts for the current operating system with:
 

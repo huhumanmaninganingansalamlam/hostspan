@@ -54,6 +54,7 @@ function packagedPaths(asarPath, platform) {
 			cli: join(asarPath, "dist", "src", "cli", "index.js"),
 			nativeModule: join(asarPath, "node_modules", "better-sqlite3"),
 			ptyModule: join(asarPath, "node_modules", "node-pty"),
+			ripgrepModule: join(asarPath, "dist", "src", "files", "ripgrep.js"),
 			jobModule: join(asarPath, "dist", "src", "processes", "windows-job-process.js"),
 		};
 	}
@@ -66,6 +67,7 @@ function packagedPaths(asarPath, platform) {
 		cli: join(asarPath, "dist", "src", "cli", "index.js"),
 		nativeModule: join(asarPath, "node_modules", "better-sqlite3"),
 		ptyModule: join(asarPath, "node_modules", "node-pty"),
+		ripgrepModule: join(asarPath, "dist", "src", "files", "ripgrep.js"),
 		jobModule: join(asarPath, "dist", "src", "processes", "windows-job-process.js"),
 	};
 }
@@ -120,9 +122,19 @@ function smokeWindowsPackage(executable, asarPath, arch) {
 	);
 	if (!existsSync(ptyBinding))
 		throw new Error(`Packaged Windows ConPTY binding not found: ${ptyBinding}`);
+	const ripgrepBinary = join(
+		`${asarPath}.unpacked`,
+		"node_modules",
+		"@vscode",
+		`ripgrep-win32-${arch}`,
+		"bin",
+		"rg.exe",
+	);
+	if (!existsSync(ripgrepBinary))
+		throw new Error(`Packaged Windows ripgrep binary not found: ${ripgrepBinary}`);
 }
 
-function smokePackagedRuntime(executable, cli, nativeModule, ptyModule, jobModule) {
+function smokePackagedRuntime(executable, cli, nativeModule, ptyModule, ripgrepModule, jobModule) {
 	const version = run(executable, [cli, "--version"]);
 	if (version !== packageJson.version) {
 		throw new Error(
@@ -158,6 +170,19 @@ function smokePackagedRuntime(executable, cli, nativeModule, ptyModule, jobModul
 	if (pty !== "pty-ok")
 		throw new Error(`Unexpected PTY probe output: ${pty}`);
 
+	const ripgrepProbe = [
+		"const {spawnSync}=require('node:child_process');",
+		"const {pathToFileURL}=require('node:url');",
+		`import(pathToFileURL(${JSON.stringify(ripgrepModule)}).href).then(m=>{`,
+		"const r=spawnSync(m.ripgrepExecutable(),['--version'],{encoding:'utf8',windowsHide:true});",
+		"if(r.status!==0||!String(r.stdout||'').startsWith('ripgrep ')){console.error(r.stderr||r.stdout||String(r.error||''));process.exit(9);}",
+		"process.stdout.write('ripgrep-ok');",
+		"}).catch(e=>{console.error(e);process.exit(10);});",
+	].join("");
+	const ripgrep = run(executable, ["-e", ripgrepProbe]);
+	if (ripgrep !== "ripgrep-ok")
+		throw new Error(`Unexpected ripgrep probe output: ${ripgrep}`);
+
 	if (targetPlatform === "win32") {
 		const jobProbe = [
 			"const {pathToFileURL}=require('node:url');",
@@ -175,6 +200,14 @@ function smokePackagedRuntime(executable, cli, nativeModule, ptyModule, jobModul
 	try {
 		const configPath = join(scratch, "config.yaml");
 		run(executable, [cli, "init"], { HOSTSPAN_CONFIG: configPath });
+		const doctor = JSON.parse(
+			run(executable, [cli, "doctor"], { HOSTSPAN_CONFIG: configPath }),
+		);
+		if (doctor.ok !== true) {
+			throw new Error(
+				`Packaged Doctor failed: ${JSON.stringify(doctor.checks)}`,
+			);
+		}
 		const snapshotText = run(
 			executable,
 			[cli, "admin", "snapshot", "--recent", "1"],
@@ -206,7 +239,7 @@ if (candidates.length === 0)
 	throw new Error(`No ${targetPlatform}/${targetArch} Electron app.asar was found under ${outDir}.`);
 
 const asarPath = candidates[0];
-const { executable, cli, nativeModule, ptyModule, jobModule } = packagedPaths(asarPath, targetPlatform);
+const { executable, cli, nativeModule, ptyModule, ripgrepModule, jobModule } = packagedPaths(asarPath, targetPlatform);
 if (!existsSync(executable))
 	throw new Error(`Packaged executable not found: ${executable}`);
 
@@ -220,7 +253,7 @@ if (targetPlatform === "win32") {
 }
 
 if (targetPlatform === process.platform && targetArch === process.arch) {
-	smokePackagedRuntime(executable, cli, nativeModule, ptyModule, jobModule);
+	smokePackagedRuntime(executable, cli, nativeModule, ptyModule, ripgrepModule, jobModule);
 } else if (targetPlatform !== "win32") {
 	throw new Error(
 		`Executable smoke requires the target runtime (${targetPlatform}/${targetArch}); current runtime is ${process.platform}/${process.arch}.`,

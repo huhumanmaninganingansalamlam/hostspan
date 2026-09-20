@@ -18,6 +18,7 @@ asarUnpack:
   - node_modules/@koromix/**/*
   - node_modules/node-pty/build/Release/**/*
   - node_modules/node-pty/prebuilds/**/*
+  - node_modules/@vscode/ripgrep-*/bin/**/*
 linux:
   executableName: hostspan-desktop
   syncDesktopName: true

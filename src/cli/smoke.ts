@@ -131,7 +131,7 @@ export async function runSmoke(context: SmokeContext, targetId: string): Promise
       const profile = context.config.exec_profiles[target.exec_profile];
       if (profile?.allowed_programs.includes("node")) {
         await record("short_process", async () => {
-          const result = await context.handlers.process_start(
+          let result = await context.handlers.process_start(
             {
               idempotency_key: uuidv7(),
               target_id: targetId,
@@ -144,7 +144,23 @@ export async function runSmoke(context: SmokeContext, targetId: string): Promise
             },
             "smoke_process_short",
           );
-          if (result.state !== "succeeded" || result.stdout !== "smoke") throw new Error("short process failed");
+          let stdout = String(result.stdout ?? "");
+          for (let attempt = 0; attempt < 8 && result.state === "running"; attempt += 1) {
+            result = await context.handlers.process_poll(
+              {
+                process_id: String(result.process_id),
+                stdout_cursor: Number(result.next_stdout_cursor ?? 0),
+                stderr_cursor: Number(result.next_stderr_cursor ?? 0),
+                wait_ms: 500,
+                max_bytes: 64 * 1024,
+              },
+              `smoke_process_short_poll_${attempt}`,
+            );
+            stdout += String(result.stdout ?? "");
+          }
+          if (result.state !== "succeeded" || !stdout.includes("smoke")) {
+            throw new Error(`short process failed: state=${String(result.state)} stdout=${JSON.stringify(stdout)}`);
+          }
         });
         await record("long_process_cancel", async () => {
           const key = uuidv7();
