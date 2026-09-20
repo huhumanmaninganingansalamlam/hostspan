@@ -2,7 +2,7 @@
 
 ## Release contract
 
-- Version: `0.3.0-alpha.3`
+- Version: `0.3.0-alpha.4`
 - Toolset: `hostspan-v3`
 - MCP protocol target: `2026-07-28`
 - Qualified core platforms: Linux x64 (Ubuntu 24.04 LTS / WSL2), native Windows x64, and native macOS x64
@@ -63,7 +63,7 @@ These items do not require additional MCP tools. The v3 Alpha qualifies Linux x6
 
 `hostspan-v3` exposes the fixed 11-tool durable PTY lifecycle. Tool description/schema metadata is part of `toolset_hash`; refresh the ChatGPT app after upgrading.
 
-`0.3.0-alpha.3` uses HostSpan-owned durable PTY session workers, native Windows ConPTY/Job Object execution, and native macOS PTY/file/process support while retaining restart-gated workspace policy and fail-closed OAuth for non-loopback serving. Linux x64, native Windows x64, and native macOS x64 all pass their full applicable test/build gates. Windows x64 has been verified through a real NSIS install with installed doctor/full smoke and ConPTY lifecycle; macOS x64 has been verified through the installed menu-bar app with installed doctor/full smoke and PTY lifecycle. Alpha.3 also lazy-loads the macOS-only Koffi filesystem binding so Windows CLI startup does not depend on a Darwin native module, and package-smoke failures now include captured child output. The `v0.3.0-alpha.1` and `v0.3.0-alpha.2` workflows stopped at the Windows installed-CLI package-smoke gate and did not publish a GitHub Release.
+`0.3.0-alpha.4` uses HostSpan-owned durable PTY session workers, native Windows ConPTY/Job Object execution, and native macOS PTY/file/process support while retaining restart-gated workspace policy and fail-closed OAuth for non-loopback serving. Linux x64, native Windows x64, and native macOS x64 all pass their full applicable test/build gates. Windows x64 has been verified through a real NSIS install with installed doctor/full smoke and ConPTY lifecycle; macOS x64 has been verified through a real DMG install with installed doctor/full smoke, PTY lifecycle, and the icon-only menu-bar glyph. Alpha.4 also makes the Windows package-smoke `.cmd` shim invocation robust on Node 22 for GitHub runner 8.3 paths such as `RUNNER~1` and for paths containing spaces. The `v0.3.0-alpha.1`, `v0.3.0-alpha.2`, and `v0.3.0-alpha.3` workflows stopped at the Windows installed-CLI package-smoke gate and did not publish a GitHub Release.
 
 Config schema remains version 1 with `terminal.backend: pty` as the only interactive backend. The durable database schema remains version 4. Database initialization uses WAL and backs up an existing database before migration.
 

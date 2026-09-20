@@ -78,13 +78,13 @@ The `--platform`, `--arch`, and `--out-dir` overrides are for static package val
 7. packs the npm/CLI payload as `hostspan-<version>.tgz`;
 8. uploads the user-facing packages to one GitHub Release only after those installed-artifact gates pass;
 9. generates `SHA256SUMS.txt`;
-10. marks tags containing `-` (for example, `v0.3.0-alpha.3`) as prereleases.
+10. marks tags containing `-` (for example, `v0.3.0-alpha.4`) as prereleases.
 
 Create a release after the intended commit is on `main`:
 
 ```bash
-git tag v0.3.0-alpha.3
-git push origin v0.3.0-alpha.3
+git tag v0.3.0-alpha.4
+git push origin v0.3.0-alpha.4
 ```
 
 Do not move or reuse a published tag. Increment `package.json`, `src/version.ts`, and `docs/RELEASE.md` together before creating the next tag.

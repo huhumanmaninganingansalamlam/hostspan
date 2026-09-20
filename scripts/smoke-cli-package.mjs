@@ -45,6 +45,7 @@ function run(command, args, options = {}) {
     encoding: "utf8",
     windowsHide: true,
     shell: false,
+    windowsVerbatimArguments: useCmd,
     timeout: options.timeout ?? 120_000,
     maxBuffer: 8 * 1024 * 1024,
   });

@@ -1,12 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="HostSpan tray gateway icon">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="HostSpan tray icon">
   <g fill="none" stroke="#000000" stroke-linecap="round" stroke-linejoin="round">
-    <circle cx="7.5" cy="32" r="4.5" stroke-width="5"/>
-    <circle cx="56.5" cy="32" r="4.5" stroke-width="5"/>
-    <path d="M12 32h7M45 32h7" stroke-width="5"/>
-    <path d="M25 18h14l8 14-8 14H25l-8-14Z" stroke-width="5"/>
-    <path d="M32 24v5M26.5 38l3.5-5M37.5 38L34 33" stroke-width="3.5"/>
-    <circle cx="32" cy="31" r="2.75" fill="#000000" stroke="none"/>
-    <circle cx="25.5" cy="40" r="2.5" fill="#000000" stroke="none"/>
-    <circle cx="38.5" cy="40" r="2.5" fill="#000000" stroke="none"/>
+    <circle cx="9" cy="32" r="5" stroke-width="5"/>
+    <circle cx="55" cy="32" r="5" stroke-width="5"/>
+    <path d="M14 32h8M42 32h8" stroke-width="5"/>
+    <rect x="22" y="14" width="20" height="36" rx="6" stroke-width="5"/>
+    <path d="M29 25h6M29 32h6M29 39h6" stroke-width="4"/>
   </g>
 </svg>
