@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
 import { HostSpanError } from "../mcp/errors.js";
 import { matchesAnyPolicyGlob } from "../policy/glob.js";
 import type { TargetRuntime } from "../targets/registry.js";
@@ -135,26 +136,52 @@ export async function gitChanges(
   includeUntracked: boolean,
   maxStatusBytes = DEFAULT_MAX_STATUS_BYTES,
 ) {
-  if (!existsSync(`${target.root_real}/.git`)) throw new HostSpanError("NOT_A_GIT_REPOSITORY", "Target is not a Git repository.");
-  const safePaths = paths.map((path) => resolveTargetPath(target, path, "read").relative);
-  const includePaths = safePaths.length ? safePaths : ["."];
-  const deniedPathspecs = target.deny_globs.map((glob) => `:(exclude,glob)${glob}`);
-  const pathArgs = ["--", ...includePaths, ...deniedPathspecs];
+  const guardedPaths = paths.length ? paths.map((path) => resolveTargetPath(target, path, "read")) : [resolveTargetPath(target, ".", "read")];
+  const repositoryRoots = guardedPaths.map((guarded) => {
+    let current = guarded.exists && statSync(guarded.absolute).isDirectory() ? guarded.absolute : dirname(guarded.absolute);
+    for (;;) {
+      if (existsSync(join(current, ".git"))) return current;
+      if (current === target.root_real) break;
+      const parent = dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+    throw new HostSpanError("NOT_A_GIT_REPOSITORY", `Path is not inside a Git repository: ${guarded.relative}`);
+  });
+  const repositoryRoot = repositoryRoots[0] ?? target.root_real;
+  if (repositoryRoots.some((root) => root !== repositoryRoot)) {
+    throw new HostSpanError("SCOPE_DENIED", "git_changes paths must belong to one Git repository.", false, {
+      reason: "multiple_git_repositories",
+    });
+  }
+  const repositoryPath = relative(target.root_real, repositoryRoot).replaceAll("\\", "/") || ".";
+  const includePaths = paths.length
+    ? guardedPaths.map((guarded) => relative(repositoryRoot, guarded.absolute).replaceAll("\\", "/") || ".")
+    : ["."];
+  const pathArgs = ["--", ...includePaths];
   const statusArgs = ["status", "--porcelain=v1", "-z", ...(includeUntracked ? ["--untracked-files=normal"] : ["--untracked-files=no"]), ...pathArgs];
-  const status = await boundedStatus(target.root_real, statusArgs, maxStatusBytes);
-  const [staged, unstaged] = await Promise.all([
-    boundedDiff(target.root_real, ["diff", "--cached", "--no-ext-diff", "--no-color", "--binary", ...pathArgs], maxDiffBytes),
-    boundedDiff(target.root_real, ["diff", "--no-ext-diff", "--no-color", "--binary", ...pathArgs], maxDiffBytes),
-  ]);
+  const status = await boundedStatus(repositoryRoot, statusArgs, maxStatusBytes);
+  const targetRelative = (path: string) => (repositoryPath === "." ? path : `${repositoryPath}/${path}`);
   const statusEntries = parsePorcelainV1Z(status).filter((entry) => {
-    if (matchesAnyPolicyGlob(entry.path, target.deny_globs)) return false;
-    if (entry.original_path && matchesAnyPolicyGlob(entry.original_path, target.deny_globs)) return false;
+    if (matchesAnyPolicyGlob(targetRelative(entry.path), target.deny_globs)) return false;
+    if (entry.original_path && matchesAnyPolicyGlob(targetRelative(entry.original_path), target.deny_globs)) return false;
     return true;
   });
+  const diffPaths = [
+    ...new Set(statusEntries.flatMap((entry) => [entry.path, ...(entry.original_path ? [entry.original_path] : [])])),
+  ];
+  const emptyDiff = { text: "", truncated: false };
+  const [staged, unstaged] = diffPaths.length
+    ? await Promise.all([
+        boundedDiff(repositoryRoot, ["diff", "--cached", "--no-ext-diff", "--no-color", "--binary", "--", ...diffPaths], maxDiffBytes),
+        boundedDiff(repositoryRoot, ["diff", "--no-ext-diff", "--no-color", "--binary", "--", ...diffPaths], maxDiffBytes),
+      ])
+    : [emptyDiff, emptyDiff];
   const combined = [staged.text, unstaged.text].filter(Boolean).join("\n");
   const combinedBytes = Buffer.from(combined, "utf8");
   const diffText = decodeUtf8Prefix(combinedBytes.subarray(0, maxDiffBytes));
   return {
+    repository_path: repositoryPath,
     status: statusEntries,
     diff: diffText,
     diff_truncated: staged.truncated || unstaged.truncated || combinedBytes.length > maxDiffBytes,

@@ -55,6 +55,49 @@ function fixture() {
 }
 
 describe("git_changes", () => {
+  it("resolves a requested path to a nested repository without requiring the target root to be a repository", async () => {
+    const root = mkdtempSync(join(tmpdir(), "hostspan-git-parent-"));
+    roots.push(root);
+    const repository = join(root, "repo");
+    mkdirSync(repository);
+    const config: HostSpanConfig = {
+      schema_version: 1,
+      policy_epoch: 1,
+      server: { listen_host: "127.0.0.1", listen_port: 39393, data_dir: join(root, ".state") },
+      retention: {
+        completed_process_output_ttl_minutes: 60,
+        operation_result_days: 14,
+        audit_days: 30,
+        max_total_spool_bytes: 1024 * 1024,
+      },
+      targets: {
+        test: {
+          label: "test",
+          provider: "local",
+          root,
+          capabilities: ["read", "git"],
+          deny_globs: ["**/.env*"],
+          ignore_globs: [],
+        },
+      },
+      exec_profiles: {},
+    };
+    execFileSync("git", ["init", "-q"], { cwd: repository });
+    writeFileSync(join(repository, "nested.txt"), "base\n");
+    writeFileSync(join(repository, ".env"), "SECRET=nested\n");
+    execFileSync("git", ["add", "."], { cwd: repository });
+    const target = new TargetRegistry(config).get("test", "git");
+
+    const result = await gitChanges(target, ["repo"], 256 * 1024, true);
+
+    expect(target.git_repository).toBe(false);
+    expect(result.repository_path).toBe("repo");
+    expect(result.status).toContainEqual(expect.objectContaining({ status: "A ", path: "nested.txt" }));
+    expect(result.status.some((entry) => entry.path.includes(".env"))).toBe(false);
+    expect(result.diff).toContain("+base");
+    expect(result.diff).not.toContain("SECRET=nested");
+  });
+
   it("returns staged and unstaged changes, parses rename records, and excludes denied paths", async () => {
     const { root, git, target } = fixture();
     mkdirSync(join(root, "nested"));
