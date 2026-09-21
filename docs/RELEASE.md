@@ -2,7 +2,7 @@
 
 ## Release contract
 
-- Version: `0.3.0-alpha.4`
+- Version: `0.3.0-alpha.5`
 - Toolset: `hostspan-v3`
 - MCP protocol target: `2026-07-28`
 - Qualified core platforms: Linux x64 (Ubuntu 24.04 LTS / WSL2), native Windows x64, and native macOS x64
@@ -22,10 +22,11 @@
 - daemon-independent PTY session workers with authenticated local IPC and local human read-only/read-write attach
 - PTY session reconciliation across HostSpan daemon restart
 - native Windows ConPTY interactive sessions and Job Object-backed non-interactive process-tree control
-- process-group deadline/cancel, byte cursors, UTF-8-safe output spool, idempotent submission
+- Windows guarded file read/replace parent pinning through native directory handles plus private DACLs for HostSpan config/state
+- process-group/job deadline/cancel, UTF-8-safe process-output byte cursors, bounded UTF-8/UTF-16 file reads, idempotent submission
 - SQLite WAL operation/process/transaction/audit state
 - native exec policy with bounded exec-only allowlists, terminal-authority parity, and output/deadline/concurrency limits
-- JSONL logging, redaction, short output retention, support export
+- bounded JSONL rotation, redaction, short output retention, spool quota eviction, idempotency-result compaction, support export
 - doctor/smoke/status/admin/service commands
 - ChatGPT Refresh/tunnel/troubleshooting documentation
 - configurable loopback/specific-IP/wildcard bind with fail-closed Host allowlists for reverse-proxy/LAN/container deployments
@@ -43,7 +44,9 @@
 - Electron Builder packaging for Linux x64 AppImage/deb, Windows x64 NSIS/zip, and macOS arm64/x64 DMG/zip
 - platform-aligned packaged runtime verification: version/SQLite/bundled-ripgrep/PTy/full-workflow smoke on native Linux, Windows, and macOS, including HostSpan `tty=true` lifecycle
 - release-matrix installed-artifact verification: silent Windows NSIS installation and macOS DMG mount/copy followed by the same runtime smoke before artifacts are uploaded
-- tag-gated GitHub Actions release builds with version verification, portable CLI tarball, checksums, prerelease classification, and maintained GitHub Release publishing action
+- pinned `hostspan-v3` public toolset hash plus 100-exchange stability verification
+- tag-gated GitHub Actions release builds with main-ancestry/version verification, portable CLI tarball, checksums, prerelease classification, and immutable GitHub Release publication
+- four-platform native CI core/runtime smoke on Linux x64, Windows x64, macOS arm64, and macOS x64
 
 ## Explicitly excluded
 
@@ -52,20 +55,19 @@ Multi-host routing, GUI/browser computer-use, LSP/CodeGraph, MCP aggregation, sc
 ## Known post-Alpha work
 
 - configure Windows Authenticode and Apple Developer ID/notarization secrets for signed public downloads;
-- qualify macOS arm64 on the matching release runner and add signing/notarization credentials;
-- continue Windows file/ACL hardening beyond the current Alpha path/reparse/identity checks; WSL2 remains a Linux runtime and is not native Windows qualification;
-- extend soak duration from the current functional/concurrency evidence to multi-day steady-state runs;
-- add bounded JSONL rotation/archival for always-on installations (SQLite audit rows are already age/count bounded).
+- extend soak duration beyond the current functional/concurrency/recovery evidence for production-style multi-day steady-state measurement.
 
-These items do not require additional MCP tools. The v3 Alpha qualifies Linux x64, native Windows x64, and native macOS x64 core paths.
+These items are distribution/operational maturity work rather than missing Alpha core behavior. The v3 Alpha qualifies Linux x64, native Windows x64, native macOS x64, and native macOS arm64 on their matching CI/release runners.
 
-## Compatibility and migration
+## Contract and state policy
 
-`hostspan-v3` exposes the fixed 11-tool durable PTY lifecycle. Tool description/schema metadata is part of `toolset_hash`; refresh the ChatGPT app after upgrading.
+`hostspan-v3` exposes the fixed 11-tool durable PTY lifecycle. Its approved public toolset hash is pinned in the contract test, so a schema/description/annotation change cannot silently retain the v3 contract. Refresh the ChatGPT app after upgrading server versions.
 
-`0.3.0-alpha.4` uses HostSpan-owned durable PTY session workers, native Windows ConPTY/Job Object execution, and native macOS PTY/file/process support while retaining restart-gated workspace policy and fail-closed OAuth for non-loopback serving. Linux x64, native Windows x64, and native macOS x64 all pass their full applicable test/build gates. Windows x64 has been verified through a real NSIS install with installed doctor/full smoke and ConPTY lifecycle; macOS x64 has been verified through a real DMG install with installed doctor/full smoke, PTY lifecycle, and the icon-only menu-bar glyph. Alpha.4 also makes the Windows package-smoke `.cmd` shim invocation robust on Node 22 for GitHub runner 8.3 paths such as `RUNNER~1` and for paths containing spaces. The `v0.3.0-alpha.1`, `v0.3.0-alpha.2`, and `v0.3.0-alpha.3` workflows stopped at the Windows installed-CLI package-smoke gate and did not publish a GitHub Release.
+`0.3.0-alpha.5` is the post-alpha.4 hardening baseline. It closes the audited late-line read (with a bounded 64 MiB line-scan ceiling), natural PTY slot reclamation, output-drain/termination recovery, runtime-reference cleanup, patch DB/journal crash-window, retention/quota, Windows ACL/path pinning, staged/rename Git summary, worker command-resolution, read-only diagnostic, and release-immutability gaps without changing the `hostspan-v3` MCP contract.
 
-Config schema remains version 1 with `terminal.backend: pty` as the only interactive backend. The durable database schema remains version 4. Database initialization uses WAL and backs up an existing database before migration.
+Config schema remains version 1 with `terminal.backend: pty` as the only interactive backend. The durable database schema is version 5. Alpha.5 intentionally starts a fresh durable-state generation rather than interpreting older schema 1–4 databases: an unsupported schema is rejected without mutation instead of being migrated or guessed. SQLite runs in WAL mode.
+
+Operation-result retention compacts large result/error payloads while preserving the idempotency-key tombstone, so expiration never turns an old side-effect key into permission to execute the side effect again. Completed process output/session artifacts are TTL-bounded and the retained spool budget evicts the oldest completed output before admitting unbounded growth. Redundant terminal process/patch detail rows are removed only after the associated artifacts are gone and the durable operation tombstone has been compacted.
 
 ## Release gates
 
@@ -74,7 +76,7 @@ Before publishing an Alpha build:
 ```bash
 pnpm install --frozen-lockfile
 pnpm check
-pnpm audit:prod
+pnpm audit:all
 pnpm package:smoke
 pnpm desktop:make
 pnpm desktop:smoke

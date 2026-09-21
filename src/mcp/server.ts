@@ -78,7 +78,6 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
   const mcpHandler = createMcpHandler(
     () => createMcpServer(options.handlers, options.responseContext),
     {
-      legacy: "stateless",
       onerror: reportTransportError,
       responseMode: "auto",
     },

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,6 +6,7 @@ import { v7 as uuidv7 } from "uuid";
 import type { HostSpanConfig } from "../../src/config/schema.js";
 import { ProcessSupervisor } from "../../src/processes/supervisor.js";
 import { processGroupAlive } from "../../src/processes/recovery.js";
+import { cleanupExpiredProcessSpools } from "../../src/processes/output-spool.js";
 import { PolicyEvaluator } from "../../src/policy/evaluator.js";
 import { openDatabase } from "../../src/state/database.js";
 import { OperationsRepo } from "../../src/state/operations-repo.js";
@@ -38,7 +39,7 @@ afterEach(async () => {
   }
 });
 
-function fixture() {
+function fixture(maxTotalSpoolBytes = 64 * 1024 * 1024) {
   const root = mkdtempSync(join(tmpdir(), "hostspan-process-"));
   roots.push(root);
   const targetRoot = join(root, "target");
@@ -52,7 +53,7 @@ function fixture() {
       completed_process_output_ttl_minutes: 60,
       operation_result_days: 14,
       audit_days: 30,
-      max_total_spool_bytes: 64 * 1024 * 1024,
+      max_total_spool_bytes: maxTotalSpoolBytes,
     },
     targets: {
       test: {
@@ -91,7 +92,7 @@ function fixture() {
     processes,
   });
   supervisors.push(supervisor);
-  return { supervisor, processes, db };
+  return { supervisor, processes, db, config };
 }
 
 function startInput(overrides: Partial<Parameters<ProcessSupervisor["start"]>[0]> = {}) {
@@ -108,6 +109,27 @@ function startInput(overrides: Partial<Parameters<ProcessSupervisor["start"]>[0]
   };
 }
 
+async function pollUntilTerminal(
+  supervisor: ProcessSupervisor,
+  processId: string,
+  timeoutMs = process.platform === "win32" ? 10_000 : 5_000,
+): Promise<Record<string, unknown>> {
+  const terminal = new Set(["succeeded", "failed", "timed_out", "cancelled", "orphaned", "unknown"]);
+  const deadline = Date.now() + timeoutMs;
+  let current: Record<string, unknown> = { state: "running", process_id: processId };
+  while (Date.now() < deadline) {
+    current = await supervisor.poll({
+      process_id: processId,
+      stdout_cursor: 0,
+      stderr_cursor: 0,
+      wait_ms: 500,
+      max_bytes: 1024,
+    });
+    if (terminal.has(String(current.state))) return current;
+  }
+  throw new Error(`process ${processId} did not reach a terminal state within ${timeoutMs}ms; last=${String(current.state)}`);
+}
+
 describe("process supervisor", () => {
   it("returns a terminal result for a short process", async () => {
     const { supervisor } = fixture();
@@ -116,6 +138,127 @@ describe("process supervisor", () => {
     expect(result.stdout).toBe("ok");
     expect(result.native_execution).toBe(true);
     expect(result.sandboxed).toBe(false);
+  });
+
+  it("releases completed runtime handles instead of retaining every finished process", async () => {
+    const { supervisor } = fixture();
+    for (let index = 0; index < 12; index += 1) {
+      const started = await supervisor.start(startInput({ argv: ["node", "-e", "process.exit(0)"] }), `req_cleanup_${index}`);
+      const result =
+        started.state === "running"
+          ? await pollUntilTerminal(supervisor, String(started.process_id))
+          : started;
+      expect(result.state).toBe("succeeded");
+    }
+    const runtimes = (supervisor as unknown as { runtimes: Map<string, unknown> }).runtimes;
+    expect(runtimes.size).toBe(0);
+  });
+
+  it("evicts oldest completed spool artifacts when retained output exceeds the budget", () => {
+    const root = mkdtempSync(join(tmpdir(), "hostspan-spool-budget-"));
+    roots.push(root);
+    for (const processId of ["proc_old", "proc_new"]) {
+      const spoolDir = join(root, "spools", "processes", processId);
+      mkdirSync(spoolDir, { recursive: true });
+      writeFileSync(join(spoolDir, "stdout.bin"), "1234567890");
+      mkdirSync(join(root, "sessions", processId), { recursive: true });
+    }
+    const result = cleanupExpiredProcessSpools(root, [], 12, ["proc_old", "proc_new"]);
+    expect(result).toMatchObject({ evicted: ["proc_old"], total_bytes: 10, over_quota: false });
+    expect(existsSync(join(root, "spools", "processes", "proc_old"))).toBe(false);
+    expect(existsSync(join(root, "sessions", "proc_old"))).toBe(false);
+    expect(existsSync(join(root, "spools", "processes", "proc_new"))).toBe(true);
+  });
+
+  it("rejects new process output when the retained spool budget is already exhausted", async () => {
+    const { supervisor, config } = fixture(10);
+    const retained = join(config.server.data_dir, "spools", "processes", "proc_retained");
+    mkdirSync(retained, { recursive: true });
+    writeFileSync(join(retained, "stdout.bin"), "1234567890");
+    await expect(supervisor.start(startInput(), "req_spool_full")).rejects.toMatchObject({
+      code: "SERVER_BUSY",
+      retryable: true,
+      details: { resource: "process_output_spool", max_total_spool_bytes: 10 },
+    });
+  });
+
+  it("replays a pre-spawn capacity rejection for the same idempotency key", async () => {
+    const { supervisor, config } = fixture(10);
+    const retained = join(config.server.data_dir, "spools", "processes", "proc_retained_retry");
+    mkdirSync(retained, { recursive: true });
+    writeFileSync(join(retained, "stdout.bin"), "1234567890");
+    const input = startInput({ idempotency_key: uuidv7(), max_output_bytes: 8 });
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(supervisor.start(input, `req_spool_retry_${attempt}`)).rejects.toMatchObject({
+        code: "SERVER_BUSY",
+        message: "Process output retention budget cannot satisfy the requested output cap; retry after retained output expires.",
+        retryable: true,
+        details: { resource: "process_output_spool", requested_output_bytes: 8, remaining_output_bytes: 0 },
+      });
+    }
+  });
+
+  it("reserves the shared spool budget across concurrent process starts", async () => {
+    const { supervisor, config } = fixture(10);
+    const delayedOutput = "setTimeout(()=>process.stdout.write('12345678'),300);setTimeout(()=>{},60000)";
+    const first = await supervisor.start(
+      startInput({ argv: ["node", "-e", delayedOutput], wait_ms: 0, deadline_ms: 60_000, max_output_bytes: 8 }),
+      "req_spool_reserve_1",
+    );
+    await expect(
+      supervisor.start(
+        startInput({ argv: ["node", "-e", delayedOutput], wait_ms: 0, deadline_ms: 60_000, max_output_bytes: 8 }),
+        "req_spool_reserve_2",
+      ),
+    ).rejects.toMatchObject({
+      code: "SERVER_BUSY",
+      retryable: true,
+      details: {
+        resource: "process_output_spool",
+        requested_output_bytes: 8,
+        remaining_output_bytes: 2,
+        max_total_spool_bytes: 10,
+      },
+    });
+    const root = join(config.server.data_dir, "spools", "processes");
+    let total = 0;
+    for (const processId of [String(first.process_id)]) {
+      const path = join(root, processId, "stdout.bin");
+      if (existsSync(path)) total += Buffer.byteLength(String((await import("node:fs")).readFileSync(path)));
+    }
+    expect(total).toBeLessThanOrEqual(10);
+    await supervisor.cancel({ idempotency_key: uuidv7(), process_id: String(first.process_id), grace_ms: 50 });
+  });
+
+  it("does not return from cancel while native stdio callbacks can still touch durable state", async () => {
+    const { supervisor, db } = fixture();
+    const started = await supervisor.start(
+      startInput({
+        argv: ["node", "-e", "setInterval(()=>process.stdout.write('x'),5)"],
+        wait_ms: 0,
+        deadline_ms: 60_000,
+        max_output_bytes: 64 * 1024,
+      }),
+      "req_cancel_stdio_settle",
+    );
+    const cancelled = await supervisor.cancel({
+      idempotency_key: uuidv7(),
+      process_id: String(started.process_id),
+      grace_ms: 50,
+    });
+    expect(cancelled.state).toBe("cancelled");
+
+    const supervisorIndex = supervisors.indexOf(supervisor);
+    if (supervisorIndex >= 0) supervisors.splice(supervisorIndex, 1);
+    const dbIndex = databases.indexOf(db);
+    if (dbIndex >= 0) databases.splice(dbIndex, 1);
+    db.close();
+
+    // If cancel returns before stdout/stderr have settled, a late data event
+    // will attempt to read the now-closed database and Vitest will report an
+    // unhandled exception during this window.
+    await new Promise((resolve) => setTimeout(resolve, 250));
   });
 
   it("returns a process_id quickly for a long silent process and deduplicates retries", async () => {

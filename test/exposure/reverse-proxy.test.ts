@@ -120,7 +120,7 @@ describe("user-managed reverse proxy", () => {
     expect(() => resolveAllowedHosts("::")).toThrow(/allowed_hosts/);
   });
 
-  it("requires OAuth before serving on non-loopback interfaces", () => {
+  it("requires OAuth before serving on non-loopback interfaces", async () => {
     const { configPath } = fixture();
     const runtime = createRuntime(configPath);
     try {
@@ -138,7 +138,7 @@ describe("user-managed reverse proxy", () => {
         }),
       ).toThrow(/requires OAuth/);
     } finally {
-      runtime.close();
+      await runtime.close();
     }
   });
 
@@ -214,7 +214,7 @@ describe("user-managed reverse proxy", () => {
     } finally {
       await proxy?.close();
       await app.close();
-      runtime.close();
+      await runtime.close();
     }
   });
 
@@ -236,7 +236,7 @@ describe("user-managed reverse proxy", () => {
       expect([403, 421]).toContain(rejected.statusCode);
     } finally {
       await app.close();
-      runtime.close();
+      await runtime.close();
     }
   });
 });

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -20,6 +20,15 @@ const databases: Array<ReturnType<typeof openDatabase>> = [];
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 afterEach(async () => {
@@ -45,7 +54,7 @@ afterEach(async () => {
   }
 });
 
-function fixture(terminalCapability = true) {
+function fixture(terminalCapability = true, maxConcurrentSessions = 2) {
   const root = mkdtempSync(join(tmpdir(), "hostspan-pty-"));
   roots.push(root);
   const targetRoot = join(root, "target");
@@ -63,7 +72,7 @@ function fixture(terminalCapability = true) {
     },
     terminal: {
       backend: "pty",
-      max_concurrent_sessions: 2,
+      max_concurrent_sessions: maxConcurrentSessions,
       attach_history_bytes: 64 * 1024,
       max_output_bytes: 1024 * 1024,
     },
@@ -204,6 +213,27 @@ describe("durable interactive PTY process backend", () => {
     db.close();
   });
 
+  it("reclaims a naturally exited PTY slot before admitting the next session", async () => {
+    const { supervisor, terminal, processes, db } = fixture(true, 1);
+    const first = await supervisor.start(ttyInput("setTimeout(()=>process.exit(0),50)", 10_000, 0), "req_pty_slot_first");
+    const firstSession = track(terminal, first);
+    await expect(terminal.waitForExitStatus(firstSession, process.platform === "win32" ? 5_000 : 2_000)).resolves.toMatchObject({
+      exists: true,
+      dead: true,
+    });
+    expect(processes.activeCountForTargetBackend("test", "pty")).toBe(1);
+
+    const second = await supervisor.start(ttyInput("setTimeout(()=>process.exit(0),50)", 10_000, 0), "req_pty_slot_second");
+    track(terminal, second);
+    expect(String(second.process_id)).not.toBe(String(first.process_id));
+    expect(processes.get(String(first.process_id))?.state).toBe("succeeded");
+
+    await terminal.waitForExitStatus(String(second.terminal_session), process.platform === "win32" ? 5_000 : 2_000);
+    await supervisor.reconcileInteractiveProcesses("test");
+    expect(processes.activeCountForTargetBackend("test", "pty")).toBe(0);
+    db.close();
+  });
+
   it("keeps a live PTY process recoverable across HostSpan daemon restart", async () => {
     const first = fixture();
     const started = await first.supervisor.start(ttyInput("console.log('LIVE');setTimeout(()=>{},60000)"), "req_pty_persist_start");
@@ -232,6 +262,124 @@ describe("durable interactive PTY process backend", () => {
     const cancelled = await supervisor.cancel({ idempotency_key: uuidv7(), process_id: processId, grace_ms: 200 });
     expect(cancelled.state).toBe("cancelled");
     expect(first.terminal.inspectSync(session)).toMatchObject({ exists: true, dead: true, reason: "cancel_requested" });
+    db.close();
+  });
+
+  it("kills PTY descendants when process_cancel terminates an interactive session", async () => {
+    const { supervisor, terminal, db } = fixture();
+    const script = [
+      "const {spawn}=require('node:child_process');",
+      "const child=spawn(process.execPath,['-e','setTimeout(()=>{},60000)'],{stdio:'ignore',windowsHide:true});",
+      "console.log('CHILD='+child.pid);",
+      "setTimeout(()=>{},60000);",
+    ].join("");
+    const started = await supervisor.start(ttyInput(script, 20_000, 1_000), "req_pty_tree_cancel");
+    track(terminal, started);
+    let current = started;
+    let transcript = String(started.stdout ?? "");
+    for (let attempt = 0; attempt < 16 && !transcript.includes("CHILD="); attempt += 1) {
+      current = await supervisor.poll({
+        process_id: String(started.process_id),
+        stdout_cursor: Number(current.next_stdout_cursor ?? 0),
+        stderr_cursor: 0,
+        wait_ms: 500,
+        max_bytes: 64 * 1024,
+      });
+      transcript += String(current.stdout ?? "");
+    }
+    const match = /CHILD=(\d+)/.exec(transcript);
+    if (!match?.[1]) throw new Error(`PTY descendant fixture did not report its child PID: ${transcript}`);
+    const childPid = Number(match[1]);
+    expect(pidAlive(childPid)).toBe(true);
+
+    const cancelled = await supervisor.cancel({
+      idempotency_key: uuidv7(),
+      process_id: String(started.process_id),
+      grace_ms: 200,
+    });
+    expect(cancelled.state).toBe("cancelled");
+    for (let attempt = 0; attempt < 40 && pidAlive(childPid); attempt += 1) await sleep(50);
+    expect(pidAlive(childPid)).toBe(false);
+    db.close();
+  }, 15_000);
+
+  it.runIf(process.platform === "win32")("kills PTY descendants when synchronous recovery cleanup closes ConPTY", async () => {
+    const { supervisor, terminal, db } = fixture();
+    const script = [
+      "const {spawn}=require('node:child_process');",
+      "const child=spawn(process.execPath,['-e','setTimeout(()=>{},60000)'],{stdio:'ignore',windowsHide:true});",
+      "console.log('CHILD='+child.pid);",
+      "setTimeout(()=>{},60000);",
+    ].join("");
+    const started = await supervisor.start(ttyInput(script, 20_000, 1_000), "req_pty_tree_cleanup");
+    const session = track(terminal, started);
+    let current = started;
+    let transcript = String(started.stdout ?? "");
+    for (let attempt = 0; attempt < 12 && !transcript.includes("CHILD="); attempt += 1) {
+      current = await supervisor.poll({
+        process_id: String(started.process_id),
+        stdout_cursor: Number(current.next_stdout_cursor ?? 0),
+        stderr_cursor: 0,
+        wait_ms: 500,
+        max_bytes: 64 * 1024,
+      });
+      transcript += String(current.stdout ?? "");
+    }
+    const match = /CHILD=(\d+)/.exec(transcript);
+    if (!match?.[1]) throw new Error(`PTY descendant fixture did not report its child PID: ${transcript}`);
+    const childPid = Number(match[1]);
+    expect(pidAlive(childPid)).toBe(true);
+
+    terminal.closeSync(session);
+    await sleep(250);
+    expect(pidAlive(childPid)).toBe(false);
+    db.close();
+  });
+
+  it.runIf(process.platform === "win32")("preserves literal cmd/bat argv through the ConPTY worker", async () => {
+    const { root, supervisor, terminal, db } = fixture();
+    const targetRoot = join(root, "target");
+    const output = join(targetRoot, "captured-argv.json");
+    const helper = join(targetRoot, "capture.js");
+    const commandFile = join(targetRoot, "capture args.cmd");
+    const expected = [
+      "",
+      "space value",
+      "amp&value",
+      "pipe|value",
+      "caret^value",
+      "bang!value",
+      "percent%HOSTSPAN_META%value",
+      'quote"value',
+      "paren(value)",
+    ];
+    writeFileSync(
+      helper,
+      "require('node:fs').writeFileSync(process.env.HOSTSPAN_ARGV_OUT,JSON.stringify(process.argv.slice(2)));process.stdout.write('CAPTURED')",
+    );
+    writeFileSync(commandFile, `@"${process.execPath}" "${helper}" %*\r\n`);
+    const started = await supervisor.start(
+      {
+        ...ttyInput("", 10_000, 1_000),
+        argv: [commandFile, ...expected],
+        env: { HOSTSPAN_META: "EXPANDED", HOSTSPAN_ARGV_OUT: output },
+      },
+      "req_pty_cmd_argv",
+    );
+    track(terminal, started);
+    let current = started;
+    for (let attempt = 0; attempt < 16 && current.state === "running"; attempt += 1) {
+      current = await supervisor.poll({
+        process_id: String(started.process_id),
+        stdout_cursor: Number(current.next_stdout_cursor ?? 0),
+        stderr_cursor: 0,
+        wait_ms: 500,
+        max_bytes: 64 * 1024,
+      });
+    }
+    expect(current.state).toBe("succeeded");
+    expect(existsSync(output)).toBe(true);
+    expect(JSON.parse(readFileSync(output, "utf8"))).toEqual(expected);
     db.close();
   });
 

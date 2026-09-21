@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { join } from "node:path";
@@ -215,21 +215,59 @@ export class PtySessionManager implements InteractiveSessionManager {
     const status = this.readStatus(session);
     if (!status || status.status === "exited" || status.status === "failed") return;
     const pid = status.pty_pid;
-    if (!pid) return;
-    try {
-      process.kill(-pid, "SIGKILL");
-    } catch {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // Already gone.
+    if (pid) {
+      if (process.platform === "win32") {
+        const killed = spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 5_000,
+          maxBuffer: 1024 * 1024,
+        });
+        if (killed.error && (killed.error as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw killed.error;
+        }
+        if (killed.status !== 0 && processAlive(pid)) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            // The pseudoconsole process may already have exited.
+          }
+        }
+      } else {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            // Already gone.
+          }
+        }
       }
+    } else if (processAlive(status.worker_pid)) {
+      try {
+        process.kill(status.worker_pid, "SIGKILL");
+      } catch {
+        // The worker may already have exited.
+      }
+    }
+
+    const deadline = Date.now() + (process.platform === "win32" ? 2_500 : 1_500);
+    while (Date.now() <= deadline) {
+      const settled = this.readStatus(session);
+      if (!settled) return;
+      if ((settled.status === "exited" || settled.status === "failed") && this.outputDrained(settled.process_id)) return;
+      sleepSync(25);
     }
   }
 
   outputBytes(processId: string): number {
     const path = this.outputPath(processId);
     return existsSync(path) ? statSync(path).size : 0;
+  }
+
+  outputDrained(processId: string): boolean {
+    return existsSync(this.drainPath(processId));
   }
 
   async waitForOutputDrain(processId: string, waitMs = 1_500): Promise<InteractiveOutputDrainResult> {
@@ -280,7 +318,7 @@ export class PtySessionManager implements InteractiveSessionManager {
       };
       const close = () => socket.destroy();
       const resize = () => {
-        if (!process.stdout.isTTY) return;
+        if (readOnly || !process.stdout.isTTY) return;
         void this.write(session, {
           chars: "",
           control_keys: [],

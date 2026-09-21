@@ -1,14 +1,17 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { v7 as uuidv7 } from "uuid";
-import type { HostSpanConfig } from "../../src/config/schema.js";
+import { PolicyGlobSchema, type HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
-import { createRuntime } from "../../src/cli/index.js";
+import { createRuntime, main } from "../../src/cli/index.js";
 import { HostSpanLogger } from "../../src/observability/logger.js";
 import { buildSupportExport } from "../../src/observability/support-export.js";
+import { inspectWindowsAcl, protectWindowsFile, protectWindowsTree } from "../../src/security/windows-acl.js";
+import { openReadOnlyDatabase } from "../../src/state/database.js";
 
 const roots: string[] = [];
 
@@ -62,6 +65,109 @@ function fixture(options: { terminal?: boolean } = {}): { root: string; configPa
 }
 
 describe("security and operational boundaries", () => {
+  it("keeps policy glob syntax portable across HostSpan, ripgrep, and Git filtering", () => {
+    for (const glob of ["**/.env*", "**/node_modules/**", "src/*.ts", "file?.json"]) {
+      expect(PolicyGlobSchema.safeParse(glob).success).toBe(true);
+    }
+    for (const glob of ["!secret/**", "src/[ab].ts", "src/{a,b}.ts", "src\\secret\\**", "bad\nname"]) {
+      expect(PolicyGlobSchema.safeParse(glob).success).toBe(false);
+    }
+  });
+
+  it.runIf(process.platform === "win32")("applies private Windows ACLs to config and durable state", async () => {
+    const { configPath } = fixture();
+    expect(inspectWindowsAcl(configPath)).toMatchObject({
+      private: true,
+      unexpected_allow_sids: [],
+      missing_full_control_sids: [],
+      deny_sids: [],
+      inherited_rule_count: 0,
+    });
+    const runtime = createRuntime(configPath);
+    try {
+      expect(inspectWindowsAcl(runtime.config.server.data_dir)).toMatchObject({
+        private: true,
+        unexpected_allow_sids: [],
+        missing_full_control_sids: [],
+        deny_sids: [],
+        inherited_rule_count: 0,
+      });
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it.runIf(process.platform === "win32")("removes pre-existing explicit Windows grants while hardening owned files", () => {
+    const { configPath } = fixture();
+    const grant = spawnSync("icacls.exe", [configPath, "/grant", "*S-1-1-0:R", "/Q"], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10_000,
+    });
+    expect(grant.status, grant.stderr || grant.stdout).toBe(0);
+    expect(inspectWindowsAcl(configPath).private).toBe(false);
+    protectWindowsFile(configPath);
+    expect(inspectWindowsAcl(configPath)).toMatchObject({
+      private: true,
+      unexpected_allow_sids: [],
+      missing_full_control_sids: [],
+      deny_sids: [],
+      inherited_rule_count: 0,
+    });
+  });
+
+  it.runIf(process.platform === "win32")("removes stale explicit grants from existing durable-state descendants", async () => {
+    const { root, configPath } = fixture();
+    const runtime = createRuntime(configPath);
+    const statePath = join(runtime.config.server.data_dir, "state.db");
+    await runtime.close();
+
+    const grant = spawnSync("icacls.exe", [statePath, "/grant", "*S-1-1-0:R", "/Q"], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10_000,
+    });
+    expect(grant.status, grant.stderr || grant.stdout).toBe(0);
+    expect(inspectWindowsAcl(statePath).private).toBe(false);
+
+    protectWindowsTree(join(root, "state"));
+    expect(inspectWindowsAcl(statePath)).toMatchObject({
+      private: true,
+      unexpected_allow_sids: [],
+      missing_full_control_sids: [],
+      deny_sids: [],
+      inherited_rule_count: 0,
+    });
+  });
+
+  it("applies recursive deny globs to both root-level and nested secret paths", async () => {
+    const { root, configPath } = fixture();
+    const targetRoot = join(root, "target");
+    mkdirSync(join(targetRoot, "nested"), { recursive: true });
+    writeFileSync(join(targetRoot, ".env"), "ROOT_SECRET=1\n");
+    writeFileSync(join(targetRoot, "nested", ".env.local"), "NESTED_SECRET=1\n");
+    const runtime = createRuntime(configPath);
+    try {
+      for (const path of [".env", "nested/.env.local"]) {
+        await expect(
+          runtime.handlers.file_read(
+            {
+              target_id: "local",
+              path,
+              start_line: 1,
+              end_line: 20,
+              max_bytes: 4096,
+              include_sha256: false,
+            },
+            `req_denied_${path}`,
+          ),
+        ).rejects.toMatchObject({ code: "SCOPE_DENIED" });
+      }
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("blocks MCP self-mutation of the active HostSpan config", async () => {
     const { configPath } = fixture();
     const runtime = createRuntime(configPath);
@@ -85,11 +191,11 @@ describe("security and operational boundaries", () => {
       ).rejects.toMatchObject({ code: "SCOPE_DENIED" });
       expect(readFileSync(configPath)).toEqual(before);
     } finally {
-      runtime.close();
+      await runtime.close();
     }
   });
 
-  it("redacts secret canaries from JSONL logs and support exports", () => {
+  it("redacts secret canaries from JSONL logs and support exports", async () => {
     const { root, configPath } = fixture();
     const canary = "HOSTSPAN_SECRET_CANARY_DO_NOT_LEAK_12345";
     const logger = new HostSpanLogger(join(root, "log-state"));
@@ -107,7 +213,56 @@ describe("security and operational boundaries", () => {
       expect(exported).toContain("native_execution");
       expect(exported).toContain("sandboxed");
     } finally {
-      runtime.close();
+      await runtime.close();
+    }
+  });
+
+  it("bounds JSONL files with deterministic size rotation", () => {
+    const { root } = fixture();
+    const dataDir = join(root, "rotation-state");
+    const logger = new HostSpanLogger(dataDir, { maxFileBytes: 300, maxArchives: 2 });
+    for (let index = 0; index < 20; index += 1) logger.info("rotation.test", { index, payload: "x".repeat(80) });
+    const logDir = join(dataDir, "logs");
+    expect(existsSync(join(logDir, "hostspan.jsonl"))).toBe(true);
+    expect(existsSync(join(logDir, "hostspan.jsonl.1"))).toBe(true);
+    expect(existsSync(join(logDir, "hostspan.jsonl.2"))).toBe(true);
+    expect(existsSync(join(logDir, "hostspan.jsonl.3"))).toBe(false);
+  });
+
+  it("keeps support-export read-only with respect to durable process recovery state", async () => {
+    const { root, configPath } = fixture();
+    const runtime = createRuntime(configPath);
+    const key = uuidv7();
+    const args = { idempotency_key: key, target_id: "local", argv: ["node"], cwd: "." };
+    runtime.operations.resolve(key, "process_start", args, "local");
+    runtime.processes.create({
+      process_id: "proc_support_readonly",
+      idempotency_key: key,
+      target_id: "local",
+      argv_digest: "sha256:test",
+      cwd_relative: ".",
+    });
+    runtime.processes.markRunning("proc_support_readonly", 999_999_991, 999_999_991);
+    runtime.operations.setState(key, "running", { process_id: "proc_support_readonly" });
+    const statePath = join(runtime.config.server.data_dir, "state.db");
+    await runtime.close();
+
+    const output = join(root, "support.json");
+    const originalWrite = process.stdout.write;
+    process.stdout.write = (() => true) as typeof process.stdout.write;
+    try {
+      await expect(main(["support-export", output, "--config", configPath])).resolves.toBe(0);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+
+    const readonly = openReadOnlyDatabase(statePath);
+    try {
+      expect(
+        (readonly.prepare("SELECT state FROM processes WHERE process_id=?").get("proc_support_readonly") as { state: string }).state,
+      ).toBe("running");
+    } finally {
+      readonly.close();
     }
   });
 
@@ -131,7 +286,7 @@ describe("security and operational boundaries", () => {
         ),
       ).rejects.toMatchObject({ code: "SCOPE_DENIED" });
     } finally {
-      runtime.close();
+      await runtime.close();
     }
   });
 
@@ -154,8 +309,23 @@ describe("security and operational boundaries", () => {
           "req_exec_allowlist",
         ),
       ).rejects.toMatchObject({ code: "SCOPE_DENIED" });
+      await expect(
+        runtime.handlers.process_start(
+          {
+            idempotency_key: uuidv7(),
+            target_id: "local",
+            argv: [process.execPath, "-e", "process.stdout.write('should-not-run')"],
+            cwd: ".",
+            env: {},
+            wait_ms: 100,
+            deadline_ms: 5_000,
+            max_output_bytes: 4096,
+          },
+          "req_exec_explicit_path",
+        ),
+      ).rejects.toMatchObject({ code: "SCOPE_DENIED" });
     } finally {
-      runtime.close();
+      await runtime.close();
     }
   });
 
@@ -197,7 +367,7 @@ describe("security and operational boundaries", () => {
         interactive: false,
       });
     } finally {
-      runtime.close();
+      await runtime.close();
     }
   });
 });

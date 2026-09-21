@@ -1,10 +1,10 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import Database from "better-sqlite3";
 import { loadConfig } from "../config/loader.js";
 import type { Capability, HostSpanConfig } from "../config/schema.js";
 import { writeConfigAtomic } from "../config/writer.js";
 import { PtySessionManager } from "../processes/pty-session.js";
+import { openReadOnlyDatabase } from "../state/database.js";
 import { TargetRegistry } from "../targets/registry.js";
 import { daemonStatus } from "../cli/daemon.js";
 import { SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
@@ -18,6 +18,7 @@ export interface AddWorkspaceInput {
   label?: string;
   root: string;
   capabilities: Capability[];
+  exec_profile?: string;
 }
 
 const TARGET_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -80,7 +81,15 @@ export function addLocalWorkspace(configPath: string, input: AddWorkspaceInput) 
 
   const capabilities = normalizedCapabilities(input.capabilities);
   if (capabilities.length === 0) throw new Error("select at least one workspace capability.");
-  const execProfile = capabilities.includes("exec") ? defaultExecProfile(config) : undefined;
+  if (input.exec_profile && !capabilities.includes("exec")) {
+    throw new Error("exec_profile requires the exec capability.");
+  }
+  const requestedExecProfile = input.exec_profile?.trim();
+  if (requestedExecProfile) {
+    const profile = config.exec_profiles[requestedExecProfile];
+    if (!profile || profile.mode !== "native") throw new Error(`unknown native exec profile: ${requestedExecProfile}`);
+  }
+  const execProfile = capabilities.includes("exec") ? requestedExecProfile || defaultExecProfile(config) : undefined;
   if (capabilities.includes("exec") && !execProfile) throw new Error("no native exec profile is configured.");
 
   config.targets[targetId] = {
@@ -103,7 +112,7 @@ export function removeLocalWorkspace(configPath: string, targetId: string) {
   if (!config.targets[targetId]) throw new Error(`unknown target: ${targetId}`);
   const statePath = join(config.server.data_dir, "state.db");
   if (existsSync(statePath)) {
-    const db = new Database(statePath, { readonly: true, fileMustExist: true });
+    const db = openReadOnlyDatabase(statePath);
     try {
       const active = (
         db
@@ -135,7 +144,7 @@ export function buildAdminSnapshot(configPath: string, options: AdminSnapshotOpt
   let activeProcessCount = 0;
 
   if (existsSync(statePath)) {
-    const db = new Database(statePath, { readonly: true, fileMustExist: true });
+    const db = openReadOnlyDatabase(statePath);
     try {
       const schema = db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string } | undefined;
       schemaVersion = schema ? Number(schema.value) : null;
@@ -172,10 +181,7 @@ export function buildAdminSnapshot(configPath: string, options: AdminSnapshotOpt
       activeRequests = unmatched
         .filter((row) => new Date(row.timestamp).getTime() >= activeCutoff)
         .map((row) => ({ request_id: row.request_id, timestamp: row.timestamp, metadata: JSON.parse(row.metadata_json) }));
-      const processProjection =
-        (schemaVersion ?? 0) >= 4
-          ? "process_id,target_id,backend,backend_ref,state,started_at,ended_at,reason"
-          : "process_id,target_id,'native' AS backend,NULL AS backend_ref,state,started_at,ended_at,reason";
+      const processProjection = "process_id,target_id,backend,backend_ref,state,started_at,ended_at,reason";
       recentProcesses = db
         .prepare(
           `SELECT ${processProjection}
@@ -254,10 +260,8 @@ export function resolveTerminalSession(configPath: string, processId: string): {
   const config = loadConfig(resolve(configPath));
   const statePath = join(config.server.data_dir, "state.db");
   if (!existsSync(statePath)) return null;
-  const db = new Database(statePath, { readonly: true, fileMustExist: true });
+  const db = openReadOnlyDatabase(statePath);
   try {
-    const schema = db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string } | undefined;
-    if (!schema || Number(schema.value) < 4) return null;
     const row = db
       .prepare("SELECT backend_ref,target_id,state FROM processes WHERE process_id=? AND backend='pty'")
       .get(processId) as { backend_ref: string | null; target_id: string; state: string } | undefined;

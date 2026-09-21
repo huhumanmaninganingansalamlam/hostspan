@@ -81,6 +81,8 @@ function run(executable, args, extraEnv = {}) {
 		encoding: "utf8",
 		env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", ...extraEnv },
 		windowsHide: true,
+		timeout: 120_000,
+		maxBuffer: 8 * 1024 * 1024,
 	});
 	if (result.status !== 0) {
 		process.stderr.write(result.stdout ?? "");
@@ -204,6 +206,18 @@ function smokePackagedRuntime(executable, cli, nativeModule, ptyModule, ripgrepM
 	try {
 		const configPath = join(scratch, "config.yaml");
 		const targetRoot = join(scratch, "target");
+		const smokeEnv = {
+			HOSTSPAN_CONFIG: configPath,
+			...(targetPlatform === "win32"
+				? {
+					APPDATA: join(scratch, "app-data"),
+					LOCALAPPDATA: join(scratch, "local-app-data"),
+				}
+				: {
+					XDG_CONFIG_HOME: join(scratch, "config-home"),
+					XDG_STATE_HOME: join(scratch, "state-home"),
+				}),
+		};
 		mkdirSync(targetRoot);
 		writeFileSync(join(targetRoot, "README.txt"), "packaged smoke\n");
 		const gitInit = spawnSync("git", ["-C", targetRoot, "init", "-q"], {
@@ -215,7 +229,7 @@ function smokePackagedRuntime(executable, cli, nativeModule, ptyModule, ripgrepM
 				["Packaged smoke could not initialize Git target: ", gitInit.stderr || gitInit.stdout].join(""),
 			);
 		}
-		run(executable, [cli, "init"], { HOSTSPAN_CONFIG: configPath });
+		run(executable, [cli, "init"], smokeEnv);
 		run(
 			executable,
 			[
@@ -231,10 +245,10 @@ function smokePackagedRuntime(executable, cli, nativeModule, ptyModule, ripgrepM
 				"--exec-profile",
 				"native-dev",
 			],
-			{ HOSTSPAN_CONFIG: configPath },
+			smokeEnv,
 		);
 		const doctor = JSON.parse(
-			run(executable, [cli, "doctor"], { HOSTSPAN_CONFIG: configPath }),
+			run(executable, [cli, "doctor"], smokeEnv),
 		);
 		if (doctor.ok !== true) {
 			throw new Error(
@@ -243,7 +257,7 @@ function smokePackagedRuntime(executable, cli, nativeModule, ptyModule, ripgrepM
 		}
 		const workflow = JSON.parse(
 			run(executable, [cli, "smoke", "--target", "packaged-smoke"], {
-				HOSTSPAN_CONFIG: configPath,
+				...smokeEnv,
 			}),
 		);
 		if (workflow.ok !== true) {
@@ -268,11 +282,11 @@ function smokePackagedRuntime(executable, cli, nativeModule, ptyModule, ripgrepM
 			"for(let i=0;i<attempts&&(current.state==='running'||!transcript.includes('HELLO packaged'));i++){current=await rt.handlers.process_poll({process_id:String(started.process_id),stdout_cursor:Number(current.next_stdout_cursor||0),stderr_cursor:0,wait_ms:500,max_bytes:65536},'packaged_pty_poll_'+i);transcript+=String(current.stdout||'');}",
 			"if(current.state!=='succeeded'||!transcript.includes('HELLO packaged')){console.error(JSON.stringify({started,current,transcript}));process.exitCode=11;return;}",
 			"process.stdout.write('hostspan-pty-ok');",
-			"}finally{rt.close();}",
+			"}finally{await rt.close();}",
 			"}).catch(e=>{console.error(e?.stack||String(e));process.exit(12);});",
 		].join("");
 		const hostspanPty = run(executable, ["-e", hostspanPtyProbe], {
-			HOSTSPAN_CONFIG: configPath,
+			...smokeEnv,
 		});
 		if (hostspanPty !== "hostspan-pty-ok") {
 			throw new Error(`Unexpected HostSpan PTY lifecycle probe output: ${hostspanPty}`);
@@ -281,7 +295,7 @@ function smokePackagedRuntime(executable, cli, nativeModule, ptyModule, ripgrepM
 		const snapshotText = run(
 			executable,
 			[cli, "admin", "snapshot", "--recent", "1"],
-			{ HOSTSPAN_CONFIG: configPath },
+			smokeEnv,
 		);
 		const snapshot = JSON.parse(snapshotText);
 		if (snapshot.server_version !== packageJson.version) {

@@ -3,6 +3,11 @@ import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep 
 import { HostSpanError } from "../mcp/errors.js";
 import type { TargetRuntime } from "../targets/registry.js";
 import { darwinOpenAt } from "./darwin-fs.js";
+import {
+  closeWindowsDirectoryGuard,
+  openWindowsDirectoryGuard,
+  type WindowsDirectoryGuard,
+} from "./windows-fs.js";
 
 export type PathIntent = "list" | "read" | "search" | "write" | "exec";
 
@@ -87,6 +92,7 @@ export function resolveTargetPath(target: TargetRuntime, input: string, _intent:
 
 export interface OpenedDirectory {
   fd: number | null;
+  windows_guard?: WindowsDirectoryGuard;
   path: GuardedPath;
   stable_path: string;
   dev: string;
@@ -103,19 +109,36 @@ export function openDirectoryNoFollow(target: TargetRuntime, input: string, inte
   if (!guarded.exists) throw new HostSpanError("FILE_NOT_FOUND", `Directory does not exist: ${input}`);
   if (!lstatSync(guarded.absolute).isDirectory()) throw new HostSpanError("FILE_NOT_FOUND", `Not a directory: ${input}`);
   if (process.platform === "win32") {
-    const before = statSync(guarded.absolute, { bigint: true });
-    const rechecked = resolveTargetPath(target, input, intent);
-    const current = statSync(rechecked.absolute, { bigint: true });
-    if (before.dev !== current.dev || before.ino !== current.ino) {
-      throw new HostSpanError("SYMLINK_REJECTED", `Directory identity changed during open: ${input}`);
+    let windowsGuard: WindowsDirectoryGuard | undefined;
+    try {
+      windowsGuard = openWindowsDirectoryGuard(guarded.absolute);
+    } catch (error) {
+      throw new HostSpanError(
+        "POLICY_UNENFORCEABLE",
+        `Could not pin Windows directory against path replacement: ${input}`,
+        true,
+        { reason: error instanceof Error ? error.message : String(error) },
+      );
     }
-    return {
-      fd: null,
-      path: rechecked,
-      stable_path: rechecked.absolute,
-      dev: current.dev.toString(),
-      ino: current.ino.toString(),
-    };
+    const before = statSync(guarded.absolute, { bigint: true });
+    try {
+      const rechecked = resolveTargetPath(target, input, intent);
+      const current = statSync(rechecked.absolute, { bigint: true });
+      if (before.dev !== current.dev || before.ino !== current.ino) {
+        throw new HostSpanError("SYMLINK_REJECTED", `Directory identity changed during open: ${input}`);
+      }
+      return {
+        fd: null,
+        windows_guard: windowsGuard,
+        path: rechecked,
+        stable_path: rechecked.absolute,
+        dev: current.dev.toString(),
+        ino: current.ino.toString(),
+      };
+    } catch (error) {
+      closeWindowsDirectoryGuard(windowsGuard);
+      throw error;
+    }
   }
   const fd = openSync(guarded.absolute, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try {
@@ -153,6 +176,11 @@ export function assertDirectoryStillCurrent(target: TargetRuntime, input: string
   }
 }
 
+export function closeOpenedDirectory(openedDirectory: OpenedDirectory): void {
+  if (openedDirectory.fd !== null) closeSync(openedDirectory.fd);
+  closeWindowsDirectoryGuard(openedDirectory.windows_guard);
+}
+
 export function openReadNoFollow(
   target: TargetRuntime,
   input: string,
@@ -186,7 +214,7 @@ export function openReadNoFollow(
       throw error;
     }
   } finally {
-    if (parent.fd !== null) closeSync(parent.fd);
+    closeOpenedDirectory(parent);
   }
 }
 

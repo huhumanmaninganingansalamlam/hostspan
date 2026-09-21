@@ -1,11 +1,15 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { v7 as uuidv7 } from "uuid";
 import { afterEach, describe, expect, it } from "vitest";
 import type { HostSpanConfig } from "../../src/config/schema.js";
-import { FilePatchService, recoverPatchTransactions } from "../../src/files/patch.js";
+import {
+  cleanupTerminalPatchJournals,
+  FilePatchService,
+  recoverPatchTransactions,
+} from "../../src/files/patch.js";
 import type { HostSpanError } from "../../src/mcp/errors.js";
 import { PolicyEvaluator } from "../../src/policy/evaluator.js";
 import { openDatabase } from "../../src/state/database.js";
@@ -117,7 +121,7 @@ describe("hash-guarded patch transaction", () => {
   });
 
   it("produces the same staged diff for dry-run and apply and verifies the after hash", () => {
-    const { root, target, service, db } = fixture();
+    const { root, data, target, service, transactions, operations, db } = fixture();
     const before = "a\nb\n";
     const patch = "@@ -1,2 +1,2 @@\n a\n-b\n+c\n";
     writeFileSync(join(root, "a.txt"), before);
@@ -140,6 +144,9 @@ describe("hash-guarded patch transaction", () => {
     expect((dry.files as Array<Record<string, unknown>>)[0]?.unified_diff).toBe((applied.files as Array<Record<string, unknown>>)[0]?.unified_diff);
     expect(readFileSync(join(root, "a.txt"), "utf8")).toBe("a\nc\n");
     expect((applied.files as Array<Record<string, unknown>>)[0]?.after_sha256).toBe(hash("a\nc\n"));
+    expect(existsSync(join(data, "transactions", `${String(applied.transaction_id)}.json`))).toBe(false);
+    expect(transactions.get(String(applied.transaction_id))?.state).toBe("verified");
+    expect(operations.get(key)?.state).toBe("verified");
 
     const replay = service.apply(target, {
       idempotency_key: key,
@@ -233,7 +240,10 @@ describe("hash-guarded patch transaction", () => {
     operations.resolve(key, "file_patch", { recovery: true }, "test");
     operations.setState(key, "committing", { transaction_id: transactionId });
     transactions.create(transactionId, key, "test", journalPath);
-    transactions.setState(transactionId, "committing");
+    db.prepare("UPDATE patch_transactions SET state='committing',updated_at=? WHERE transaction_id=?").run(
+      new Date().toISOString(),
+      transactionId,
+    );
     writeFileSync(
       journalPath,
       JSON.stringify({
@@ -250,10 +260,36 @@ describe("hash-guarded patch transaction", () => {
         ],
       }),
     );
-    expect(recoverPatchTransactions(targets, operations, transactions)).toEqual([{ transaction_id: transactionId, state: "rolled_back" }]);
+    expect(recoverPatchTransactions(targets, transactions)).toEqual([{ transaction_id: transactionId, state: "rolled_back" }]);
     expect(readFileSync(join(root, "a.txt"), "utf8")).toBe(beforeA);
     expect(readFileSync(join(root, "b.txt"), "utf8")).toBe(beforeB);
     expect(operations.get(key)?.state).toBe("rolled_back");
+    expect(existsSync(journalPath)).toBe(false);
+    db.close();
+  });
+
+  it("cleans a terminal journal left behind after the atomic DB outcome committed", () => {
+    const { data, operations, transactions, db } = fixture();
+    const key = uuidv7();
+    const transactionId = "txn_terminal_journal";
+    const journalPath = join(data, "transactions", `${transactionId}.json`);
+    mkdirSync(join(data, "transactions"), { recursive: true });
+    operations.resolve(key, "file_patch", { cleanup: true }, "test");
+    transactions.create(transactionId, key, "test", journalPath);
+    transactions.setOutcome(
+      transactionId,
+      "verified",
+      key,
+      "verified",
+      { state: "verified", transaction_id: transactionId },
+    );
+    writeFileSync(journalPath, JSON.stringify({ terminal: true }));
+
+    expect(cleanupTerminalPatchJournals(transactions)).toEqual([journalPath]);
+    expect(existsSync(journalPath)).toBe(false);
+    expect(transactions.get(transactionId)?.state).toBe("verified");
+    expect(transactions.get(transactionId)?.journal_path).toBe("");
+    expect(operations.get(key)?.state).toBe("verified");
     db.close();
   });
 });

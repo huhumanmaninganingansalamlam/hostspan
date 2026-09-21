@@ -40,6 +40,7 @@ export interface InteractiveSessionManager {
   close(session: string, graceMs?: number): Promise<void>;
   closeSync(session: string): void;
   outputBytes(processId: string): number;
+  outputDrained(processId: string): boolean;
   waitForOutputDrain(processId: string, waitMs?: number): Promise<InteractiveOutputDrainResult>;
   waitForExitStatus(session: string, waitMs?: number): Promise<InteractiveSessionSnapshot>;
   waitForActivity(

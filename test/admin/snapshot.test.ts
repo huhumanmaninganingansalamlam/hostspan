@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -9,13 +9,15 @@ import {
   removeDaemonPid,
   requestDaemonShutdown,
   startDaemonControlServer,
+  stopDaemon,
   writeDaemonPid,
 } from "../../src/cli/daemon.js";
 import { loadConfig } from "../../src/config/loader.js";
+import { runDoctor } from "../../src/cli/doctor.js";
 import type { HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
 import { AuditRepo } from "../../src/state/audit-repo.js";
-import { openDatabase } from "../../src/state/database.js";
+import { DB_SCHEMA_VERSION, openDatabase } from "../../src/state/database.js";
 import { ProcessesRepo } from "../../src/state/processes-repo.js";
 
 const roots: string[] = [];
@@ -71,6 +73,15 @@ function fixture() {
 }
 
 describe("local admin snapshot", () => {
+  it("runs Doctor without creating or migrating the durable state database", async () => {
+    const { configPath, dataDir } = fixture();
+    const statePath = join(dataDir, "state.db");
+    expect(existsSync(statePath)).toBe(false);
+    const report = await runDoctor(configPath);
+    expect(report.checks.find((check) => check.name === "sqlite")).toMatchObject({ status: "pass" });
+    expect(existsSync(statePath)).toBe(false);
+  });
+
   it("uses authenticated local IPC for graceful daemon shutdown requests", async () => {
     const { configPath } = fixture();
     let requested = false;
@@ -78,13 +89,24 @@ describe("local admin snapshot", () => {
       requested = true;
     });
     try {
-      expect(await requestDaemonShutdown(configPath)).toBe(true);
+      expect(await requestDaemonShutdown(configPath)).toEqual({ ok: true, pid: process.pid });
       await new Promise((resolve) => setImmediate(resolve));
       expect(requested).toBe(true);
     } finally {
       await control.close();
     }
-    expect(await requestDaemonShutdown(configPath)).toBe(false);
+    expect(await requestDaemonShutdown(configPath)).toBeNull();
+  });
+
+  it("refuses to signal a live PID that is not authenticated by the daemon control channel", async () => {
+    const { configPath } = fixture();
+    writeDaemonPid(configPath, process.pid);
+    try {
+      await expect(stopDaemon(configPath)).rejects.toThrow(/Refusing to signal pid/);
+      expect(() => process.kill(process.pid, 0)).not.toThrow();
+    } finally {
+      removeDaemonPid(configPath, process.pid);
+    }
   });
 
   it("reads targets, active work, calls, process state, and daemon pid without mutating running records", () => {
@@ -166,13 +188,13 @@ describe("local admin snapshot", () => {
     );
   });
 
-  it("reads a pre-v4 database without triggering migration before the daemon starts", () => {
+  it("rejects an unsupported state database instead of silently adapting it", () => {
     const { configPath, dataDir } = fixture();
     const path = join(dataDir, "state.db");
     mkdirSync(dataDir, { recursive: true });
     rmSync(path, { force: true });
-    const legacy = new Database(path);
-    legacy.exec(`
+    const unsupported = new Database(path);
+    unsupported.exec(`
       CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       INSERT INTO meta(key,value) VALUES('schema_version','3');
       CREATE TABLE processes (
@@ -187,17 +209,11 @@ describe("local admin snapshot", () => {
         event_type TEXT NOT NULL, metadata_json TEXT NOT NULL, timestamp TEXT NOT NULL
       );
       INSERT INTO processes(process_id,idempotency_key,target_id,argv_digest,cwd_relative,state,started_at)
-      VALUES('proc_legacy','0199e78d-4c00-7000-8000-000000000902','local','sha256:test','.','running','2026-09-18T00:00:00.000Z');
+      VALUES('proc_unsupported','0199e78d-4c00-7000-8000-000000000902','local','sha256:test','.','running','2026-09-18T00:00:00.000Z');
     `);
-    legacy.close();
+    unsupported.close();
 
-    const snapshot = buildAdminSnapshot(configPath, { recent: 20 });
-    expect(snapshot.state.schema_version).toBe(3);
-    expect(snapshot.active_process_count).toBe(1);
-    expect(snapshot.active_processes).toContainEqual(expect.objectContaining({ process_id: "proc_legacy", backend: "native" }));
-    expect(snapshot.recent_processes).toContainEqual(
-      expect.objectContaining({ process_id: "proc_legacy", backend: "native", backend_ref: null, state: "running" }),
-    );
+    expect(() => buildAdminSnapshot(configPath, { recent: 20 })).toThrow(/unsupported HostSpan database schema 3/);
 
     const check = new Database(path, { readonly: true });
     try {
@@ -207,6 +223,21 @@ describe("local admin snapshot", () => {
     } finally {
       check.close();
     }
+  });
+
+  it("rejects a current-version database whose required schema shape is incomplete", () => {
+    const { configPath, dataDir } = fixture();
+    const path = join(dataDir, "state.db");
+    const created = openDatabase(path);
+    created.close();
+
+    const damaged = new Database(path);
+    damaged.exec("ALTER TABLE processes DROP COLUMN backend_ref");
+    damaged.close();
+
+    expect(() => buildAdminSnapshot(configPath, { recent: 20 })).toThrow(
+      new RegExp(`schema ${DB_SCHEMA_VERSION} is incomplete; processes is missing columns: backend_ref`),
+    );
   });
 
   it("adds a local workspace with explicit capabilities and removes it safely", () => {

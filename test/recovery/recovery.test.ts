@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { v7 as uuidv7 } from "uuid";
 import { processGroupAlive, recoverProcesses, signalProcessGroup } from "../../src/processes/recovery.js";
+import type { InteractiveSessionManager, InteractiveSessionSnapshot } from "../../src/processes/interactive-session.js";
 import { openDatabase } from "../../src/state/database.js";
 import { OperationsRepo } from "../../src/state/operations-repo.js";
 import { ProcessesRepo } from "../../src/state/processes-repo.js";
@@ -20,6 +21,27 @@ function fixture() {
   roots.push(root);
   const db = openDatabase(join(root, "state.db"));
   return { db, operations: new OperationsRepo(db), processes: new ProcessesRepo(db) };
+}
+
+function terminalFixture(snapshot: InteractiveSessionSnapshot, options: { drained?: boolean; onClose?: () => void } = {}): InteractiveSessionManager {
+  return {
+    backend: "pty",
+    sessionName: (processId) => processId,
+    humanAttachCommand: (session) => `attach ${session}`,
+    available: async () => true,
+    start: async () => ({ session: "unused", pid: null }),
+    inspect: async () => snapshot,
+    inspectSync: () => snapshot,
+    write: async () => undefined,
+    close: async () => undefined,
+    closeSync: () => options.onClose?.(),
+    outputBytes: () => 0,
+    outputDrained: () => options.drained ?? false,
+    waitForOutputDrain: async () => ({ drained: options.drained ?? false, bytes: 0 }),
+    waitForExitStatus: async () => snapshot,
+    waitForActivity: async () => snapshot,
+    attach: async () => undefined,
+  };
 }
 
 describe("process recovery", () => {
@@ -72,6 +94,87 @@ describe("process recovery", () => {
     signalProcessGroup(pid, "SIGKILL");
     await new Promise<void>((resolve) => child.once("exit", () => resolve()));
     expect(processGroupAlive(pid)).toBe(false);
+    db.close();
+  });
+
+  it("uses unknown when an expired PTY cannot prove termination during restart recovery", () => {
+    const { db, operations, processes } = fixture();
+    const key = uuidv7();
+    const args = { idempotency_key: key, target_id: "t", argv: ["node"], cwd: ".", tty: true };
+    operations.resolve(key, "process_start", args, "t");
+    processes.create({
+      process_id: "proc_expired_pty",
+      idempotency_key: key,
+      target_id: "t",
+      argv_digest: "sha256:pty",
+      cwd_relative: ".",
+      backend: "pty",
+      backend_ref: "proc_expired_pty",
+      deadline_at: new Date(Date.now() - 1000).toISOString(),
+      max_output_bytes: 1024,
+    });
+    processes.markRunning("proc_expired_pty", 1234, null);
+    operations.setState(key, "running", { process_id: "proc_expired_pty" });
+    let closeCalls = 0;
+    const running: InteractiveSessionSnapshot = {
+      exists: true,
+      dead: false,
+      exit_code: null,
+      signal: null,
+      reason: null,
+      pid: 1234,
+      columns: 80,
+      rows: 24,
+    };
+    const terminal = terminalFixture(running, { onClose: () => closeCalls++ });
+
+    expect(recoverProcesses(processes, operations, terminal)).toEqual([{ process_id: "proc_expired_pty", state: "unknown" }]);
+    expect(closeCalls).toBe(1);
+    expect(processes.get("proc_expired_pty")).toMatchObject({
+      state: "unknown",
+      reason: "deadline_termination_unconfirmed_after_restart",
+    });
+    expect(processes.get("proc_expired_pty")?.output_expires_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    db.close();
+  });
+
+  it("does not claim a successful PTY exit before output drain is durable", () => {
+    const { db, operations, processes } = fixture();
+    const key = uuidv7();
+    const args = { idempotency_key: key, target_id: "t", argv: ["node"], cwd: ".", tty: true };
+    operations.resolve(key, "process_start", args, "t");
+    processes.create({
+      process_id: "proc_undrained_pty",
+      idempotency_key: key,
+      target_id: "t",
+      argv_digest: "sha256:pty",
+      cwd_relative: ".",
+      backend: "pty",
+      backend_ref: "proc_undrained_pty",
+      deadline_at: new Date(Date.now() + 60_000).toISOString(),
+      max_output_bytes: 1024,
+    });
+    processes.markRunning("proc_undrained_pty", 1234, null);
+    operations.setState(key, "running", { process_id: "proc_undrained_pty" });
+    const dead: InteractiveSessionSnapshot = {
+      exists: true,
+      dead: true,
+      exit_code: 0,
+      signal: null,
+      reason: null,
+      pid: 1234,
+      columns: 80,
+      rows: 24,
+    };
+
+    expect(recoverProcesses(processes, operations, terminalFixture(dead))).toEqual([
+      { process_id: "proc_undrained_pty", state: "unknown" },
+    ]);
+    expect(processes.get("proc_undrained_pty")).toMatchObject({
+      state: "unknown",
+      reason: "pty_output_drain_unconfirmed_after_restart",
+    });
+    expect(processes.get("proc_undrained_pty")?.output_expires_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     db.close();
   });
 });

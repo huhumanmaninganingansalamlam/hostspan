@@ -26,13 +26,11 @@ Linux x64 and macOS x64 use Unix PTYs and POSIX process groups. Native Windows x
 
 ## Requirements
 
-- Node.js 22 or newer
-- Corepack + pnpm 12.4.2
-- `git`
-- `ripgrep` (`rg`) for `file_search`
-- systemd user services only if using `hostspan service ...`
-- Electron dependencies only if using or packaging the optional system-tray companion (`pnpm desktop` / `pnpm desktop:make`)
-- OpenAI Secure MCP Tunnel for the standard ChatGPT Web connection path
+For the packaged desktop app, HostSpan bundles its Node/Electron runtime and ripgrep. Install Git only if you use `git_changes`.
+
+For the portable CLI package, use Node.js 22 or newer. Source development additionally uses Corepack + pnpm 12.4.2. Linux systemd is optional and is only needed for `hostspan service ...`.
+
+OpenAI Secure MCP Tunnel is used for the standard ChatGPT Web connection path; a user-managed HTTPS reverse proxy is also supported.
 
 ## Build
 
@@ -63,9 +61,13 @@ hostspan doctor
 hostspan smoke --target local-app
 ```
 
-`hostspan init` writes the default config under `$XDG_CONFIG_HOME/hostspan/config.yaml` or `~/.config/hostspan/config.yaml`. Use `--config /path/to/config.yaml` or `HOSTSPAN_CONFIG` to select another file. Target creation/removal and policy changes are local admin operations; they are not MCP tools.
+`hostspan init` writes the default config under `%APPDATA%\HostSpan\config.yaml` on Windows and `$XDG_CONFIG_HOME/hostspan/config.yaml` (or `~/.config/hostspan/config.yaml`) on Linux/macOS. Use `--config /path/to/config.yaml` or `HOSTSPAN_CONFIG` to select another file. Target creation/removal and policy changes are local admin operations; they are not MCP tools.
 
 The sample configuration and policy guidance are in [`examples/hostspan.example.yaml`](examples/hostspan.example.yaml) and [`examples/policy.example.yaml`](examples/policy.example.yaml).
+
+Target `deny_globs` / `ignore_globs` use a deliberately portable policy syntax: forward-slash paths with literal characters plus `*`, `**`, and `?`. HostSpan rejects leading `!`, backslashes, bracket classes, and brace expansion so file tools, ripgrep, and Git cannot interpret the same policy differently.
+
+`file_read` may scan forward to a requested late line independently of the response `max_bytes`, but each call has a fixed 64 MiB line-scan ceiling. Requests beyond that bound fail explicitly with `reason=file_read_scan_limit`; use `file_search` to narrow the location first rather than turning one read into an unbounded filesystem scan.
 
 ## Run the server
 
@@ -83,7 +85,7 @@ Readiness http://127.0.0.1:39393/readyz
 
 The default bind is loopback-only, but `server.listen_host` is configurable for LAN/container/reverse-proxy deployments. Host header validation remains enabled for every bind. **Any non-loopback HostSpan server additionally requires built-in OAuth and fails closed when OAuth is missing.** `readyz` represents server/database readiness; missing ripgrep is reported as degraded so non-search tools stay usable, while `file_search` returns `SEARCH_BACKEND_UNAVAILABLE`.
 
-HostSpan also applies local overload boundaries so several agents cannot amplify one burst into unbounded host work. Defaults are 128 in-flight MCP requests, 8 concurrent ripgrep searches, 16 queued searches, and a 1-second search queue timeout. Search overflow returns retryable `SERVER_BUSY`; process execution is independently bounded by each exec profile's `max_concurrent_processes`. Durable audit history is bounded by both `audit_days` and `max_audit_events` (500,000 by default).
+HostSpan also applies local overload and retention boundaries so several agents cannot amplify one burst into unbounded host work. Defaults are 128 in-flight MCP requests, 8 concurrent ripgrep searches, 16 queued searches, and a 1-second search queue timeout. Search overflow returns retryable `SERVER_BUSY`; process execution is independently bounded by each exec profile's `max_concurrent_processes`. Durable audit history is bounded by both `audit_days` and `max_audit_events` (500,000 by default). Completed process output expires after 60 minutes by default, the retained spool budget defaults to 1 GiB, and old operation response payloads are compacted after 14 days without deleting their idempotency-key tombstones. Once those payloads and retained output are gone, redundant completed process/patch detail rows are also pruned while the operation tombstone remains.
 
 ```yaml
 server:
@@ -93,7 +95,11 @@ server:
   search_queue_timeout_ms: 1000
 
 retention:
+  completed_process_output_ttl_minutes: 60
+  operation_result_days: 14
+  audit_days: 30
   max_audit_events: 500000
+  max_total_spool_bytes: 1073741824
 
 terminal:
   backend: pty
@@ -151,7 +157,7 @@ pnpm desktop:make
 pnpm desktop:smoke
 ```
 
-Linux x64 produces AppImage and Debian packages, Windows x64 produces an NSIS installer and ZIP, and macOS produces separate Apple Silicon and Intel DMG/ZIP artifacts. `desktop:smoke` executes the CLI from the packaged ASAR and opens an in-memory `better-sqlite3` database under the packaged Electron runtime, catching broken native-module packaging before release. Tagging a commit as `v<package-version>` runs the cross-platform GitHub Actions release workflow, verifies that the tag matches `package.json`, builds the four desktop architecture lanes plus a portable CLI `.tgz`, generates `SHA256SUMS.txt`, and publishes a GitHub prerelease for alpha/beta tags. Current CI artifacts are unsigned; operating-system signing and notarization credentials can be added without changing the MCP contract. See [Desktop distribution](docs/DISTRIBUTION.md).
+Linux x64 produces AppImage and Debian packages, Windows x64 produces an NSIS installer and ZIP, and macOS produces separate Apple Silicon and Intel DMG/ZIP artifacts. `desktop:smoke` executes the CLI from the packaged ASAR and verifies packaged SQLite, bundled ripgrep, native PTY loading, the full local file/Git/process workflow, and a real HostSpan `tty=true` start/write/resize/poll lifecycle. Tagging a commit as `v<package-version>` runs the cross-platform GitHub Actions release workflow, verifies that the tag matches `package.json` and points to a commit contained in `main`, builds the four desktop architecture lanes plus a portable CLI `.tgz`, generates `SHA256SUMS.txt`, refuses to overwrite an existing release, and publishes a GitHub prerelease for alpha/beta tags. Current CI artifacts are unsigned; operating-system signing and notarization credentials can be added without changing the MCP contract. See [Desktop distribution](docs/DISTRIBUTION.md).
 
 To listen on a specific interface:
 
@@ -270,7 +276,7 @@ hostspan doctor
 hostspan smoke --target local-app
 ```
 
-The contract suite reconnects and lists the fixed 11-tool `hostspan-v3` toolset 100 times. The Alpha acceptance suite also runs the 10-turn workflow 50 times and verifies stable toolset hashing and request/response trace coverage. PTY integration tests cover interactive input, resize/output polling, output-drain ordering, explicit terminal capability enforcement, worker-crash honesty, and daemon-restart recovery. Windows additionally runs Job Object descendant-cleanup and Windows path-security tests.
+The contract suite performs 100 modern per-request `tools/list` exchanges against the fixed 11-tool `hostspan-v3` toolset and pins the approved toolset hash. The Alpha acceptance suite also runs the 10-turn workflow 50 times and verifies stable toolset hashing and request/response trace coverage. PTY integration tests cover interactive input, resize/output polling, descendant cleanup, output-drain ordering, explicit terminal capability enforcement, worker-crash honesty, and daemon-restart recovery. Windows additionally runs Job Object descendant-cleanup and Windows path-security tests.
 
 ## Security and support
 
@@ -278,7 +284,7 @@ The contract suite reconnects and lists the fixed 11-tool `hostspan-v3` toolset 
 - [Security model](docs/SECURITY.md)
 - [ChatGPT Web / Secure MCP Tunnel / reverse proxy](docs/CHATGPT.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [Alpha release and migration notes](docs/RELEASE.md)
+- [Alpha release notes](docs/RELEASE.md)
 - [Contributing](CONTRIBUTING.md)
 - [Code of Conduct](CODE_OF_CONDUCT.md)
 - [Desktop distribution and release automation](docs/DISTRIBUTION.md)

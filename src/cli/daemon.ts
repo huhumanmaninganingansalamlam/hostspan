@@ -61,7 +61,7 @@ export async function startDaemonControlServer(
           socket.end(`${JSON.stringify({ ok: false })}\n`);
           return;
         }
-        socket.end(`${JSON.stringify({ ok: true })}\n`);
+        socket.end(`${JSON.stringify({ ok: true, pid: process.pid })}\n`);
         if (!shutdownRequested) {
           shutdownRequested = true;
           setImmediate(onShutdown);
@@ -103,28 +103,28 @@ export async function startDaemonControlServer(
   };
 }
 
-export async function requestDaemonShutdown(configPath: string): Promise<boolean> {
+export async function requestDaemonShutdown(configPath: string): Promise<{ ok: true; pid: number } | null> {
   const control = daemonControlPaths(configPath);
-  if (!existsSync(control.token_path)) return false;
+  if (!existsSync(control.token_path)) return null;
   let token: string;
   try {
     token = readFileSync(control.token_path, "utf8").trim();
   } catch {
-    return false;
+    return null;
   }
-  if (!token) return false;
+  if (!token) return null;
 
-  return new Promise<boolean>((resolveRequest) => {
+  return new Promise<{ ok: true; pid: number } | null>((resolveRequest) => {
     let settled = false;
-    const finish = (ok: boolean) => {
+    const finish = (receipt: { ok: true; pid: number } | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       socket.destroy();
-      resolveRequest(ok);
+      resolveRequest(receipt);
     };
     const socket = createConnection(control.address);
-    const timer = setTimeout(() => finish(false), 2_000);
+    const timer = setTimeout(() => finish(null), 2_000);
     timer.unref();
     let response = "";
     socket.setEncoding("utf8");
@@ -134,14 +134,15 @@ export async function requestDaemonShutdown(configPath: string): Promise<boolean
       const newline = response.indexOf("\n");
       if (newline < 0) return;
       try {
-        finish((JSON.parse(response.slice(0, newline)) as { ok?: boolean }).ok === true);
+        const parsed = JSON.parse(response.slice(0, newline)) as { ok?: boolean; pid?: number };
+        finish(parsed.ok === true && Number.isInteger(parsed.pid) && (parsed.pid ?? 0) > 0 ? { ok: true, pid: parsed.pid as number } : null);
       } catch {
-        finish(false);
+        finish(null);
       }
     });
-    socket.once("error", () => finish(false));
+    socket.once("error", () => finish(null));
     socket.once("close", () => {
-      if (!settled) finish(false);
+      if (!settled) finish(null);
     });
   });
 }
@@ -212,7 +213,12 @@ export async function startDaemon(
 export async function stopDaemon(configPath: string): Promise<{ running: boolean; pid: number | null }> {
   const current = daemonStatus(configPath);
   if (!current.running || !current.pid) return { running: false, pid: null };
-  const gracefulRequested = await requestDaemonShutdown(configPath);
+  const receipt = await requestDaemonShutdown(configPath);
+  if (!receipt || receipt.pid !== current.pid) {
+    throw new Error(
+      `Refusing to signal pid ${current.pid}: the authenticated HostSpan daemon control channel did not confirm that process identity.`,
+    );
+  }
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     if (!pidAlive(current.pid)) {
@@ -221,7 +227,7 @@ export async function stopDaemon(configPath: string): Promise<{ running: boolean
     }
     await sleep(50);
   }
-  if (!gracefulRequested && process.platform !== "win32") {
+  if (process.platform !== "win32") {
     try {
       process.kill(current.pid, "SIGTERM");
     } catch {

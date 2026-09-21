@@ -1,16 +1,17 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, mkdirSync, openSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "../config/loader.js";
 import type { HostSpanConfig } from "../config/schema.js";
-import { databaseHealthy, openDatabase } from "../state/database.js";
+import { databaseHealthy, openMemoryDatabase, openReadOnlyDatabase } from "../state/database.js";
 import { TargetRegistry } from "../targets/registry.js";
 import { TOOL_NAMES, TOOLSET_HASH } from "../mcp/registry.js";
 import { processGroupAlive, signalProcessGroup } from "../processes/recovery.js";
 import { windowsJobObjectProbe } from "../processes/windows-job-process.js";
 import { ripgrepExecutable } from "../files/ripgrep.js";
+import { inspectWindowsAcl, protectWindowsDirectory } from "../security/windows-acl.js";
 import { PROTOCOL_VERSION, SERVER_VERSION } from "../version.js";
 
 export interface DoctorCheck {
@@ -28,7 +29,7 @@ export interface DoctorReport {
 }
 
 function commandCheck(command: string, args: string[], name = command): DoctorCheck {
-  const result = spawnSync(command, args, { encoding: "utf8" });
+  const result = spawnSync(command, args, { encoding: "utf8", timeout: 5_000, windowsHide: true });
   if (result.error || result.status !== 0) {
     return { name, status: "fail", details: result.error?.message ?? result.stderr?.trim() ?? `${command} exited ${result.status}` };
   }
@@ -48,6 +49,8 @@ function ptyRuntimeCheck(): DoctorCheck {
     ],
     {
       encoding: "utf8",
+      timeout: 5_000,
+      windowsHide: true,
       env: { ...process.env, ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}) },
     },
   );
@@ -107,7 +110,6 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
     details: "Qualified core targets are Linux x64, native Windows x64, and macOS x64/arm64; WSL2 is treated as Linux.",
   });
   checks.push(commandCheck(ripgrepExecutable(), ["--version"], "rg"));
-  checks.push(commandCheck("git", ["--version"]));
 
   let config: HostSpanConfig;
   try {
@@ -128,6 +130,12 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
   }
 
   const targets = new TargetRegistry(config);
+  const gitCheck = commandCheck("git", ["--version"]);
+  if (gitCheck.status === "fail" && !targets.list().some((target) => target.capabilities.includes("git"))) {
+    gitCheck.status = "warn";
+    gitCheck.details = `Git is not available, but no configured target grants the git capability: ${gitCheck.details}`;
+  }
+  checks.push(gitCheck);
   const nonLoopback = !["127.0.0.1", "localhost", "::1"].includes(config.server.listen_host.toLowerCase());
   checks.push({
     name: "network_bind",
@@ -155,6 +163,68 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
         : "OAuth is not configured; acceptable only for local loopback use.",
     });
   }
+  if (process.platform === "win32") {
+    let stateAclCreationError: string | undefined;
+    if (!existsSync(config.server.data_dir)) {
+      try {
+        protectWindowsDirectory(config.server.data_dir);
+      } catch (error) {
+        stateAclCreationError = error instanceof Error ? error.message : String(error);
+      }
+    }
+    const aclChecks: Array<readonly [string, string]> = [
+      ["config_acl", configPath],
+      ["config_backup_acl", `${configPath}.bak`],
+      ["state_acl", config.server.data_dir],
+      ...(config.oauth
+        ? ([["oauth_secret_acl", join(dirname(configPath), "oauth-approval-secret")]] as Array<
+            readonly [string, string]
+          >)
+        : []),
+    ];
+    for (const [name, path] of aclChecks) {
+      if (name === "state_acl" && stateAclCreationError) {
+        checks.push({ name, status: "fail", details: stateAclCreationError });
+        continue;
+      }
+      if (!existsSync(path)) {
+        checks.push({
+          name,
+          status: "pass",
+          details: `${path} does not exist yet; HostSpan applies a private DACL when it creates the path.`,
+        });
+        continue;
+      }
+      try {
+        const acl = inspectWindowsAcl(path);
+        checks.push({
+          name,
+          status: acl.private ? "pass" : "fail",
+          details: acl.private
+            ? `${path} allows only the current Windows user and LocalSystem`
+            : [
+                `${path} does not satisfy the private HostSpan DACL`,
+                acl.unexpected_allow_sids.length
+                  ? `unexpected allow principals=${acl.unexpected_allow_sids.join(",")}`
+                  : "",
+                acl.missing_full_control_sids.length
+                  ? `missing FullControl=${acl.missing_full_control_sids.join(",")}`
+                  : "",
+                acl.deny_sids.length ? `deny principals=${acl.deny_sids.join(",")}` : "",
+                acl.inherited_rule_count ? `inherited rules=${acl.inherited_rule_count}` : "",
+              ]
+                .filter(Boolean)
+                .join("; "),
+        });
+      } catch (error) {
+        checks.push({
+          name,
+          status: "fail",
+          details: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
   for (const target of targets.list()) {
     checks.push({
       name: `target:${target.target_id}`,
@@ -167,8 +237,13 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
   }
 
   try {
-    const db = openDatabase(join(config.server.data_dir, "state.db"));
-    checks.push({ name: "sqlite", status: databaseHealthy(db) ? "pass" : "fail", details: "integrity_check + WAL" });
+    const statePath = join(config.server.data_dir, "state.db");
+    const db = existsSync(statePath) ? openReadOnlyDatabase(statePath) : openMemoryDatabase();
+    checks.push({
+      name: "sqlite",
+      status: databaseHealthy(db) ? "pass" : "fail",
+      details: existsSync(statePath) ? "integrity_check + current schema (read-only)" : "SQLite binding OK; state database not created yet",
+    });
     db.close();
   } catch (error) {
     checks.push({ name: "sqlite", status: "fail", details: error instanceof Error ? error.message : String(error) });
@@ -193,7 +268,7 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
     status: TOOL_NAMES.length === 11 ? "pass" : "fail",
     details: `${TOOL_NAMES.length} tools; ${TOOLSET_HASH}`,
   });
-  const tunnel = spawnSync("tunnel-client", ["--version"], { encoding: "utf8" });
+  const tunnel = spawnSync("tunnel-client", ["--version"], { encoding: "utf8", timeout: 2_000, windowsHide: true });
   checks.push({
     name: "tunnel-client",
     status: tunnel.status === 0 ? "pass" : "warn",

@@ -1,8 +1,15 @@
 import { lstatSync, readdirSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { resolve } from "node:path";
 import type { PolicyEvaluator } from "../policy/evaluator.js";
+import { matchesAnyPolicyGlob } from "../policy/glob.js";
 import type { TargetRuntime } from "../targets/registry.js";
-import { resolveTargetPath } from "./path-guard.js";
+import { darwinReadDirectoryNames } from "./darwin-fs.js";
+import {
+  assertDirectoryStillCurrent,
+  closeOpenedDirectory,
+  openDirectoryNoFollow,
+  resolveTargetPath,
+} from "./path-guard.js";
 
 export interface FileListInput {
   path: string;
@@ -21,43 +28,65 @@ function cursorOffset(cursor?: string): number {
 function ignored(target: TargetRuntime, rel: string): boolean {
   const segments = rel.replaceAll("\\", "/").split("/");
   if (segments.some((item) => [".git", "node_modules", "dist", ".cache"].includes(item))) return true;
-  return target.ignore_globs.some((glob) => {
-    const simple = glob.replace(/^\*\*\//, "").replace(/\/\*\*$/, "");
-    return simple && segments.includes(simple);
-  });
+  return matchesAnyPolicyGlob(rel, target.ignore_globs);
 }
 
 export function fileList(target: TargetRuntime, input: FileListInput, policy?: PolicyEvaluator) {
   const root = resolveTargetPath(target, input.path, "list");
   policy?.assertFileAllowed(target, root.relative, root.absolute, false);
   const entries: Array<Record<string, unknown>> = [];
-  const walk = (dir: string, currentDepth: number): void => {
-    for (const name of readdirSync(dir).sort()) {
-      if (!input.include_hidden && name.startsWith(".")) continue;
-      const absolute = resolve(dir, name);
-      const rel = relative(target.root_real, absolute).replaceAll("\\", "/");
-      if (ignored(target, rel)) continue;
-      try {
-        policy?.assertFileAllowed(target, rel, absolute, false);
-      } catch {
-        continue;
+  const offset = cursorOffset(input.cursor);
+  const collectLimit = offset + input.max_entries + 1;
+  const walk = (relativeDir: string, currentDepth: number): boolean => {
+    const opened = openDirectoryNoFollow(target, relativeDir, "list");
+    try {
+      const enumerationPath = process.platform === "linux" ? opened.stable_path : opened.path.absolute;
+      const names =
+        process.platform === "darwin"
+          ? (() => {
+              if (opened.fd === null) throw new Error("Darwin directory handle is unavailable.");
+              return darwinReadDirectoryNames(opened.fd).sort();
+            })()
+          : readdirSync(enumerationPath).sort();
+      assertDirectoryStillCurrent(target, relativeDir, opened, "list");
+      for (const name of names) {
+        if (!input.include_hidden && name.startsWith(".")) continue;
+        const rel = (relativeDir === "." ? name : `${relativeDir.replaceAll("\\", "/")}/${name}`).replace(/^\.\//, "");
+        if (ignored(target, rel)) continue;
+        const absolute = resolve(target.root_real, rel);
+        try {
+          policy?.assertFileAllowed(target, rel, absolute, false);
+        } catch {
+          continue;
+        }
+        const entryPath = resolve(enumerationPath, name);
+        const stat = lstatSync(entryPath);
+        const type = stat.isSymbolicLink() ? "symlink" : stat.isDirectory() ? "directory" : stat.isFile() ? "file" : "other";
+        entries.push({ path: rel, type, size_bytes: stat.size, mtime: stat.mtime.toISOString() });
+        if (entries.length >= collectLimit) {
+          assertDirectoryStillCurrent(target, relativeDir, opened, "list");
+          return true;
+        }
+        if (type === "directory" && currentDepth < input.depth && walk(rel, currentDepth + 1)) {
+          assertDirectoryStillCurrent(target, relativeDir, opened, "list");
+          return true;
+        }
       }
-      const stat = lstatSync(absolute);
-      const type = stat.isSymbolicLink() ? "symlink" : stat.isDirectory() ? "directory" : stat.isFile() ? "file" : "other";
-      entries.push({ path: rel, type, size_bytes: stat.size, mtime: stat.mtime.toISOString() });
-      if (type === "directory" && currentDepth < input.depth) walk(absolute, currentDepth + 1);
+      assertDirectoryStillCurrent(target, relativeDir, opened, "list");
+      return false;
+    } finally {
+      closeOpenedDirectory(opened);
     }
   };
   const stat = lstatSync(root.absolute);
-  if (stat.isDirectory()) walk(root.absolute, 1);
+  if (stat.isDirectory()) walk(root.relative, 1);
   else entries.push({ path: root.relative, type: stat.isFile() ? "file" : "other", size_bytes: stat.size, mtime: stat.mtime.toISOString() });
-  const offset = cursorOffset(input.cursor);
   const page = entries.slice(offset, offset + input.max_entries);
   const next = offset + page.length;
   return {
     path: root.relative,
     entries: page,
-    truncated: next < entries.length,
-    ...(next < entries.length ? { cursor: Buffer.from(String(next)).toString("base64url") } : {}),
+    truncated: entries.length > next,
+    ...(entries.length > next ? { cursor: Buffer.from(String(next)).toString("base64url") } : {}),
   };
 }

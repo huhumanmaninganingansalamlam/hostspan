@@ -109,7 +109,7 @@ describe("HostSpan Alpha acceptance", () => {
       expect(ready.json()).toMatchObject({ ready: true, degraded: false });
     } finally {
       await app.close();
-      runtime.close();
+      await runtime.close();
     }
   });
 
@@ -158,7 +158,7 @@ describe("HostSpan Alpha acceptance", () => {
       expect(result?.tools).toHaveLength(11);
     } finally {
       await app.close();
-      runtime.close();
+      await runtime.close();
     }
   });
 
@@ -172,18 +172,22 @@ describe("HostSpan Alpha acceptance", () => {
       expect(smoke.ok, JSON.stringify(smoke.steps)).toBe(true);
       expect(smoke.steps.filter((step) => step.status === "fail")).toEqual([]);
     } finally {
-      runtime.close();
+      await runtime.close();
     }
   }, 15_000);
 
-  it("fails readiness closed when the durable database backend is unavailable", () => {
+  it("fails readiness closed when the durable database backend is unavailable", async () => {
     const { configPath } = fixture();
     const runtime = createRuntime(configPath);
-    runtime.db.close();
-    expect(runtimeReadiness(runtime)).toMatchObject({
-      ready: false,
-      backends: { database: false, process: true },
-    });
+    try {
+      runtime.db.close();
+      expect(runtimeReadiness(runtime)).toMatchObject({
+        ready: false,
+        backends: { database: false, process: true },
+      });
+    } finally {
+      await runtime.close();
+    }
   });
 
   it("runs a 10-turn workflow 50 times without toolset drift and records every handled call", async () => {
@@ -245,7 +249,7 @@ describe("HostSpan Alpha acceptance", () => {
       expect(soakEvents.filter((event) => event.event_type === "request.accepted")).toHaveLength(500);
       expect(soakEvents.filter((event) => event.event_type === "response.returned")).toHaveLength(500);
     } finally {
-      runtime.close();
+      await runtime.close();
     }
   }, process.platform === "win32" ? 120_000 : 30_000);
 });

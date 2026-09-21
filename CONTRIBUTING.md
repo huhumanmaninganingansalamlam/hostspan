@@ -8,6 +8,14 @@ HostSpan is intentionally a small, terminal-first MCP execution gateway. The fix
 
 For security-sensitive issues, follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
 
+## Branch and release model
+
+- `main` is the last qualified release baseline. Do not use it as the normal feature-development branch.
+- `dev` is the integration branch for ongoing development. Feature work should branch from `dev` and merge back through reviewed pull requests.
+- Promotion from `dev` to `main` is a release-candidate action: the full native CI matrix, installed/package smoke, audit, and release notes must already be green.
+- Release tags are immutable, must point to a commit contained in `main`, and must use a new version. The release workflow refuses to overwrite an existing GitHub Release.
+- HostSpan is still in active development and intentionally supports only the current config/state formats. Do not add silent backward-data migration or guessing logic unless a future compatibility policy explicitly requires it.
+
 ## Development setup
 
 Requirements:
@@ -43,7 +51,7 @@ Keep changes focused and explain:
 
 Breaking tool-contract changes must use a new toolset version rather than silently changing `hostspan-v3`.
 
-Please run `pnpm check` and `git diff --check` before opening a pull request. Packaging changes should also run the relevant desktop package smoke locally when possible.
+Please run `pnpm check` and `git diff --check` before opening a pull request. CI repeats the native core + unpacked packaged-runtime smoke on Linux x64, Windows x64, macOS arm64, and macOS x64. Packaging changes should also run the relevant desktop package smoke locally when possible.
 
 ## Design principles
 

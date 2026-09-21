@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { delimiter, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import process from "node:process";
 import koffi from "koffi";
+import { resolveWindowsCommand } from "./windows-command.mjs";
 
 const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9;
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
@@ -47,50 +48,8 @@ function atomicJson(path, value) {
   renameSync(temp, path);
 }
 
-function windowsPathExt(env) {
-  const value = env.PATHEXT || env.Pathext || ".COM;.EXE;.BAT;.CMD";
-  return value
-    .split(";")
-    .map((item) => item.trim().toLowerCase())
-    .filter(Boolean);
-}
-
-function executableFile(path) {
-  try {
-    return statSync(path).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function resolveWindowsProgram(program, cwd, env) {
-  const pathValue = env.PATH || env.Path || env.path || "";
-  const extensions = windowsPathExt(env);
-  const hasExtension = extname(program) !== "";
-  const explicitPath = isAbsolute(program) || /[\\/]/.test(program);
-  const roots = explicitPath ? [cwd] : pathValue.split(delimiter).filter(Boolean);
-  for (const root of roots) {
-    const base = explicitPath ? (isAbsolute(program) ? program : resolve(cwd, program)) : join(root, program);
-    const candidates = hasExtension ? [base] : [base, ...extensions.map((extension) => `${base}${extension}`)];
-    for (const candidate of candidates) {
-      if (executableFile(candidate)) return candidate;
-    }
-  }
-  throw new Error(`File not found: ${program}`);
-}
-
-function cmdQuote(value) {
-  const meta = "&()[]{}^=;!'+,`~|<>\"";
-  if (!Array.from(value).some((character) => /\s/.test(character) || meta.includes(character))) return value;
-  return `"${value.replaceAll('"', '""')}"`;
-}
-
 function resolveCommand(program, argv, cwd, env) {
-  const resolved = resolveWindowsProgram(program, cwd, env);
-  const extension = extname(resolved).toLowerCase();
-  if (extension !== ".cmd" && extension !== ".bat") return { program: resolved, argv };
-  const command = [cmdQuote(resolved), ...argv.map((item) => cmdQuote(String(item)))].join(" ");
-  return { program: env.ComSpec || env.COMSPEC || "C:\\Windows\\System32\\cmd.exe", argv: ["/d", "/s", "/c", command] };
+  return resolveWindowsCommand(program, argv, cwd, env);
 }
 
 if (process.argv.includes("--probe")) {
@@ -123,6 +82,7 @@ if (process.argv.includes("--probe")) {
       shell: false,
       detached: false,
       windowsHide: true,
+      windowsVerbatimArguments: command.windowsVerbatimArguments === true,
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stdout.pipe(process.stdout, { end: false });

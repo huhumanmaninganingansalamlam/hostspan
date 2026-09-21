@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Tray } from "electron";
 import {
@@ -17,6 +17,7 @@ import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath } from "../config/paths.js";
 import type { Capability } from "../config/schema.js";
 import { PtySessionManager } from "../processes/pty-session.js";
+import { protectWindowsFile, protectWindowsTree } from "../security/windows-acl.js";
 import { prepareDesktopEnvironment } from "./environment.js";
 import { ensureDesktopConfig } from "./first-run.js";
 
@@ -73,21 +74,27 @@ function quotePowerShell(value: string): string {
 }
 
 function attachCommand(processId: string, readOnly: boolean): { command: string; args: string[] } {
-  const args = [nodePath, cliPath, "terminal", "attach", "--process", processId, ...(readOnly ? ["--read-only"] : []), "--config", configPath];
+  const cliArgs = [cliPath, "terminal", "attach", "--process", processId, ...(readOnly ? ["--read-only"] : []), "--config", configPath];
+  const needsElectronNodeMode = !process.env.HOSTSPAN_NODE && Boolean(process.versions.electron);
   if (process.platform === "win32") {
-    if (spawnSync("where.exe", ["wt.exe"], { stdio: "ignore" }).status === 0) return { command: "wt.exe", args };
-    return { command: "powershell.exe", args: ["-NoExit", "-Command", `& ${args.map(quotePowerShell).join(" ")}`] };
+    const script = `${needsElectronNodeMode ? "$env:ELECTRON_RUN_AS_NODE='1'; " : ""}& ${[nodePath, ...cliArgs].map(quotePowerShell).join(" ")}`;
+    if (spawnSync("where.exe", ["wt.exe"], { stdio: "ignore" }).status === 0) {
+      return { command: "wt.exe", args: ["powershell.exe", "-NoExit", "-Command", script] };
+    }
+    return { command: "powershell.exe", args: ["-NoExit", "-Command", script] };
   }
   if (process.platform === "darwin") {
-    const shell = args.map(quoteShell).join(" ");
+    const shellArgs = [...(needsElectronNodeMode ? ["env", "ELECTRON_RUN_AS_NODE=1"] : []), nodePath, ...cliArgs];
+    const shell = shellArgs.map(quoteShell).join(" ");
     return { command: "osascript", args: ["-e", `tell application "Terminal" to do script ${JSON.stringify(shell)}`] };
   }
   const terminal = ["x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal", "xterm"].find(
     (candidate) => spawnSync("which", [candidate], { stdio: "ignore" }).status === 0,
   );
   if (!terminal) throw new Error("No supported graphical terminal launcher was found.");
-  if (terminal === "gnome-terminal") return { command: terminal, args: ["--", ...args] };
-  return { command: terminal, args: ["-e", ...args] };
+  const terminalArgs = [...(needsElectronNodeMode ? ["env", "ELECTRON_RUN_AS_NODE=1"] : []), nodePath, ...cliArgs];
+  if (terminal === "gnome-terminal") return { command: terminal, args: ["--", ...terminalArgs] };
+  return { command: terminal, args: ["-e", ...terminalArgs] };
 }
 
 function openAttach(processId: string, readOnly: boolean): void {
@@ -95,7 +102,7 @@ function openAttach(processId: string, readOnly: boolean): void {
   const child = spawn(request.command, request.args, {
     detached: true,
     stdio: "ignore",
-    env: { ...process.env, ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}) },
+    env: process.env,
   });
   child.unref();
 }
@@ -407,6 +414,13 @@ void app.whenReady().then(async () => {
   try {
     prepareDesktopEnvironment();
     ensureDesktopConfig(configPath);
+    if (process.platform === "win32") {
+      const config = loadConfig(configPath);
+      protectWindowsFile(configPath);
+      protectWindowsFile(`${configPath}.bak`);
+      protectWindowsFile(join(dirname(configPath), "oauth-approval-secret"));
+      protectWindowsTree(config.server.data_dir);
+    }
     if (process.platform === "darwin") app.dock?.hide();
     tray = new Tray(icon());
     tray.on("click", () => {

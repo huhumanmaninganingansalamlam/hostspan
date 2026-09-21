@@ -6,6 +6,7 @@ import { HostSpanError } from "../mcp/errors.js";
 import type { TargetRuntime } from "../targets/registry.js";
 import { resolveTargetPath } from "./path-guard.js";
 import { ripgrepExecutable } from "./ripgrep.js";
+import { matchesAnyPolicyGlob } from "../policy/glob.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -149,6 +150,8 @@ export async function fileSearch(target: TargetRuntime, input: FileSearchInput) 
   }
   const records: Array<Record<string, unknown>> = [];
   let matches = 0;
+  let returnedBytes = 0;
+  let responseTruncated = false;
   for (const line of stdout.split("\n")) {
     if (!line) continue;
     const event = JSON.parse(line) as RipgrepEvent;
@@ -157,21 +160,35 @@ export async function fileSearch(target: TargetRuntime, input: FileSearchInput) 
     if (!pathText) continue;
     const absolute = resolve(target.root_real, pathText);
     const guarded = resolveTargetPath(target, relative(target.root_real, absolute), "search");
+    const normalizedPath = guarded.relative.replaceAll("\\", "/");
+    if (matchesAnyPolicyGlob(normalizedPath, target.deny_globs) || matchesAnyPolicyGlob(normalizedPath, target.ignore_globs)) {
+      continue;
+    }
     const stat = statSync(guarded.absolute);
-    records.push({
+    const record = {
       type: event.type,
-      path: guarded.relative.replaceAll("\\", "/"),
+      path: normalizedPath,
       line_number: event.data.line_number,
       text: event.data.lines?.text?.replace(/\r?\n$/, "") ?? "",
       mtime: stat.mtime.toISOString(),
-    });
+    };
+    const recordBytes = Buffer.byteLength(JSON.stringify(record), "utf8");
+    if (returnedBytes + recordBytes > input.max_bytes) {
+      responseTruncated = true;
+      break;
+    }
+    records.push(record);
+    returnedBytes += recordBytes;
     if (event.type === "match") matches += 1;
-    if (matches >= input.max_matches) break;
+    if (matches >= input.max_matches) {
+      responseTruncated = true;
+      break;
+    }
   }
   return {
     matches: records,
     match_count: matches,
-    truncated: matches >= input.max_matches || Buffer.byteLength(stdout) > input.max_bytes,
+    truncated: responseTruncated || Buffer.byteLength(stdout) > input.max_bytes,
     backend: "ripgrep",
     binary: "ignored",
     hidden: false,

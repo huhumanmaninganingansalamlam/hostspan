@@ -65,29 +65,29 @@ The `--platform`, `--arch`, and `--out-dir` overrides are for static package val
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs the complete code gate and then packages Linux desktop artifacts. A pull request fails if the Electron application can no longer be packaged.
+`.github/workflows/ci.yml` runs the complete core gate, fresh CLI package smoke, unpacked Electron packaging, and packaged-runtime smoke on Linux x64, Windows x64, macOS Apple Silicon, and macOS Intel. Linux additionally builds the distributable AppImage/deb pair on ordinary CI. A pull request therefore fails before merge when a native runtime or packaged Electron path regresses on a qualified platform.
 
 `.github/workflows/release.yml` runs on a `v*` tag or manual dispatch for an existing tag. It:
 
 1. checks out the tagged revision;
-2. verifies that `v<package.json version>` exactly matches the tag;
-3. runs the full `pnpm check` release gate on Ubuntu;
+2. verifies that `v<package.json version>` exactly matches the tag and that the tagged commit is contained in `origin/main`;
+3. runs the full `pnpm check` release gate on Ubuntu and fresh-installed CLI workflow smoke on every native platform lane;
 4. builds Linux x64, Windows x64, macOS Apple Silicon, and macOS Intel artifacts on matching native GitHub runners;
 5. runs packaged CLI/SQLite/ripgrep/PTy/full-workflow smoke on each matching native runner and the Windows Job Object probe on Windows;
 6. silently installs the produced Windows NSIS artifact and mounts/copies the produced macOS DMG, then reruns the same runtime smoke against the installed artifact;
 7. packs the npm/CLI payload as `hostspan-<version>.tgz`;
-8. uploads the user-facing packages to one GitHub Release only after those installed-artifact gates pass;
+8. refuses to overwrite an existing GitHub Release, then uploads the user-facing packages only after those installed-artifact gates pass;
 9. generates `SHA256SUMS.txt`;
-10. marks tags containing `-` (for example, `v0.3.0-alpha.4`) as prereleases.
+10. marks tags containing `-` (for example, `v0.3.0-alpha.5`) as prereleases.
 
 Create a release after the intended commit is on `main`:
 
 ```bash
-git tag v0.3.0-alpha.4
-git push origin v0.3.0-alpha.4
+git tag v0.3.0-alpha.5
+git push origin v0.3.0-alpha.5
 ```
 
-Do not move or reuse a published tag. Increment `package.json`, `src/version.ts`, and `docs/RELEASE.md` together before creating the next tag.
+Do not move or reuse a published tag. The workflow also refuses to replace assets on an already-published release. Increment `package.json`, `src/version.ts`, and `docs/RELEASE.md` together before creating the next tag.
 
 ## Signing status
 
@@ -107,8 +107,8 @@ Packaging and native-core support are separate claims:
 | --- | --- |
 | Linux x64 / Ubuntu 24.04 | release-qualified Alpha core; Unix PTY + process groups |
 | WSL2 | uses the Linux core; not native Windows qualification |
-| Windows x64 | native Alpha core; ConPTY + Job Objects; full test/build, real NSIS install, installed doctor/full smoke, packaged HostSpan PTY lifecycle, and tray app launch verified |
-| macOS x64 | native Alpha core; full test/build, installed CLI doctor/full smoke, packaged HostSpan PTY lifecycle, DMG/app runtime smoke, and installed menu-bar app verified |
-| macOS arm64 | release packaging lane exists; native qualification relies on the matching release runner |
+| Windows x64 | native Alpha core; ConPTY + Job Objects + private HostSpan DACL/state-path guard; full test/build, NSIS install, installed doctor/full smoke, packaged PTY lifecycle |
+| macOS x64 | native Alpha core; full test/build, installed CLI doctor/full smoke, packaged PTY lifecycle, DMG/app runtime smoke |
+| macOS arm64 | native Alpha core qualified on the matching GitHub macOS arm64 runner with the same core/package/runtime gate |
 
 Packaging success must not be described as native-core security or process-recovery qualification.

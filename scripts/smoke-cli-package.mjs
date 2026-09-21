@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { resolveWindowsCommand } from "../src/processes/windows-command.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const argv = process.argv.slice(2);
@@ -10,12 +11,6 @@ const argv = process.argv.slice(2);
 function option(name) {
   const index = argv.indexOf(name);
   return index >= 0 ? argv[index + 1] : undefined;
-}
-
-function quoteCmdArgument(value) {
-  const text = String(value);
-  if (!/[\s&()\[\]{}^=;!'+,`~|<>"]/u.test(text)) return text;
-  return `"${text.replaceAll('"', '""')}"`;
 }
 
 function run(command, args, options = {}) {
@@ -34,18 +29,18 @@ function run(command, args, options = {}) {
   const useCmd =
     process.platform === "win32" &&
     (command === "pnpm" || command === "npm" || command.toLowerCase().endsWith(".cmd"));
-  const executable = useCmd ? (process.env.ComSpec ?? "cmd.exe") : command;
-  const commandToken = /^[A-Za-z0-9._-]+$/.test(command) ? command : quoteCmdArgument(command);
-  const spawnArgs = useCmd
-    ? ["/d", "/c", ["call", commandToken, ...args.map(quoteCmdArgument)].join(" ")]
-    : args;
+  const env = { ...process.env, ...(options.env ?? {}) };
+  const cwd = options.cwd ?? root;
+  const resolved = useCmd ? resolveWindowsCommand(command, args, cwd, env) : undefined;
+  const executable = resolved?.program ?? command;
+  const spawnArgs = resolved?.argv ?? args;
   const result = spawnSync(executable, spawnArgs, {
-    cwd: options.cwd ?? root,
-    env: { ...process.env, ...(options.env ?? {}) },
+    cwd,
+    env,
     encoding: "utf8",
     windowsHide: true,
     shell: false,
-    windowsVerbatimArguments: useCmd,
+    windowsVerbatimArguments: resolved?.windowsVerbatimArguments === true,
     timeout: options.timeout ?? 120_000,
     maxBuffer: 8 * 1024 * 1024,
   });
@@ -121,10 +116,56 @@ try {
   if (!help.includes("Commands:")) throw new Error("Installed CLI help output is incomplete");
 
   const configPath = join(scratch, "config", "config.yaml");
-  const env = { HOSTSPAN_CONFIG: configPath };
+  const env = {
+    HOSTSPAN_CONFIG: configPath,
+    ...(process.platform === "win32"
+      ? {
+          APPDATA: join(scratch, "app-data"),
+          LOCALAPPDATA: join(scratch, "local-app-data"),
+        }
+      : {
+          XDG_CONFIG_HOME: join(scratch, "config-home"),
+          XDG_STATE_HOME: join(scratch, "state-home"),
+        }),
+  };
   run(bin, ["init"], { env });
+  const targetRoot = join(scratch, "target");
+  mkdirSync(targetRoot, { recursive: true });
+  writeFileSync(join(targetRoot, "README.txt"), "installed CLI smoke\n");
+  run("git", ["init", "-q"], { cwd: targetRoot });
+  run(
+    "git",
+    ["-c", "user.name=HostSpan Smoke", "-c", "user.email=hostspan@example.invalid", "add", "README.txt"],
+    { cwd: targetRoot },
+  );
+  run(
+    "git",
+    ["-c", "user.name=HostSpan Smoke", "-c", "user.email=hostspan@example.invalid", "commit", "-qm", "fixture"],
+    { cwd: targetRoot },
+  );
+  run(
+    bin,
+    [
+      "targets",
+      "add",
+      "--id",
+      "package-smoke",
+      "--label",
+      "Package Smoke",
+      "--root",
+      targetRoot,
+      "--capabilities",
+      "read,write,exec,git,terminal",
+      "--exec-profile",
+      "native-dev",
+    ],
+    { env },
+  );
+  run(bin, ["policy", "validate"], { env });
   const doctor = JSON.parse(run(bin, ["doctor"], { env }));
   if (doctor.ok !== true) throw new Error(`Installed CLI doctor failed: ${JSON.stringify(doctor.checks)}`);
+  const workflow = JSON.parse(run(bin, ["smoke", "--target", "package-smoke"], { env, timeout: 180_000 }));
+  if (workflow.ok !== true) throw new Error(`Installed CLI full smoke failed: ${JSON.stringify(workflow.steps)}`);
   const snapshot = JSON.parse(run(bin, ["admin", "snapshot", "--recent", "1"], { env }));
   if (snapshot.server_version !== packageJson.version) {
     throw new Error(`Installed admin snapshot version ${snapshot.server_version} does not match package.json ${packageJson.version}`);

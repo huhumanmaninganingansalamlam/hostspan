@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createOAuthSetup, OAuthService, rotateOAuthApprovalSecret } from "../auth/oauth-service.js";
-import { buildAdminSnapshot, resolveTerminalSession } from "../admin/snapshot.js";
+import { addLocalWorkspace, buildAdminSnapshot, removeLocalWorkspace, resolveTerminalSession } from "../admin/snapshot.js";
 import type { HostSpanConfig } from "../config/schema.js";
 import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath } from "../config/paths.js";
@@ -13,7 +13,7 @@ import { createInitialConfig } from "../config/defaults.js";
 import { writeConfigAtomic } from "../config/writer.js";
 import { gitChanges } from "../files/git-changes.js";
 import { fileList } from "../files/list.js";
-import { FilePatchService, recoverPatchTransactions } from "../files/patch.js";
+import { cleanupTerminalPatchJournals, FilePatchService, recoverPatchTransactions } from "../files/patch.js";
 import { resolveTargetPath } from "../files/path-guard.js";
 import { fileRead } from "../files/read.js";
 import { fileSearch, SearchConcurrencyLimiter } from "../files/search.js";
@@ -37,13 +37,21 @@ import type {
 import { HostSpanLogger } from "../observability/logger.js";
 import { buildSupportExport, writeSupportExportAtomic } from "../observability/support-export.js";
 import { PolicyEvaluator } from "../policy/evaluator.js";
+import { protectWindowsFile, protectWindowsTree } from "../security/windows-acl.js";
 import { cleanupExpiredProcessSpools } from "../processes/output-spool.js";
 import type { InteractiveSessionManager } from "../processes/interactive-session.js";
 import { PtySessionManager } from "../processes/pty-session.js";
 import { recoverProcesses } from "../processes/recovery.js";
 import { ProcessSupervisor } from "../processes/supervisor.js";
 import { AuditRepo } from "../state/audit-repo.js";
-import { databaseResponsive, openDatabase, syncTargetSnapshots, type HostSpanDatabase } from "../state/database.js";
+import {
+  databaseResponsive,
+  openDatabase,
+  openMemoryDatabase,
+  openReadOnlyDatabase,
+  syncTargetSnapshots,
+  type HostSpanDatabase,
+} from "../state/database.js";
 import { argumentHash, OperationsRepo } from "../state/operations-repo.js";
 import { OAuthRepo } from "../state/oauth-repo.js";
 import { ProcessesRepo } from "../state/processes-repo.js";
@@ -74,7 +82,7 @@ export interface HostSpanRuntime {
   oauthRepo: OAuthRepo;
   oauth?: OAuthService;
   handlers: HostSpanToolHandlers;
-  close(): void;
+  close(): Promise<void>;
 }
 
 export function runtimeReadiness(runtime: HostSpanRuntime) {
@@ -122,7 +130,7 @@ function cachedExecutableProbe(command: string, args: string[] = ["--version"], 
   return () => {
     const now = Date.now();
     if (checkedAt === 0 || now - checkedAt >= ttlMs) {
-      ready = spawnSync(command, args, { stdio: "ignore" }).status === 0;
+      ready = spawnSync(command, args, { stdio: "ignore", timeout: 5_000, windowsHide: true }).status === 0;
       checkedAt = now;
     }
     return ready;
@@ -141,6 +149,8 @@ function cachedNodeModuleProbe(specifier: string, ttlMs = 5_000): () => boolean 
         ["linux", "darwin", "win32"].includes(process.platform) &&
         spawnSync(process.execPath, ["-e", script], {
           stdio: "ignore",
+          timeout: 5_000,
+          windowsHide: true,
           env: { ...process.env, ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}) },
         }).status === 0;
       checkedAt = now;
@@ -161,8 +171,10 @@ function writeOAuthApprovalSecret(configPath: string, secret: string): string {
   try {
     writeFileSync(temp, `${secret}\n`, { mode: 0o600 });
     chmodSync(temp, 0o600);
+    protectWindowsFile(temp);
     renameSync(temp, path);
     chmodSync(path, 0o600);
+    protectWindowsFile(path);
   } finally {
     rmSync(temp, { force: true });
   }
@@ -176,6 +188,10 @@ function isLoopbackHost(host: string): boolean {
 export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime {
   const resolvedConfigPath = resolve(configPath);
   const config = loadConfig(resolvedConfigPath);
+  protectWindowsFile(resolvedConfigPath);
+  protectWindowsFile(`${resolvedConfigPath}.bak`);
+  protectWindowsFile(oauthApprovalSecretPath(resolvedConfigPath));
+  protectWindowsTree(config.server.data_dir);
   const targets = new TargetRegistry(config);
   const db = openDatabase(join(config.server.data_dir, "state.db"));
   const operations = new OperationsRepo(db);
@@ -193,19 +209,86 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
     oauthApprovalSecretPath(resolvedConfigPath),
   ]);
   syncTargetSnapshots(db, config, targets);
-  recoverPatchTransactions(targets, operations, transactions);
+  recoverPatchTransactions(targets, transactions);
+  const removedPatchJournals = cleanupTerminalPatchJournals(transactions);
+  if (removedPatchJournals.length) logger.info("patch.journals_cleaned", { count: removedPatchJournals.length });
   const terminal = config.terminal ? new PtySessionManager(config.server.data_dir, config.terminal) : undefined;
-  const recoveredProcesses = recoverProcesses(processes, operations, terminal);
-  for (const recovered of recoveredProcesses) logger.info("process.recovered", recovered);
-  const cleanup = cleanupExpiredProcessSpools(
-    config.server.data_dir,
-    processes.expiredOutput().map((record) => record.process_id),
-    config.retention.max_total_spool_bytes,
+  const recoveredProcesses = recoverProcesses(
+    processes,
+    operations,
+    terminal,
+    config.retention.completed_process_output_ttl_minutes,
   );
-  if (cleanup.over_quota) logger.info("spool.quota_exceeded", cleanup);
+  for (const recovered of recoveredProcesses) logger.info("process.recovered", recovered);
+  const runRetentionMaintenance = () => {
+    const now = new Date().toISOString();
+    const removedPatchJournals = cleanupTerminalPatchJournals(transactions);
+    const cleanup = cleanupExpiredProcessSpools(
+      config.server.data_dir,
+      processes.expiredOutput(now).map((record) => record.process_id),
+      config.retention.max_total_spool_bytes,
+      processes.outputRetentionCandidates().map((record) => record.process_id),
+    );
+    for (const processId of cleanup.evicted) processes.expireOutput(processId, now);
+    const compactedOperationResults = operations.compactResultsOlderThan(config.retention.operation_result_days);
+    const prunedProcessRows = processes.pruneTerminalMetadataOlderThan(config.retention.operation_result_days);
+    const prunedPatchTransactions = transactions.pruneTerminalOlderThan(config.retention.operation_result_days);
+    oauthRepo.pruneExpired(Math.floor(Date.now() / 1_000));
+    const auditMaintenance = audit.maintain();
+    if (cleanup.over_quota) logger.info("spool.quota_exceeded", cleanup);
+    if (
+      removedPatchJournals.length ||
+      cleanup.removed.length ||
+      cleanup.evicted.length ||
+      compactedOperationResults > 0 ||
+      prunedProcessRows > 0 ||
+      prunedPatchTransactions > 0 ||
+      auditMaintenance.deleted_by_age ||
+      auditMaintenance.deleted_by_cap
+    ) {
+      logger.info("retention.maintained", {
+        patch_journals_removed: removedPatchJournals.length,
+        spool_removed: cleanup.removed.length,
+        spool_evicted: cleanup.evicted.length,
+        spool_total_bytes: cleanup.total_bytes,
+        operation_results_compacted: compactedOperationResults,
+        process_rows_pruned: prunedProcessRows,
+        patch_transactions_pruned: prunedPatchTransactions,
+        audit_deleted_by_age: auditMaintenance.deleted_by_age,
+        audit_deleted_by_cap: auditMaintenance.deleted_by_cap,
+      });
+    }
+  };
+  const maintainRetentionSafely = () => {
+    try {
+      runRetentionMaintenance();
+    } catch (error) {
+      logger.info("retention.maintenance_failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+  maintainRetentionSafely();
 
   const patchService = new FilePatchService({ data_dir: config.server.data_dir, operations, transactions, policy });
   const supervisor = new ProcessSupervisor({ config, targets, policy, operations, processes, ...(terminal ? { terminal } : {}), logger });
+  let closing = false;
+  let processMaintenanceInflight = Promise.resolve();
+  let closeRuntimePromise: Promise<void> | undefined;
+  const processMaintenanceTimer = setInterval(() => {
+    if (closing) return;
+    processMaintenanceInflight = processMaintenanceInflight
+      .then(async () => {
+        if (closing) return;
+        await supervisor.reconcileInteractiveProcesses();
+      })
+      .catch((error) => {
+        logger.info("process.reconcile_failed", { message: error instanceof Error ? error.message : String(error) });
+      });
+  }, 500);
+  processMaintenanceTimer.unref();
+  const retentionMaintenanceTimer = setInterval(maintainRetentionSafely, 60_000);
+  retentionMaintenanceTimer.unref();
   const searchLimiter = new SearchConcurrencyLimiter(
     config.server.max_concurrent_searches ?? 8,
     config.server.max_queued_searches ?? 16,
@@ -361,7 +444,18 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
     oauthRepo,
     ...(oauth ? { oauth } : {}),
     handlers,
-    close: () => db.close(),
+    close: () => {
+      if (closeRuntimePromise) return closeRuntimePromise;
+      closing = true;
+      clearInterval(processMaintenanceTimer);
+      clearInterval(retentionMaintenanceTimer);
+      closeRuntimePromise = (async () => {
+        await processMaintenanceInflight;
+        await supervisor.settleForRuntimeClose();
+        if (db.open) db.close();
+      })();
+      return closeRuntimePromise;
+    },
   };
 }
 
@@ -482,7 +576,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     }
     const runtime = createRuntime(configPath);
     if (!isLoopbackHost(runtime.config.server.listen_host) && !runtime.oauth) {
-      runtime.close();
+      await runtime.close();
       throw new Error("Non-loopback listen_host requires OAuth. Run hostspan oauth init --public-url https://<host>/mcp first.");
     }
     const app = createHostSpanHttpServer({
@@ -509,7 +603,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       try {
         await runtime.supervisor.shutdown();
         await app.close();
-        runtime.close();
+        await runtime.close();
       } finally {
         await control.close();
         removeDaemonPid(configPath);
@@ -590,13 +684,16 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (command === "smoke") {
     const targetId = flag(argv, "--target");
     if (!targetId) throw new Error("smoke requires --target TARGET");
+    if (daemonStatus(configPath).running) {
+      throw new Error("hostspan smoke requires the daemon to be stopped so validation cannot mutate live recovery state.");
+    }
     const runtime = createRuntime(configPath);
     try {
       const report = await runSmoke(runtime, targetId);
       print(report);
       return report.ok ? 0 : 1;
     } finally {
-      runtime.close();
+      await runtime.close();
     }
   }
   if (command === "targets") {
@@ -611,31 +708,23 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       const targetId = flag(argv, "--id");
       const root = flag(argv, "--root");
       if (!targetId || !root) throw new Error("targets add requires --id and --root");
-      if (config.targets[targetId]) throw new Error(`target already exists: ${targetId}`);
       const capabilities = (flag(argv, "--capabilities") ?? "read,write,exec,git").split(",").filter(Boolean) as Array<"read" | "write" | "exec" | "git" | "terminal">;
       const execProfile = flag(argv, "--exec-profile") ?? (capabilities.includes("exec") ? "native-dev" : undefined);
-      if (execProfile && !config.exec_profiles[execProfile]) throw new Error(`unknown exec profile: ${execProfile}`);
-      config.targets[targetId] = {
-        label: flag(argv, "--label") ?? targetId,
-        provider: "local",
-        root: resolve(root),
-        capabilities,
-        ...(execProfile ? { exec_profile: execProfile } : {}),
-        deny_globs: ["**/.env*", "**/*.pem", "**/*.key", ".git/objects/**"],
-        ignore_globs: ["**/node_modules/**", "**/dist/**", "**/.cache/**"],
-      };
-      config.policy_epoch += 1;
-      writeConfigAtomic(configPath, config);
-      print({ ok: true, target_id: targetId, policy_epoch: config.policy_epoch });
+      print(
+        addLocalWorkspace(configPath, {
+          target_id: targetId,
+          label: flag(argv, "--label") ?? targetId,
+          root,
+          capabilities,
+          ...(execProfile ? { exec_profile: execProfile } : {}),
+        }),
+      );
       return 0;
     }
     if (action === "remove") {
       const targetId = flag(argv, "--id") ?? argv[2];
       if (!targetId || !config.targets[targetId]) throw new Error("targets remove requires an existing target id");
-      delete config.targets[targetId];
-      config.policy_epoch += 1;
-      writeConfigAtomic(configPath, config);
-      print({ ok: true, target_id: targetId, policy_epoch: config.policy_epoch });
+      print(removeLocalWorkspace(configPath, targetId));
       return 0;
     }
     throw new Error("targets requires list, add, or remove");
@@ -649,14 +738,25 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return 0;
   }
   if (command === "support-export") {
-    const runtime = createRuntime(configPath);
+    const config = loadConfig(configPath);
+    const targets = new TargetRegistry(config);
+    const statePath = join(config.server.data_dir, "state.db");
+    const db = existsSync(statePath) ? openReadOnlyDatabase(statePath) : openMemoryDatabase();
     try {
       const positional = argv.slice(1).find((item) => !item.startsWith("--") && item !== flag(argv, "--config"));
       const output = resolve(positional ?? `hostspan-support-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
-      writeSupportExportAtomic(output, buildSupportExport(runtime));
+      writeSupportExportAtomic(
+        output,
+        buildSupportExport({
+          config,
+          targets,
+          audit: new AuditRepo(db),
+          processes: new ProcessesRepo(db),
+        }),
+      );
       print({ ok: true, path: output });
     } finally {
-      runtime.close();
+      db.close();
     }
     return 0;
   }
@@ -670,6 +770,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       watchFile(path, { interval: 500 }, () => {
         if (!existsSync(path)) return;
         const data = readFileSync(path);
+        if (data.length < offset) offset = 0;
         if (data.length > offset) process.stdout.write(data.subarray(offset));
         offset = data.length;
       });

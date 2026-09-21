@@ -26,6 +26,7 @@ import type { TransactionsRepo } from "../state/transactions-repo.js";
 import type { TargetRegistry, TargetRuntime } from "../targets/registry.js";
 import {
   assertDirectoryStillCurrent,
+  closeOpenedDirectory,
   openDirectoryNoFollow,
   openReadNoFollow,
   recheckTargetPath,
@@ -99,6 +100,36 @@ function writeJsonAtomic(path: string, value: unknown): void {
   } finally {
     rmSync(temp, { force: true });
   }
+}
+
+function removeTerminalJournal(path: string): boolean {
+  try {
+    rmSync(path, { force: true });
+    return true;
+  } catch {
+    // The durable DB outcome is authoritative once the transaction is terminal.
+    return false;
+  }
+}
+
+export function cleanupTerminalPatchJournals(transactions: TransactionsRepo): string[] {
+  const removed: string[] = [];
+  for (const { transaction_id: transactionId, journal_path: path } of transactions.terminalJournals()) {
+    if (!path) continue;
+    if (!existsSync(path)) {
+      transactions.clearJournalPath(transactionId);
+      continue;
+    }
+    try {
+      rmSync(path, { force: true });
+      removed.push(path);
+      transactions.clearJournalPath(transactionId);
+    } catch {
+      // A terminal database outcome is authoritative. A later maintenance
+      // pass can retry cleanup if the filesystem temporarily rejects removal.
+    }
+  }
+  return removed;
 }
 
 function readTextStrict(buffer: Buffer, path: string): string {
@@ -205,7 +236,7 @@ function atomicReplace(target: TargetRuntime, relativePath: string, content: Buf
   } finally {
     if (process.platform === "darwin" && parent.fd !== null) darwinUnlinkAtIfExists(parent.fd, tempName);
     else rmSync(temp, { force: true });
-    if (parent.fd !== null) closeSync(parent.fd);
+    closeOpenedDirectory(parent);
   }
 }
 
@@ -287,7 +318,11 @@ export class FilePatchService {
 
   apply(target: TargetRuntime, input: FilePatchToolInput): Record<string, unknown> {
     const resolution = this.options.operations.resolve(input.idempotency_key, "file_patch", input, input.target_id);
-    if (resolution.kind === "replay" || resolution.kind === "unknown") return (resolution.result as Record<string, unknown> | null) ?? { state: resolution.state };
+    if (resolution.kind === "replay") {
+      if (resolution.error) throw resolution.error;
+      return (resolution.result as Record<string, unknown> | null) ?? { state: resolution.state };
+    }
+    if (resolution.kind === "unknown") return (resolution.result as Record<string, unknown> | null) ?? { state: resolution.state };
     if (resolution.kind === "join") return (resolution.result as Record<string, unknown> | null) ?? { state: resolution.state };
 
     try {
@@ -322,8 +357,13 @@ export class FilePatchService {
       this.options.transactions.create(transactionId, input.idempotency_key, input.target_id, journalPath);
       journal.state = "committing";
       writeJsonAtomic(journalPath, journal);
-      this.options.transactions.setState(transactionId, "committing");
-      this.options.operations.setState(input.idempotency_key, "committing", { transaction_id: transactionId });
+      this.options.transactions.setOutcome(
+        transactionId,
+        "committing",
+        input.idempotency_key,
+        "committing",
+        { transaction_id: transactionId },
+      );
 
       try {
         for (const [index, file] of files.entries()) {
@@ -348,22 +388,36 @@ export class FilePatchService {
         }
         journal.state = rolledBack ? "rolled_back" : "unknown";
         writeJsonAtomic(journalPath, journal);
-        this.options.transactions.setState(transactionId, journal.state);
         if (rolledBack) {
           const error = asHostSpanError(commitError);
-          this.options.operations.setState(input.idempotency_key, "rolled_back", { state: "rolled_back", transaction_id: transactionId }, error);
+          this.options.transactions.setOutcome(
+            transactionId,
+            "rolled_back",
+            input.idempotency_key,
+            "rolled_back",
+            { state: "rolled_back", transaction_id: transactionId },
+            error,
+          );
+          if (removeTerminalJournal(journalPath)) this.options.transactions.clearJournalPath(transactionId);
           throw error;
         }
         const unknown = new HostSpanError("PATCH_REJECTED", "Patch commit outcome is unknown after rollback failure.", false, { transaction_id: transactionId });
-        this.options.operations.setState(input.idempotency_key, "unknown", { state: "unknown", transaction_id: transactionId }, unknown);
+        this.options.transactions.setOutcome(
+          transactionId,
+          "unknown",
+          input.idempotency_key,
+          "unknown",
+          { state: "unknown", transaction_id: transactionId },
+          unknown,
+        );
         throw unknown;
       }
 
       journal.state = "verified";
       writeJsonAtomic(journalPath, journal);
-      this.options.transactions.setState(transactionId, "verified");
       const result = { ...resultFor(files, validators, false, resultState), transaction_id: transactionId };
-      this.options.operations.setState(input.idempotency_key, resultState, result);
+      this.options.transactions.setOutcome(transactionId, "verified", input.idempotency_key, resultState, result);
+      if (removeTerminalJournal(journalPath)) this.options.transactions.clearJournalPath(transactionId);
       return result;
     } catch (error) {
       const existing = this.options.operations.get(input.idempotency_key);
@@ -381,7 +435,6 @@ function parseJournal(path: string): PatchJournal {
 
 export function recoverPatchTransactions(
   targets: TargetRegistry,
-  operations: OperationsRepo,
   transactions: TransactionsRepo,
 ): Array<{ transaction_id: string; state: string }> {
   const recovered: Array<{ transaction_id: string; state: string }> = [];
@@ -390,8 +443,13 @@ export function recoverPatchTransactions(
     try {
       journal = parseJournal(transaction.journal_path);
     } catch {
-      transactions.setState(transaction.transaction_id, "unknown");
-      operations.setState(transaction.idempotency_key, "unknown", { state: "unknown", transaction_id: transaction.transaction_id });
+      transactions.setOutcome(
+        transaction.transaction_id,
+        "unknown",
+        transaction.idempotency_key,
+        "unknown",
+        { state: "unknown", transaction_id: transaction.transaction_id },
+      );
       recovered.push({ transaction_id: transaction.transaction_id, state: "unknown" });
       continue;
     }
@@ -399,8 +457,13 @@ export function recoverPatchTransactions(
     try {
       target = targets.get(journal.target_id, "write");
     } catch {
-      transactions.setState(transaction.transaction_id, "unknown");
-      operations.setState(transaction.idempotency_key, "unknown", { state: "unknown", transaction_id: transaction.transaction_id });
+      transactions.setOutcome(
+        transaction.transaction_id,
+        "unknown",
+        transaction.idempotency_key,
+        "unknown",
+        { state: "unknown", transaction_id: transaction.transaction_id },
+      );
       recovered.push({ transaction_id: transaction.transaction_id, state: "unknown" });
       continue;
     }
@@ -419,14 +482,16 @@ export function recoverPatchTransactions(
     if (states.every((state) => state === "after")) {
       journal.state = "verified";
       writeJsonAtomic(transaction.journal_path, journal);
-      transactions.setState(transaction.transaction_id, "verified");
       const result = {
         state: "verified",
         recovered: true,
         transaction_id: transaction.transaction_id,
         files: journal.files.map((file) => ({ path: file.path, before_sha256: file.before_sha256, after_sha256: file.after_sha256 })),
       };
-      operations.setState(transaction.idempotency_key, "verified", result);
+      transactions.setOutcome(transaction.transaction_id, "verified", transaction.idempotency_key, "verified", result);
+      if (removeTerminalJournal(transaction.journal_path)) {
+        transactions.clearJournalPath(transaction.transaction_id);
+      }
       recovered.push({ transaction_id: transaction.transaction_id, state: "verified" });
       continue;
     }
@@ -434,8 +499,13 @@ export function recoverPatchTransactions(
     if (states.some((state) => state === "other")) {
       journal.state = "unknown";
       writeJsonAtomic(transaction.journal_path, journal);
-      transactions.setState(transaction.transaction_id, "unknown");
-      operations.setState(transaction.idempotency_key, "unknown", { state: "unknown", transaction_id: transaction.transaction_id });
+      transactions.setOutcome(
+        transaction.transaction_id,
+        "unknown",
+        transaction.idempotency_key,
+        "unknown",
+        { state: "unknown", transaction_id: transaction.transaction_id },
+      );
       recovered.push({ transaction_id: transaction.transaction_id, state: "unknown" });
       continue;
     }
@@ -452,8 +522,16 @@ export function recoverPatchTransactions(
     }
     journal.state = rollbackOk ? "rolled_back" : "unknown";
     writeJsonAtomic(transaction.journal_path, journal);
-    transactions.setState(transaction.transaction_id, journal.state);
-    operations.setState(transaction.idempotency_key, journal.state, { state: journal.state, recovered: true, transaction_id: transaction.transaction_id });
+    transactions.setOutcome(
+      transaction.transaction_id,
+      journal.state,
+      transaction.idempotency_key,
+      journal.state,
+      { state: journal.state, recovered: true, transaction_id: transaction.transaction_id },
+    );
+    if (rollbackOk && removeTerminalJournal(transaction.journal_path)) {
+      transactions.clearJournalPath(transaction.transaction_id);
+    }
     recovered.push({ transaction_id: transaction.transaction_id, state: journal.state });
   }
   return recovered;

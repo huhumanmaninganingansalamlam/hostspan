@@ -164,30 +164,72 @@ export function removeProcessSpool(dataDir: string, processId: string): void {
   rmSync(join(dataDir, "spools", "processes", processId), { recursive: true, force: true });
 }
 
+export function processSpoolBytes(dataDir: string): number {
+  const root = join(dataDir, "spools", "processes");
+  if (!existsSync(root)) return 0;
+  let total = 0;
+  for (const processId of readdirSync(root)) {
+    const dir = join(root, processId);
+    if (!statSync(dir).isDirectory()) continue;
+    for (const stream of ["stdout.bin", "stderr.bin"]) {
+      const path = join(dir, stream);
+      if (existsSync(path)) total += statSync(path).size;
+    }
+  }
+  return total;
+}
+
+export function processOutputBytes(dataDir: string, processId: string): number {
+  const dir = join(dataDir, "spools", "processes", processId);
+  if (!existsSync(dir) || !statSync(dir).isDirectory()) return 0;
+  let total = 0;
+  for (const stream of ["stdout.bin", "stderr.bin"]) {
+    const path = join(dir, stream);
+    if (existsSync(path)) total += statSync(path).size;
+  }
+  return total;
+}
+
 export function cleanupExpiredProcessSpools(
   dataDir: string,
   expiredProcessIds: string[],
   maxTotalBytes: number,
-): { removed: string[]; total_bytes: number; over_quota: boolean } {
+  quotaCandidates: string[] = [],
+): { removed: string[]; evicted: string[]; total_bytes: number; over_quota: boolean } {
   const root = join(dataDir, "spools", "processes");
   const removed: string[] = [];
+  const evicted: string[] = [];
+  const removeArtifacts = (processId: string) => {
+    const path = join(root, processId);
+    if (existsSync(path)) rmSync(path, { recursive: true, force: true });
+    rmSync(join(dataDir, "sessions", processId), { recursive: true, force: true });
+  };
   for (const processId of expiredProcessIds) {
     const path = join(root, processId);
-    if (existsSync(path)) {
-      rmSync(path, { recursive: true, force: true });
-      removed.push(processId);
-    }
+    const sessionPath = join(dataDir, "sessions", processId);
+    if (!existsSync(path) && !existsSync(sessionPath)) continue;
+    removeArtifacts(processId);
+    removed.push(processId);
   }
-  let total = 0;
-  if (existsSync(root)) {
-    for (const processId of readdirSync(root)) {
-      const dir = join(root, processId);
-      if (!statSync(dir).isDirectory()) continue;
-      for (const stream of ["stdout.bin", "stderr.bin"]) {
-        const path = join(dir, stream);
-        if (existsSync(path)) total += statSync(path).size;
-      }
+  const spoolBytes = (processId: string): number => {
+    const dir = join(root, processId);
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) return 0;
+    let bytes = 0;
+    for (const stream of ["stdout.bin", "stderr.bin"]) {
+      const path = join(dir, stream);
+      if (existsSync(path)) bytes += statSync(path).size;
     }
+    return bytes;
+  };
+  let total = processSpoolBytes(dataDir);
+  for (const processId of quotaCandidates) {
+    if (total <= maxTotalBytes) break;
+    if (removed.includes(processId)) continue;
+    const bytes = spoolBytes(processId);
+    if (bytes <= 0) continue;
+    removeArtifacts(processId);
+    total = Math.max(0, total - bytes);
+    evicted.push(processId);
   }
-  return { removed, total_bytes: total, over_quota: total > maxTotalBytes };
+  return { removed, evicted, total_bytes: total, over_quota: total > maxTotalBytes };
 }

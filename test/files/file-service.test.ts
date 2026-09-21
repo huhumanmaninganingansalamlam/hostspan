@@ -56,6 +56,51 @@ describe("file services", () => {
     expect(result.sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it("streams to a late line range instead of limiting the scan to max_bytes", () => {
+    const { root, target } = fixture();
+    const lines = Array.from({ length: 120 }, (_, index) => `line-${String(index + 1).padStart(3, "0")}`);
+    writeFileSync(join(root, "late.txt"), `${lines.join("\n")}\n`);
+    const result = fileRead(target, {
+      path: "late.txt",
+      start_line: 90,
+      end_line: 92,
+      max_bytes: 64,
+      include_sha256: false,
+    });
+    expect(result).toMatchObject({
+      binary: false,
+      text: "line-090\nline-091\nline-092",
+      returned_range: { start_line: 90, end_line: 92 },
+      truncated_before: true,
+      truncated_after: true,
+    });
+    if (!("returned_range" in result)) throw new Error("late range read unexpectedly returned binary metadata");
+    expect(result.returned_range.bytes_scanned).toBeGreaterThan(64);
+  });
+
+  it("fails boundedly when a requested line range would require an excessive scan", () => {
+    const { root, target } = fixture();
+    writeFileSync(join(root, "wide.txt"), "0123456789abcdef\n".repeat(32));
+    expect(() =>
+      fileRead(
+        target,
+        {
+          path: "wide.txt",
+          start_line: 20,
+          end_line: 20,
+          max_bytes: 64,
+          include_sha256: false,
+        },
+        64,
+      ),
+    ).toThrowError(
+      expect.objectContaining<Partial<HostSpanError>>({
+        code: "SCOPE_DENIED",
+        details: expect.objectContaining({ reason: "file_read_scan_limit", max_scan_bytes: 64 }),
+      }),
+    );
+  });
+
   it("reports BOM and decodes UTF-8, UTF-16LE, and UTF-16BE", () => {
     const { root, target } = fixture();
     writeFileSync(join(root, "bom.txt"), Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("hello\n")]));
@@ -73,6 +118,32 @@ describe("file services", () => {
     expect(fileRead(target, { path: "be.txt", start_line: 1, end_line: 1, max_bytes: 1024, include_sha256: false })).toMatchObject({ encoding: "utf-16be", bom: true, text: "hello" });
   });
 
+  it("does not split a UTF-16 surrogate pair at the byte cap", () => {
+    const { root, target } = fixture();
+    writeFileSync(
+      join(root, "emoji-le.txt"),
+      Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("😀X\n", "utf16le")]),
+    );
+    const short = fileRead(target, {
+      path: "emoji-le.txt",
+      start_line: 1,
+      end_line: 1,
+      max_bytes: 2,
+      include_sha256: false,
+    });
+    expect(short).toMatchObject({ binary: false, text: "", truncated_after: true });
+    expect("text" in short ? short.text : "").not.toContain("�");
+
+    const complete = fileRead(target, {
+      path: "emoji-le.txt",
+      start_line: 1,
+      end_line: 1,
+      max_bytes: 4,
+      include_sha256: false,
+    });
+    expect(complete).toMatchObject({ binary: false, text: "😀", truncated_after: true });
+  });
+
   it("does not force-decode binary files", () => {
     const { root, target } = fixture();
     writeFileSync(join(root, "binary.bin"), Buffer.from([1, 2, 0, 255, 4]));
@@ -81,6 +152,33 @@ describe("file services", () => {
       encoding: "binary",
       error_code: "BINARY_FILE",
     });
+  });
+
+  it("classifies invalid UTF-8 and invalid UTF-16 sequences as binary instead of hiding replacement data", () => {
+    const { root, target } = fixture();
+    writeFileSync(join(root, "invalid-utf8.bin"), Buffer.from([0x61, 0xff, 0x62, 0x0a]));
+    writeFileSync(
+      join(root, "invalid-utf16.bin"),
+      Buffer.from([0xff, 0xfe, 0x00, 0xd8, 0x41, 0x00, 0x0a, 0x00]),
+    );
+    expect(
+      fileRead(target, {
+        path: "invalid-utf8.bin",
+        start_line: 1,
+        end_line: 1,
+        max_bytes: 1024,
+        include_sha256: false,
+      }),
+    ).toMatchObject({ binary: true, encoding: "binary", error_code: "BINARY_FILE" });
+    expect(
+      fileRead(target, {
+        path: "invalid-utf16.bin",
+        start_line: 1,
+        end_line: 1,
+        max_bytes: 1024,
+        include_sha256: false,
+      }),
+    ).toMatchObject({ binary: true, encoding: "binary", error_code: "BINARY_FILE" });
   });
 
   it("lists symlinks without following them and honors bounded pagination", () => {
@@ -95,6 +193,39 @@ describe("file services", () => {
     expect(first.cursor).toBeTypeOf("string");
     const all = fileList(target, { path: ".", depth: 2, max_entries: 20, include_hidden: true });
     expect(all.entries).toContainEqual(expect.objectContaining({ path: "link", type: "symlink" }));
+  });
+
+  it.runIf(process.platform === "darwin")("lists Unicode and spaced names through the pinned Darwin directory handle", () => {
+    const { root, target } = fixture();
+    mkdirSync(join(root, "목록"));
+    writeFileSync(join(root, "목록", "한글 파일.txt"), "ok\n");
+    writeFileSync(join(root, "목록", "space name.txt"), "ok\n");
+    const result = fileList(target, { path: "목록", depth: 1, max_entries: 20, include_hidden: true });
+    expect(result.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "목록/한글 파일.txt", type: "file" }),
+        expect.objectContaining({ path: "목록/space name.txt", type: "file" }),
+      ]),
+    );
+  });
+
+  it("stops directory traversal once one page plus the truncation sentinel is collected", () => {
+    const { root, target } = fixture();
+    for (let index = 0; index < 20; index += 1) {
+      writeFileSync(join(root, `file-${String(index).padStart(2, "0")}.txt`), "x");
+    }
+    const first = fileList(target, { path: ".", depth: 1, max_entries: 3, include_hidden: true });
+    expect(first.entries).toHaveLength(3);
+    expect(first.truncated).toBe(true);
+    const second = fileList(target, {
+      path: ".",
+      depth: 1,
+      max_entries: 3,
+      include_hidden: true,
+      cursor: first.cursor as string,
+    });
+    expect(second.entries).toHaveLength(3);
+    expect(second.entries).not.toEqual(first.entries);
   });
 
   it("returns bounded ripgrep context and excludes denied globs", async () => {
@@ -114,6 +245,22 @@ describe("file services", () => {
     expect(result.match_count).toBe(1);
     expect(result.matches).toEqual(expect.arrayContaining([expect.objectContaining({ type: "match", path: "src/a.txt", text: "needle" })]));
     expect(result.matches.some((match) => match.path === ".env-secret")).toBe(false);
+  });
+
+  it("bounds search response records by max_bytes", async () => {
+    const { root, target } = fixture();
+    writeFileSync(join(root, "many.txt"), Array.from({ length: 20 }, () => `needle-${"x".repeat(80)}`).join("\n"));
+    const result = await fileSearch(target, {
+      query: "needle",
+      paths: ["."],
+      context_before: 0,
+      context_after: 0,
+      max_matches: 20,
+      max_bytes: 300,
+      deadline_ms: 5_000,
+    });
+    expect(result.truncated).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(result.matches), "utf8")).toBeLessThanOrEqual(320);
   });
 
   it("returns an empty result when ripgrep finds no matches", async () => {

@@ -1,22 +1,9 @@
 import { existsSync, realpathSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import type { ExecProfile, HostSpanConfig } from "../config/schema.js";
 import { HostSpanError } from "../mcp/errors.js";
 import type { TargetRuntime } from "../targets/registry.js";
-
-function globRegex(glob: string): RegExp {
-  let pattern = "";
-  for (let i = 0; i < glob.length; i += 1) {
-    const char = glob[i];
-    if (char === "*" && glob[i + 1] === "*") {
-      pattern += ".*";
-      i += 1;
-    } else if (char === "*") pattern += "[^/]*";
-    else if (char === "?") pattern += "[^/]";
-    else pattern += char?.replace(/[\\^$+?.()|{}[\]]/g, "\\$&") ?? "";
-  }
-  return new RegExp(`^${pattern}$`);
-}
+import { matchesAnyPolicyGlob } from "./glob.js";
 
 function canonicalPolicyPath(path: string): string {
   const absolute = resolve(path);
@@ -35,7 +22,7 @@ export class PolicyEvaluator {
 
   assertFileAllowed(target: TargetRuntime, relativePath: string, absolutePath: string, write = false): void {
     const normalized = relativePath.replaceAll("\\", "/");
-    if (target.deny_globs.some((glob) => globRegex(glob).test(normalized))) {
+    if (matchesAnyPolicyGlob(normalized, target.deny_globs)) {
       throw new HostSpanError("SCOPE_DENIED", `Path is denied by target policy: ${relativePath}`);
     }
     if (write && this.protectedPaths.has(canonicalPolicyPath(absolutePath))) {
@@ -58,7 +45,9 @@ export class PolicyEvaluator {
       throw new HostSpanError("SCOPE_DENIED", "Process argv must include a program.");
     }
     const hasTerminalAuthority = target.capabilities.includes("terminal");
-    if (!hasTerminalAuthority && (program.includes("/") || !profile.allowed_programs.includes(basename(program)))) {
+    const explicitProgramPath =
+      isAbsolute(program) || program.includes("/") || (process.platform === "win32" && program.includes("\\"));
+    if (!hasTerminalAuthority && (explicitProgramPath || !profile.allowed_programs.includes(basename(program)))) {
       throw new HostSpanError("SCOPE_DENIED", `Program is not allowed by exec profile: ${program ?? "<missing>"}`);
     }
     if (!hasTerminalAuthority) {

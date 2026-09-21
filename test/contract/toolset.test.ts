@@ -18,6 +18,8 @@ const modernMeta = {
   "io.modelcontextprotocol/clientCapabilities": {},
 };
 
+const HOSTSPAN_V3_APPROVED_TOOLSET_HASH = "sha256:272a6e4f3f2bc71922b674905e5a4ba031a1344c6c5933f9ebbf392c782ce9b9";
+
 async function toolsListOnce(handler: ReturnType<typeof createMcpHandler>, id: number): Promise<Array<Record<string, unknown>>> {
   const response = await handler.fetch(
     new Request("http://127.0.0.1/mcp", {
@@ -43,7 +45,7 @@ describe("hostspan-v3 tool contract", () => {
     const first = JSON.stringify(toolsetDocument());
     expect(toolsetDocument().tools.map((tool) => tool.name)).toEqual(TOOL_NAMES);
     expect(toolsetDocument().tools).toHaveLength(11);
-    expect(TOOLSET_HASH).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(TOOLSET_HASH).toBe(HOSTSPAN_V3_APPROVED_TOOLSET_HASH);
     for (let index = 0; index < 100; index += 1) expect(JSON.stringify(toolsetDocument())).toBe(first);
   });
 

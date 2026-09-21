@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,7 +7,7 @@ import { SearchConcurrencyLimiter } from "../../src/files/search.js";
 import type { HostSpanToolHandlers } from "../../src/mcp/registry.js";
 import { createHostSpanHttpServer } from "../../src/mcp/server.js";
 import { AuditRepo } from "../../src/state/audit-repo.js";
-import { databaseHealthy, databaseResponsive, openDatabase } from "../../src/state/database.js";
+import { DB_SCHEMA_VERSION, databaseHealthy, databaseResponsive, openDatabase } from "../../src/state/database.js";
 
 const roots: string[] = [];
 
@@ -88,6 +88,41 @@ describe("overload stability", () => {
     }
   });
 
+  it("reopens the current WAL database without creating a side-copy backup", () => {
+    const root = mkdtempSync(join(tmpdir(), "hostspan-current-db-"));
+    roots.push(root);
+    const path = join(root, "state.db");
+    const first = openDatabase(path);
+    first
+      .prepare("INSERT INTO audit_events(event_id,request_id,event_type,metadata_json,timestamp) VALUES(?,?,?,?,?)")
+      .run("evt_current", "req_current", "test", "{}", new Date().toISOString());
+    first.close();
+
+    const reopened = openDatabase(path);
+    try {
+      expect((reopened.prepare("SELECT count(*) AS count FROM audit_events WHERE event_id='evt_current'").get() as { count: number }).count).toBe(1);
+      expect(existsSync(`${path}.bak`)).toBe(false);
+    } finally {
+      reopened.close();
+    }
+  });
+
+  it("recovers an empty database file left by an interrupted first initialization", () => {
+    const root = mkdtempSync(join(tmpdir(), "hostspan-empty-db-"));
+    roots.push(root);
+    const path = join(root, "state.db");
+    writeFileSync(path, "");
+
+    const db = openDatabase(path);
+    try {
+      expect(databaseHealthy(db)).toBe(true);
+      expect((db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string }).value).toBe(String(DB_SCHEMA_VERSION));
+      expect(db.pragma("journal_mode", { simple: true })).toBe("wal");
+    } finally {
+      db.close();
+    }
+  });
+
   it("bounds durable audit history by age and event count", () => {
     const root = mkdtempSync(join(tmpdir(), "hostspan-overload-audit-"));
     roots.push(root);
@@ -109,83 +144,26 @@ describe("overload stability", () => {
     }
   });
 
-  it("migrates schema 2 audit state to schema 4 without losing events", () => {
-    const root = mkdtempSync(join(tmpdir(), "hostspan-overload-migration-"));
+  it.each([1, 2, 3, 4])("rejects unsupported schema %s without modifying it", (schemaVersion) => {
+    const root = mkdtempSync(join(tmpdir(), `hostspan-unsupported-schema-${schemaVersion}-`));
     roots.push(root);
     const path = join(root, "state.db");
-    const legacy = new Database(path);
-    legacy.exec(`
-      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      INSERT INTO meta(key,value) VALUES('schema_version','2');
-      CREATE TABLE audit_events (
-        event_id TEXT PRIMARY KEY, request_id TEXT NOT NULL, idempotency_key TEXT, process_id TEXT,
-        event_type TEXT NOT NULL, metadata_json TEXT NOT NULL, timestamp TEXT NOT NULL
-      );
-      INSERT INTO audit_events(event_id,request_id,event_type,metadata_json,timestamp)
-      VALUES('evt_existing','req_existing','test','{}','2026-09-18T00:00:00.000Z');
-    `);
-    legacy.close();
+    const unsupported = new Database(path);
+    unsupported.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    unsupported.prepare("INSERT INTO meta(key,value) VALUES('schema_version',?)").run(String(schemaVersion));
+    unsupported.close();
+    const before = readFileSync(path);
 
-    const db = openDatabase(path);
+    expect(() => openDatabase(path)).toThrow(new RegExp(`unsupported HostSpan database schema ${schemaVersion}`));
+    const check = new Database(path, { readonly: true });
     try {
-      const version = db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string };
-      const events = (db.prepare("SELECT count(*) AS count FROM audit_events").get() as { count: number }).count;
-      const index = db
-        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='audit_events_timestamp_idx'")
-        .get() as { name: string } | undefined;
-      expect(version.value).toBe("4");
-      expect(events).toBe(1);
-      expect(index?.name).toBe("audit_events_timestamp_idx");
-      expect(existsSync(`${path}.pre-migration.bak`)).toBe(true);
+      expect((check.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string }).value).toBe(String(schemaVersion));
+      expect(check.pragma("journal_mode", { simple: true })).toBe("delete");
     } finally {
-      db.close();
+      check.close();
     }
-  });
-
-  it("migrates a schema 3 process row to the interactive-backend schema 4 shape", () => {
-    const root = mkdtempSync(join(tmpdir(), "hostspan-process-migration-"));
-    roots.push(root);
-    const path = join(root, "state.db");
-    const legacy = new Database(path);
-    legacy.exec(`
-      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      INSERT INTO meta(key,value) VALUES('schema_version','3');
-      CREATE TABLE processes (
-        process_id TEXT PRIMARY KEY, idempotency_key TEXT UNIQUE NOT NULL, target_id TEXT NOT NULL,
-        argv_digest TEXT NOT NULL, cwd_relative TEXT NOT NULL, pid INTEGER, pgid INTEGER,
-        state TEXT NOT NULL, exit_code INTEGER, term_signal TEXT, reason TEXT,
-        started_at TEXT, ended_at TEXT, stdout_bytes INTEGER NOT NULL DEFAULT 0,
-        stderr_bytes INTEGER NOT NULL DEFAULT 0, output_expires_at TEXT
-      );
-      INSERT INTO processes(process_id,idempotency_key,target_id,argv_digest,cwd_relative,state,pid,pgid)
-      VALUES('proc_existing','0199e78d-4c00-7000-8000-000000000950','local','sha256:test','.','running',123,123);
-    `);
-    legacy.close();
-
-    const db = openDatabase(path);
-    try {
-      const version = db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string };
-      const row = db.prepare("SELECT process_id,state,backend,backend_ref,deadline_at,max_output_bytes FROM processes WHERE process_id='proc_existing'").get() as {
-        process_id: string;
-        state: string;
-        backend: string;
-        backend_ref: string | null;
-        deadline_at: string | null;
-        max_output_bytes: number | null;
-      };
-      expect(version.value).toBe("4");
-      expect(row).toEqual({
-        process_id: "proc_existing",
-        state: "running",
-        backend: "native",
-        backend_ref: null,
-        deadline_at: null,
-        max_output_bytes: null,
-      });
-      expect(existsSync(`${path}.pre-migration.bak`)).toBe(true);
-    } finally {
-      db.close();
-    }
+    expect(readFileSync(path)).toEqual(before);
+    expect(existsSync(`${path}-wal`)).toBe(false);
   });
 
   it("fails fast when MCP in-flight capacity is saturated and recovers after release", async () => {

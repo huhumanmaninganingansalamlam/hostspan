@@ -5,7 +5,12 @@ import fc from "fast-check";
 import { afterEach, describe, expect, it } from "vitest";
 import type { HostSpanConfig } from "../../src/config/schema.js";
 import { HostSpanError } from "../../src/mcp/errors.js";
-import { openReadNoFollow, resolveTargetPath } from "../../src/files/path-guard.js";
+import {
+  closeOpenedDirectory,
+  openDirectoryNoFollow,
+  openReadNoFollow,
+  resolveTargetPath,
+} from "../../src/files/path-guard.js";
 import { TargetRegistry } from "../../src/targets/registry.js";
 
 const cleanup: string[] = [];
@@ -92,6 +97,20 @@ describe("canonical target path guard", () => {
     expect(() => resolveTargetPath(target, "junction-link/secret.txt", "read")).toThrowError(/Symlink/);
   });
 
+  it.runIf(process.platform === "win32")("pins an authorized parent directory against rename while a guarded operation is active", () => {
+    const { root } = tempRoot();
+    const parent = join(root, "parent");
+    mkdirSync(parent);
+    const target = targetFor(root);
+    const opened = openDirectoryNoFollow(target, "parent", "write");
+    try {
+      expect(() => renameSync(parent, join(root, "moved"))).toThrow();
+    } finally {
+      closeOpenedDirectory(opened);
+    }
+    expect(() => renameSync(parent, join(root, "moved"))).not.toThrow();
+  });
+
   it("rejects symlink files, symlink directories, and nonexistent children below a symlink", () => {
     const { base, root } = tempRoot();
     const outside = join(base, "outside");
@@ -124,6 +143,27 @@ describe("canonical target path guard", () => {
     writeFileSync(join(inside, "value.txt"), "inside");
     writeFileSync(join(outside, "value.txt"), "outside");
     const target = targetFor(root);
+    if (process.platform === "win32") {
+      let renameBlocked = false;
+      const opened = openReadNoFollow(target, "inside/value.txt", () => {
+        try {
+          renameSync(inside, join(root, "inside-original"));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "EBUSY") {
+            renameBlocked = true;
+            return;
+          }
+          throw error;
+        }
+        symlinkSync(outside, inside);
+      });
+      try {
+        expect(renameBlocked).toBe(true);
+      } finally {
+        closeSync(opened.fd);
+      }
+      return;
+    }
     expect(() =>
       openReadNoFollow(target, "inside/value.txt", () => {
         renameSync(inside, join(root, "inside-original"));

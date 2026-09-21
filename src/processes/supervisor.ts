@@ -11,7 +11,7 @@ import type { OperationsRepo } from "../state/operations-repo.js";
 import type { ProcessesRepo, ProcessState } from "../state/processes-repo.js";
 import type { TargetRegistry } from "../targets/registry.js";
 import { resolveTargetPath } from "../files/path-guard.js";
-import { OutputSpool } from "./output-spool.js";
+import { OutputSpool, processOutputBytes, processSpoolBytes } from "./output-spool.js";
 import { processGroupAlive, signalProcessGroup } from "./recovery.js";
 import type { InteractiveSessionManager } from "./interactive-session.js";
 import { spawnWindowsJobProcess, type WindowsJobReceipt } from "./windows-job-process.js";
@@ -29,6 +29,8 @@ interface RuntimeProcess {
   resolveClosed: () => void;
   deadlineTimer?: NodeJS.Timeout;
   terminating: boolean;
+  acceptingOutput: boolean;
+  closedObserved: boolean;
   exitCode: number | null;
   exitSignal: NodeJS.Signals | null;
 }
@@ -86,8 +88,16 @@ export interface ProcessSupervisorOptions {
 export class ProcessSupervisor {
   private readonly runtimes = new Map<string, RuntimeProcess>();
   private readonly writeInflight = new Map<string, Promise<Record<string, unknown>>>();
+  private readonly spoolReservations = new Map<string, number>();
+  private readonly terminationInflight = new Map<string, Promise<ProcessState>>();
 
-  constructor(private readonly options: ProcessSupervisorOptions) {}
+  constructor(private readonly options: ProcessSupervisorOptions) {
+    for (const record of options.processes.active()) {
+      if (record.max_output_bytes && record.max_output_bytes > 0) {
+        this.spoolReservations.set(record.process_id, record.max_output_bytes);
+      }
+    }
+  }
 
   private expiresAt(): string {
     const ttlMs = this.options.config.retention.completed_process_output_ttl_minutes * 60_000;
@@ -100,6 +110,36 @@ export class ProcessSupervisor {
     return new OutputSpool(this.options.config.server.data_dir, processId, maxOutputBytes);
   }
 
+  private projectedSpoolBytes(): number {
+    const dataDir = this.options.config.server.data_dir;
+    let projected = processSpoolBytes(dataDir);
+    for (const [processId, reserved] of this.spoolReservations) {
+      projected += Math.max(0, reserved - processOutputBytes(dataDir, processId));
+    }
+    return projected;
+  }
+
+  private reserveSpoolBudget(processId: string, requestedBytes: number): number {
+    const maximum = this.options.config.retention.max_total_spool_bytes;
+    const projected = this.projectedSpoolBytes();
+    const remaining = maximum - projected;
+    if (remaining < requestedBytes) {
+      throw new HostSpanError("SERVER_BUSY", "Process output retention budget cannot satisfy the requested output cap; retry after retained output expires.", true, {
+        resource: "process_output_spool",
+        retained_and_reserved_bytes: projected,
+        requested_output_bytes: requestedBytes,
+        remaining_output_bytes: Math.max(0, remaining),
+        max_total_spool_bytes: maximum,
+      });
+    }
+    this.spoolReservations.set(processId, requestedBytes);
+    return requestedBytes;
+  }
+
+  private releaseSpoolReservation(processId: string): void {
+    this.spoolReservations.delete(processId);
+  }
+
   private finalize(
     processId: string,
     state: ProcessState,
@@ -110,7 +150,10 @@ export class ProcessSupervisor {
     const current = this.options.processes.get(processId);
     if (!current || TERMINAL_STATES.has(current.state)) {
       const runtime = this.runtimes.get(processId);
+      if (runtime?.deadlineTimer) clearTimeout(runtime.deadlineTimer);
       runtime?.resolveTerminal();
+      this.runtimes.delete(processId);
+      this.releaseSpoolReservation(processId);
       return;
     }
     const expiresAt = this.expiresAt();
@@ -136,6 +179,16 @@ export class ProcessSupervisor {
     const runtime = this.runtimes.get(processId);
     if (runtime?.deadlineTimer) clearTimeout(runtime.deadlineTimer);
     runtime?.resolveTerminal();
+    this.runtimes.delete(processId);
+    this.releaseSpoolReservation(processId);
+  }
+
+  async reconcileInteractiveProcesses(targetId?: string): Promise<void> {
+    if (!this.options.terminal) return;
+    const active = this.options.processes
+      .active()
+      .filter((record) => record.backend === "pty" && (targetId === undefined || record.target_id === targetId));
+    for (const record of active) await this.syncInteractiveState(record.process_id);
   }
 
   private async terminateInteractive(
@@ -154,6 +207,10 @@ export class ProcessSupervisor {
     await this.options.terminal.close(record.backend_ref, graceMs);
     const drained = await this.options.terminal.waitForOutputDrain(processId);
     this.options.processes.setBytes(processId, "stdout", drained.bytes);
+    if (!drained.drained) {
+      this.finalize(processId, "unknown", record.exit_code, record.term_signal, "interactive_output_drain_unconfirmed");
+      return "unknown";
+    }
     const settled = await this.options.terminal.waitForExitStatus(record.backend_ref, 250);
     if (!settled.exists) {
       this.finalize(processId, "unknown", record.exit_code, record.term_signal, "interactive_session_missing_after_terminate");
@@ -167,7 +224,22 @@ export class ProcessSupervisor {
     return state;
   }
 
-  private async terminate(
+  private terminate(
+    processId: string,
+    state: "timed_out" | "cancelled" | "failed",
+    reason: string,
+    graceMs: number,
+  ): Promise<ProcessState> {
+    const existing = this.terminationInflight.get(processId);
+    if (existing) return existing;
+    const operation = this.terminateOnce(processId, state, reason, graceMs).finally(() => {
+      if (this.terminationInflight.get(processId) === operation) this.terminationInflight.delete(processId);
+    });
+    this.terminationInflight.set(processId, operation);
+    return operation;
+  }
+
+  private async terminateOnce(
     processId: string,
     state: "timed_out" | "cancelled" | "failed",
     reason: string,
@@ -192,11 +264,23 @@ export class ProcessSupervisor {
       return "unknown";
     }
     if (runtime) {
-      // On Windows, Job Object kill-on-close can make the worker PID disappear
-      // before Node has closed inherited stdio handles. Completion must wait
-      // for the child_process `close` event so target directories are no longer
-      // held open when cancel/deadline returns.
-      await Promise.race([runtime.closed, sleep(process.platform === "win32" ? 1_500 : 250)]);
+      // Process-tree death and Node stdio closure are separate facts. Do not
+      // return a terminal result while stdout/stderr callbacks can still touch
+      // durable state. A short grace normally observes `close`; if Node keeps
+      // the pipe handles alive after the OS process tree is gone, stop
+      // accepting output, destroy the pipes, and classify the boundary as
+      // unknown unless close is then observed.
+      await Promise.race([runtime.closed, sleep(2_000)]);
+      if (!runtime.closedObserved) {
+        runtime.acceptingOutput = false;
+        runtime.child.stdout.destroy();
+        runtime.child.stderr.destroy();
+        await Promise.race([runtime.closed, sleep(500)]);
+        if (!runtime.closedObserved) {
+          this.finalize(processId, "unknown", runtime.exitCode, runtime.exitSignal, `${reason}:stdio_close_unconfirmed`);
+          return "unknown";
+        }
+      }
     }
     const windowsTargetGone = await waitForWindowsProcessGone(record.pid, 1_500);
     if (process.platform === "win32" && windowsTargetGone) {
@@ -292,6 +376,10 @@ export class ProcessSupervisor {
       const drained = await this.options.terminal.waitForOutputDrain(processId);
       bytes = drained.bytes;
       this.options.processes.setBytes(processId, "stdout", bytes);
+      if (!drained.drained) {
+        this.finalize(processId, "unknown", state.exit_code, state.signal, "interactive_output_drain_unconfirmed");
+        return;
+      }
       const settled = state.exit_code === null ? await this.options.terminal.waitForExitStatus(record.backend_ref) : state;
       if (!settled.exists) {
         this.finalize(processId, "unknown", null, null, "interactive_exit_status_unavailable");
@@ -333,6 +421,7 @@ export class ProcessSupervisor {
     if (resolution.kind !== "new") {
       const existing = this.options.processes.getByKey(input.idempotency_key);
       if (!existing) {
+        if (resolution.kind === "replay" && resolution.error) throw resolution.error;
         if (resolution.kind === "unknown") return { state: "unknown", reason: "process_record_missing", native_execution: true, sandboxed: false };
         throw new HostSpanError("PROCESS_UNKNOWN", "Durable operation exists but its process record is missing.");
       }
@@ -349,27 +438,48 @@ export class ProcessSupervisor {
 
     if (interactive) {
       if (!this.options.terminal || !this.options.config.terminal) {
-        this.options.operations.setState(input.idempotency_key, "failed", undefined, { code: "TERMINAL_BACKEND_UNAVAILABLE" });
-        throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "Interactive terminal support is not configured.", true);
+        const error = new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "Interactive terminal support is not configured.", true);
+        this.options.operations.setState(input.idempotency_key, "failed", undefined, error);
+        throw error;
       }
+      await this.reconcileInteractiveProcesses(input.target_id);
       if (this.options.processes.activeCountForTargetBackend(input.target_id, "pty") >= this.options.config.terminal.max_concurrent_sessions) {
-        this.options.operations.setState(input.idempotency_key, "failed", undefined, { code: "SCOPE_DENIED", reason: "max_concurrent_terminal_sessions" });
-        throw new HostSpanError("SCOPE_DENIED", `Target ${input.target_id} reached max_concurrent_terminal_sessions.`);
+        const error = new HostSpanError("SCOPE_DENIED", `Target ${input.target_id} reached max_concurrent_terminal_sessions.`, false, {
+          reason: "max_concurrent_terminal_sessions",
+        });
+        this.options.operations.setState(input.idempotency_key, "failed", undefined, error);
+        throw error;
       }
       const processId = `proc_${uuidv7().replaceAll("-", "")}`;
+      let effectiveMaxOutputBytes: number;
+      try {
+        effectiveMaxOutputBytes = this.reserveSpoolBudget(
+          processId,
+          Math.min(input.max_output_bytes, this.options.config.terminal.max_output_bytes),
+        );
+      } catch (error) {
+        this.options.operations.setState(input.idempotency_key, "failed", undefined, error);
+        throw error;
+      }
       const session = this.options.terminal.sessionName(processId);
       const deadlineAt = new Date(Date.now() + input.deadline_ms).toISOString();
-      this.options.processes.create({
-        process_id: processId,
-        idempotency_key: input.idempotency_key,
-        target_id: input.target_id,
-        argv_digest: digestArgv(input.argv),
-        cwd_relative: cwd.relative,
-        backend: "pty",
-        backend_ref: session,
-        deadline_at: deadlineAt,
-        max_output_bytes: Math.min(input.max_output_bytes, this.options.config.terminal.max_output_bytes),
-      });
+      try {
+        this.options.processes.create({
+          process_id: processId,
+          idempotency_key: input.idempotency_key,
+          target_id: input.target_id,
+          argv_digest: digestArgv(input.argv),
+          cwd_relative: cwd.relative,
+          backend: "pty",
+          backend_ref: session,
+          deadline_at: deadlineAt,
+          max_output_bytes: effectiveMaxOutputBytes,
+        });
+      } catch (error) {
+        this.releaseSpoolReservation(processId);
+        this.options.operations.setState(input.idempotency_key, "failed", undefined, error);
+        throw error;
+      }
       this.options.operations.setState(input.idempotency_key, "launching", { state: "launching", process_id: processId, backend: "pty" });
       this.options.logger?.info("process.launching", {
         request_id: requestId,
@@ -388,7 +498,7 @@ export class ProcessSupervisor {
           columns: input.columns ?? 120,
           rows: input.rows ?? 40,
           deadlineAt,
-          maxOutputBytes: input.max_output_bytes,
+          maxOutputBytes: effectiveMaxOutputBytes,
         });
         this.options.processes.markRunning(processId, started.pid, null);
         this.options.operations.setState(input.idempotency_key, "running", { state: "running", process_id: processId, backend: "pty" });
@@ -398,6 +508,7 @@ export class ProcessSupervisor {
         await this.syncInteractiveState(processId);
         return this.snapshot(processId, 0, 0, Math.min(input.max_output_bytes, 131_072));
       } catch (error) {
+        this.releaseSpoolReservation(processId);
         this.options.processes.markTerminal(processId, "failed", null, null, "pty_start_failed", this.expiresAt());
         this.options.operations.setState(input.idempotency_key, "failed", { state: "failed", process_id: processId, reason: "pty_start_failed" }, error);
         throw error;
@@ -406,23 +517,39 @@ export class ProcessSupervisor {
 
     if (!profile) throw new HostSpanError("POLICY_UNENFORCEABLE", "Missing native exec profile.");
     if (this.options.processes.activeCountForTargetBackend(input.target_id, "native") >= profile.max_concurrent_processes) {
-      this.options.operations.setState(input.idempotency_key, "failed", undefined, { code: "SCOPE_DENIED", reason: "max_concurrent_processes" });
-      throw new HostSpanError("SCOPE_DENIED", `Target ${input.target_id} reached max_concurrent_processes.`);
+      const error = new HostSpanError("SCOPE_DENIED", `Target ${input.target_id} reached max_concurrent_processes.`, false, {
+        reason: "max_concurrent_processes",
+      });
+      this.options.operations.setState(input.idempotency_key, "failed", undefined, error);
+      throw error;
     }
 
     const processId = `proc_${uuidv7().replaceAll("-", "")}`;
+    let effectiveMaxOutputBytes: number;
+    try {
+      effectiveMaxOutputBytes = this.reserveSpoolBudget(processId, input.max_output_bytes);
+    } catch (error) {
+      this.options.operations.setState(input.idempotency_key, "failed", undefined, error);
+      throw error;
+    }
     const deadlineAt = new Date(Date.now() + input.deadline_ms).toISOString();
-    this.options.processes.create({
-      process_id: processId,
-      idempotency_key: input.idempotency_key,
-      target_id: input.target_id,
-      argv_digest: digestArgv(input.argv),
-      cwd_relative: cwd.relative,
-      backend: "native",
-      backend_ref: null,
-      deadline_at: deadlineAt,
-      max_output_bytes: input.max_output_bytes,
-    });
+    try {
+      this.options.processes.create({
+        process_id: processId,
+        idempotency_key: input.idempotency_key,
+        target_id: input.target_id,
+        argv_digest: digestArgv(input.argv),
+        cwd_relative: cwd.relative,
+        backend: "native",
+        backend_ref: null,
+        deadline_at: deadlineAt,
+        max_output_bytes: effectiveMaxOutputBytes,
+      });
+    } catch (error) {
+      this.releaseSpoolReservation(processId);
+      this.options.operations.setState(input.idempotency_key, "failed", undefined, error);
+      throw error;
+    }
     this.options.operations.setState(input.idempotency_key, "launching", { state: "launching", process_id: processId });
     this.options.logger?.info("process.launching", {
       request_id: requestId,
@@ -462,6 +589,7 @@ export class ProcessSupervisor {
         });
       }
     } catch (error) {
+      this.releaseSpoolReservation(processId);
       this.options.processes.markTerminal(processId, "failed", null, null, "spawn_failed", this.expiresAt());
       this.options.operations.setState(input.idempotency_key, "failed", { state: "failed", process_id: processId, reason: "spawn_failed" }, error);
       throw error;
@@ -477,18 +605,21 @@ export class ProcessSupervisor {
     });
     const runtime: RuntimeProcess = {
       child,
-      spool: new OutputSpool(this.options.config.server.data_dir, processId, input.max_output_bytes),
+      spool: new OutputSpool(this.options.config.server.data_dir, processId, effectiveMaxOutputBytes),
       terminal,
       resolveTerminal,
       closed,
       resolveClosed,
       terminating: false,
+      acceptingOutput: true,
+      closedObserved: false,
       exitCode: null,
       exitSignal: null,
     };
     this.runtimes.set(processId, runtime);
 
     const onOutput = (stream: "stdout" | "stderr", chunk: Buffer): void => {
+      if (!runtime.acceptingOutput) return;
       const current = this.options.processes.get(processId);
       if (!current || TERMINAL_STATES.has(current.state)) return;
       const appended = runtime.spool.append(stream, Buffer.from(chunk));
@@ -513,6 +644,7 @@ export class ProcessSupervisor {
     };
 
     child.once("error", (error) => {
+      runtime.closedObserved = true;
       runtime.resolveClosed();
       if (runtime.terminating) return;
       runtime.terminating = true;
@@ -520,6 +652,7 @@ export class ProcessSupervisor {
     });
 
     child.once("close", (code, signal) => {
+      runtime.closedObserved = true;
       runtime.exitCode = code;
       runtime.exitSignal = signal;
       runtime.resolveClosed();
@@ -700,7 +833,7 @@ export class ProcessSupervisor {
 
   async shutdown(): Promise<void> {
     const active = this.options.processes.active().filter((record) => record.backend === "native");
-    await Promise.all(
+    await Promise.allSettled(
       active.map(async (record) => {
         try {
           await this.terminate(record.process_id, "cancelled", "daemon_shutdown", 500);
@@ -709,5 +842,15 @@ export class ProcessSupervisor {
         }
       }),
     );
+    await Promise.allSettled([...this.terminationInflight.values()]);
+  }
+
+  async settleForRuntimeClose(): Promise<void> {
+    await Promise.allSettled([...this.terminationInflight.values(), ...this.writeInflight.values()]);
+    if (this.runtimes.size > 0) {
+      throw new Error(
+        `Cannot close HostSpan runtime while ${this.runtimes.size} native process runtime(s) are still active; shut down the supervisor first.`,
+      );
+    }
   }
 }

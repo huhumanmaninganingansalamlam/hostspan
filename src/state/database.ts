@@ -1,87 +1,201 @@
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import type { HostSpanConfig } from "../config/schema.js";
 import type { TargetRegistry } from "../targets/registry.js";
 
-export const DB_SCHEMA_VERSION = 4;
+export const DB_SCHEMA_VERSION = 5;
 
 export type HostSpanDatabase = Database.Database;
 
-export function openDatabase(path: string): HostSpanDatabase {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const existed = existsSync(path);
-  if (existed) copyFileSync(path, `${path}.pre-migration.bak`);
-  const db = new Database(path);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-  const current = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as { value: string } | undefined;
-  if (current && Number(current.value) > DB_SCHEMA_VERSION) {
-    db.close();
-    throw new Error(`database schema ${current.value} is newer than supported ${DB_SCHEMA_VERSION}`);
+const CURRENT_TABLES = [
+  "meta",
+  "targets_snapshot",
+  "operations",
+  "processes",
+  "patch_transactions",
+  "audit_events",
+  "oauth_clients",
+  "oauth_authorization_requests",
+  "oauth_authorization_codes",
+  "oauth_access_tokens",
+  "oauth_refresh_tokens",
+] as const;
+
+const REQUIRED_COLUMNS: Record<(typeof CURRENT_TABLES)[number], readonly string[]> = {
+  meta: ["key", "value"],
+  targets_snapshot: ["target_id", "config_digest", "policy_epoch", "provider", "root_fingerprint", "ready", "last_checked_at"],
+  operations: ["idempotency_key", "tool_name", "argument_hash", "target_id", "state", "result_json", "error_json", "created_at", "updated_at"],
+  processes: [
+    "process_id",
+    "idempotency_key",
+    "target_id",
+    "argv_digest",
+    "cwd_relative",
+    "backend",
+    "backend_ref",
+    "pid",
+    "pgid",
+    "deadline_at",
+    "max_output_bytes",
+    "state",
+    "exit_code",
+    "term_signal",
+    "reason",
+    "started_at",
+    "ended_at",
+    "stdout_bytes",
+    "stderr_bytes",
+    "output_expires_at",
+  ],
+  patch_transactions: ["transaction_id", "idempotency_key", "target_id", "journal_path", "state", "created_at", "updated_at"],
+  audit_events: ["event_id", "request_id", "idempotency_key", "process_id", "event_type", "metadata_json", "timestamp"],
+  oauth_clients: ["client_id", "metadata_json", "created_at"],
+  oauth_authorization_requests: ["request_id", "client_id", "redirect_uri", "scope", "state", "code_challenge", "resource", "expires_at"],
+  oauth_authorization_codes: ["code_hash", "client_id", "redirect_uri", "scope", "code_challenge", "resource", "expires_at", "used_at"],
+  oauth_access_tokens: ["token_hash", "client_id", "scope", "resource", "expires_at", "revoked_at"],
+  oauth_refresh_tokens: ["token_hash", "client_id", "scope", "resource", "expires_at", "revoked_at"],
+};
+
+function currentSchemaVersion(db: HostSpanDatabase): number | null {
+  const meta = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='meta'").get() as { name: string } | undefined;
+  if (!meta) return null;
+  const row = db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string } | undefined;
+  if (!row) return null;
+  const version = Number(row.value);
+  return Number.isInteger(version) ? version : null;
+}
+
+function userTableNames(db: HostSpanDatabase): string[] {
+  return (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as Array<{ name: string }>).map(
+    (row) => row.name,
+  );
+}
+
+function validateCurrentSchema(db: HostSpanDatabase): void {
+  const version = currentSchemaVersion(db);
+  if (version !== DB_SCHEMA_VERSION) {
+    throw new Error(
+      `unsupported HostSpan database schema ${version ?? "<missing>"}; expected ${DB_SCHEMA_VERSION}. ` +
+        "HostSpan supports only the current state database format.",
+    );
   }
+  const tables = new Set(
+    (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((row) => row.name),
+  );
+  const missing = CURRENT_TABLES.filter((table) => !tables.has(table));
+  if (missing.length) throw new Error(`HostSpan database schema ${DB_SCHEMA_VERSION} is incomplete; missing: ${missing.join(", ")}`);
+  for (const table of CURRENT_TABLES) {
+    const columns = new Set(
+      (db.prepare(`PRAGMA table_info("${table}")`).all() as Array<{ name: string }>).map((column) => column.name),
+    );
+    const missingColumns = REQUIRED_COLUMNS[table].filter((column) => !columns.has(column));
+    if (missingColumns.length) {
+      throw new Error(
+        `HostSpan database schema ${DB_SCHEMA_VERSION} is incomplete; ${table} is missing columns: ${missingColumns.join(", ")}`,
+      );
+    }
+  }
+  const invalidBackend = db
+    .prepare("SELECT process_id,backend FROM processes WHERE backend NOT IN ('native','pty') LIMIT 1")
+    .get() as { process_id: string; backend: string } | undefined;
+  if (invalidBackend) {
+    throw new Error(
+      `HostSpan database schema ${DB_SCHEMA_VERSION} contains unsupported process backend ${invalidBackend.backend} for ${invalidBackend.process_id}.`,
+    );
+  }
+}
+
+function initializeCurrentSchema(db: HostSpanDatabase): void {
   db.transaction(() => {
     db.exec(`
-      CREATE TABLE IF NOT EXISTS targets_snapshot (
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE targets_snapshot (
         target_id TEXT PRIMARY KEY, config_digest TEXT NOT NULL, policy_epoch INTEGER NOT NULL,
         provider TEXT NOT NULL, root_fingerprint TEXT NOT NULL, ready INTEGER NOT NULL, last_checked_at TEXT NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS operations (
+      CREATE TABLE operations (
         idempotency_key TEXT PRIMARY KEY, tool_name TEXT NOT NULL, argument_hash TEXT NOT NULL,
         target_id TEXT, state TEXT NOT NULL, result_json TEXT, error_json TEXT,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS processes (
+      CREATE TABLE processes (
         process_id TEXT PRIMARY KEY, idempotency_key TEXT UNIQUE NOT NULL, target_id TEXT NOT NULL,
-        argv_digest TEXT NOT NULL, cwd_relative TEXT NOT NULL, backend TEXT NOT NULL DEFAULT 'native', backend_ref TEXT,
+        argv_digest TEXT NOT NULL, cwd_relative TEXT NOT NULL,
+        backend TEXT NOT NULL DEFAULT 'native' CHECK (backend IN ('native','pty')), backend_ref TEXT,
         pid INTEGER, pgid INTEGER, deadline_at TEXT, max_output_bytes INTEGER,
         state TEXT NOT NULL, exit_code INTEGER, term_signal TEXT, reason TEXT,
         started_at TEXT, ended_at TEXT, stdout_bytes INTEGER NOT NULL DEFAULT 0,
         stderr_bytes INTEGER NOT NULL DEFAULT 0, output_expires_at TEXT
       );
-      CREATE TABLE IF NOT EXISTS patch_transactions (
+      CREATE TABLE patch_transactions (
         transaction_id TEXT PRIMARY KEY, idempotency_key TEXT UNIQUE NOT NULL, target_id TEXT NOT NULL,
         journal_path TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS audit_events (
+      CREATE TABLE audit_events (
         event_id TEXT PRIMARY KEY, request_id TEXT NOT NULL, idempotency_key TEXT, process_id TEXT,
         event_type TEXT NOT NULL, metadata_json TEXT NOT NULL, timestamp TEXT NOT NULL
       );
-      CREATE INDEX IF NOT EXISTS audit_events_timestamp_idx ON audit_events(timestamp, event_id);
-      CREATE TABLE IF NOT EXISTS oauth_clients (
+      CREATE INDEX audit_events_timestamp_idx ON audit_events(timestamp, event_id);
+      CREATE TABLE oauth_clients (
         client_id TEXT PRIMARY KEY, metadata_json TEXT NOT NULL, created_at INTEGER NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS oauth_authorization_requests (
+      CREATE TABLE oauth_authorization_requests (
         request_id TEXT PRIMARY KEY, client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL,
         scope TEXT NOT NULL, state TEXT, code_challenge TEXT NOT NULL, resource TEXT NOT NULL,
         expires_at INTEGER NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+      CREATE TABLE oauth_authorization_codes (
         code_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL,
         scope TEXT NOT NULL, code_challenge TEXT NOT NULL, resource TEXT NOT NULL,
         expires_at INTEGER NOT NULL, used_at INTEGER
       );
-      CREATE TABLE IF NOT EXISTS oauth_access_tokens (
+      CREATE TABLE oauth_access_tokens (
         token_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, scope TEXT NOT NULL,
         resource TEXT NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER
       );
-      CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+      CREATE TABLE oauth_refresh_tokens (
         token_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, scope TEXT NOT NULL,
         resource TEXT NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER
       );
     `);
-    if (!current || Number(current.value) < 4) {
-      const columns = db.prepare("PRAGMA table_info(processes)").all() as Array<{ name: string }>;
-      const names = new Set(columns.map((column) => column.name));
-      if (!names.has("backend")) db.exec("ALTER TABLE processes ADD COLUMN backend TEXT NOT NULL DEFAULT 'native'");
-      if (!names.has("backend_ref")) db.exec("ALTER TABLE processes ADD COLUMN backend_ref TEXT");
-      if (!names.has("deadline_at")) db.exec("ALTER TABLE processes ADD COLUMN deadline_at TEXT");
-      if (!names.has("max_output_bytes")) db.exec("ALTER TABLE processes ADD COLUMN max_output_bytes INTEGER");
-    }
-    db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)").run(String(DB_SCHEMA_VERSION));
+    db.prepare("INSERT INTO meta(key, value) VALUES('schema_version', ?)").run(String(DB_SCHEMA_VERSION));
   })();
+}
+
+export function openDatabase(path: string): HostSpanDatabase {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const existed = existsSync(path);
+  const db = new Database(path);
+  try {
+    db.pragma("foreign_keys = ON");
+    if (!existed || userTableNames(db).length === 0) initializeCurrentSchema(db);
+    else validateCurrentSchema(db);
+    db.pragma("journal_mode = WAL");
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+  return db;
+}
+
+export function openReadOnlyDatabase(path: string): HostSpanDatabase {
+  const db = new Database(path, { readonly: true, fileMustExist: true });
+  try {
+    db.pragma("foreign_keys = ON");
+    validateCurrentSchema(db);
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+}
+
+export function openMemoryDatabase(): HostSpanDatabase {
+  const db = new Database(":memory:");
+  db.pragma("foreign_keys = ON");
+  initializeCurrentSchema(db);
   return db;
 }
 

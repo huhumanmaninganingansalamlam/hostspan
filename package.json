@@ -1,6 +1,6 @@
 {
   "name": "hostspan",
-  "version": "0.3.0-alpha.4",
+  "version": "0.3.0-alpha.5",
   "productName": "HostSpan",
   "desktopName": "HostSpan",
   "description": "Terminal-first MCP execution gateway for approved local targets",
@@ -51,14 +51,16 @@
     "desktop:smoke": "node scripts/smoke-packaged-cli.mjs",
     "package:smoke": "node scripts/smoke-cli-package.mjs",
     "audit:prod": "pnpm audit --prod",
+    "audit:all": "pnpm audit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:contract": "vitest run test/contract test/acceptance",
     "test:path": "vitest run test/files/path-security.test.ts",
+    "check:workers": "node --check src/processes/windows-command.mjs && node --check src/processes/pty-worker.mjs && node --check src/processes/windows-job-worker.mjs",
     "doctor": "node dist/src/cli/index.js doctor",
     "smoke": "node dist/src/cli/index.js smoke",
     "lint": "biome lint src test",
-    "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build"
+    "check": "pnpm typecheck && pnpm lint && pnpm check:workers && pnpm test && pnpm build"
   },
   "dependencies": {
     "@modelcontextprotocol/fastify": "2.0.0",
@@ -86,7 +88,7 @@
     "png2icons": "^2.0.1",
     "sharp": "^0.35.4",
     "typescript": "5.9.3",
-    "vitest": "3.2.4"
+    "vitest": "4.1.11"
   },
   "packageManager": "pnpm@12.4.2"
 }

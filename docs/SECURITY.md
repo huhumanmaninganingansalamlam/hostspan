@@ -29,6 +29,7 @@ Do not describe Alpha as secure sandboxed execution. A future sandbox provider m
 - Existing path components are canonicalized and symlink components are rejected.
 - Reads use no-follow opening and recheck containment before returning the descriptor.
 - Target deny globs are enforced by typed file tools and excluded from Git summaries/search scope.
+- Target deny/ignore globs intentionally use one portable subset across HostSpan, ripgrep, and Git: forward-slash paths with literal characters plus `*`, `**`, and `?`. Leading `!`, backslashes, bracket classes, and brace expansion are rejected at config validation instead of receiving tool-specific meanings.
 - The active HostSpan config and its backup are protected from `file_patch` self-mutation.
 - Patch apply requires an `expected_sha256`, stages all requested files before commit, validates before writes, performs per-file atomic replacement, verifies after hashes, and records a durable transaction journal.
 - Multi-file patching is not advertised as a single filesystem transaction. Crash recovery reports `verified`, `rolled_back`, or `unknown` based on observed hashes.
@@ -49,17 +50,20 @@ Do not describe Alpha as secure sandboxed execution. A future sandbox provider m
 - PTY sessions intentionally survive HostSpan daemon shutdown/restart because the session worker owns the terminal outside the daemon lifetime. Startup reconciliation keeps a live worker `running`, records an exited session's exit status after output drain, or uses `unknown` if the durable worker reference no longer exists.
 - Human attach uses the same HostSpan PTY worker. `--read-only` is the safe observation mode. Writable human attach is deliberate shared ownership: human keystrokes bypass MCP idempotency and are not individually represented as MCP operations.
 - The PTY local IPC protocol requires per-session random authentication material. On Unix it uses a private socket path; on Windows it uses a local named pipe plus the same token check.
-- Windows path handling rejects absolute/UNC/device/ADS syntax and reparse-point escapes and rechecks file/directory identity around open/replace. The current Alpha does not claim that these checks are a kernel sandbox or stronger than native Windows filesystem permissions.
+- Windows path handling rejects absolute/UNC/device/ADS syntax and reparse-point escapes. Guarded file read/replace operations pin the authorized parent directory through a native Win32 directory handle without delete sharing, preventing that parent from being renamed out from under the operation, then recheck file/directory identity around open/replace. These checks protect the typed HostSpan file boundary; they do not turn native execution into an OS sandbox.
+- On Windows, HostSpan removes inherited access from its config/backup/approval-secret files and durable state directory and grants FullControl only to the current user SID and LocalSystem. `hostspan doctor` fails when an existing HostSpan config/state path grants an unexpected principal access.
 
 ## Secrets and retention
 
 Default target deny patterns cover `.env*`, private key extensions, and Git object storage. Configure additional project-specific deny globs as needed.
 
-Audit records contain structured identifiers, digests, phases, and result metadata, not raw process stdout/stderr. Structured logs and support exports redact common token/password/private-key patterns and home-directory prefixes. Completed process output is retained for 60 minutes by default and is stored under the local HostSpan state directory, not in the support bundle.
+Audit records contain structured identifiers, digests, phases, and result metadata, not raw process stdout/stderr. Structured logs and support exports redact common token/password/private-key patterns and home-directory prefixes. JSONL logs rotate at a bounded file size and retain a bounded archive count. Completed process output is retained for 60 minutes by default and is stored under the local HostSpan state directory, not in the support bundle.
 
 SQLite audit history is bounded by both age and count: `audit_days` defaults to 30 and `max_audit_events` defaults to 500,000. Maintenance runs incrementally during normal request handling so sustained traffic reuses bounded SQLite pages instead of growing the durable audit table without limit.
 
-Use restrictive OS permissions on the config/state directories and avoid expanding retention unless needed.
+Process retention maintenance runs while the daemon is alive as well as at startup. Expired process spool/session artifacts are removed, the configured total spool budget evicts the oldest completed output when necessary, and new process output is rejected with retryable `SERVER_BUSY` if the budget cannot be brought under the configured cap without deleting active output. Old operation result/error payloads are compacted after `operation_result_days`, while their idempotency records remain so an expired response can never authorize replay of a previous side effect. Completed process rows and terminal patch-transaction detail are pruned only after their output/journal artifacts are gone and the corresponding operation payload has been compacted.
+
+On Unix, keep normal restrictive ownership/mode semantics on HostSpan config/state directories. On Windows, HostSpan applies and verifies the private DACL described above. Avoid expanding retention unless needed.
 
 ## Network exposure
 

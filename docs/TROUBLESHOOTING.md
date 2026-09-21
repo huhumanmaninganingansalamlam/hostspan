@@ -1,5 +1,9 @@
 # Troubleshooting
 
+## `file_read` says `file_read_scan_limit`
+
+`file_read` can seek to later line ranges without making `max_bytes` a scan limit, but one request will not scan more than 64 MiB just to locate a line. Use `file_search` to find the relevant symbol/text first, then request a narrower line range. This bound is intentional and prevents a single read from turning a very large/minified file into unbounded local I/O.
+
 ## App is not visible in ChatGPT
 
 1. Run `hostspan doctor` and fix any `fail` checks.
@@ -16,7 +20,7 @@ Run:
 hostspan print-toolset
 ```
 
-HostSpan `hostspan-v3` must advertise exactly 11 tools. Target permissions never remove a tool from `tools/list`; a disallowed call returns `SCOPE_DENIED`. If ChatGPT still shows an older v1/v2 schema after upgrading, Refresh the app before debugging the server.
+HostSpan `hostspan-v3` must advertise exactly 11 tools. Target permissions never remove a tool from `tools/list`; a disallowed call returns `SCOPE_DENIED`. If ChatGPT still shows older cached tool metadata after upgrading, Refresh the app before debugging the server.
 
 ## Only read-only tools appear in one ChatGPT conversation
 
@@ -80,6 +84,24 @@ hostspan terminal attach --process <process_id>
 ## Cancelled process appears to remain
 
 Collect a support bundle and check the stored `pgid`, terminal state, signal, and reason. Alpha sends SIGTERM to the process group, waits the requested grace period, then uses SIGKILL and checks group liveness. A group that cannot be proven gone is not marked cancelled.
+
+## Unsupported HostSpan database schema
+
+The current development line intentionally supports only the current durable state format. HostSpan does not guess or silently migrate an older `state.db`.
+
+If Doctor/startup reports an unsupported schema, stop HostSpan and preserve that state directory before doing anything destructive. For a development machine where old state is disposable, point the new config at a fresh `server.data_dir` or archive the old HostSpan state directory and start clean. Do not overwrite the old database in place if you may need to inspect it later.
+
+## Windows `config_acl` or `state_acl` fails
+
+HostSpan's Windows config/secret files and durable state directory are expected to grant access only to the current Windows user and LocalSystem. Alpha.5 applies that DACL when it writes config/secrets and when the runtime or tray starts.
+
+If Doctor still reports an unexpected principal, first start/restart the HostSpan runtime once so the owned paths can be hardened, then rerun Doctor. If the failure persists, the configured path may be on a filesystem/share that cannot enforce the required Windows ACL semantics; move HostSpan config/state to a user-owned NTFS location rather than weakening the check.
+
+## `SERVER_BUSY` reports `process_output_spool`
+
+HostSpan will not delete output for an active process just to admit a new process. If retained completed output cannot be evicted enough to bring `retention.max_total_spool_bytes` under its configured cap, new process output is rejected with retryable `SERVER_BUSY`.
+
+Poll/read any output you still need, allow the configured output TTL to expire, or raise the local spool budget deliberately. Do not treat the quota error as a process failure that should be bypassed with unbounded logging.
 
 ## Server is alive but degraded
 

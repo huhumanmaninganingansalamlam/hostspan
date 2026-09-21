@@ -1,8 +1,9 @@
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createServer } from "node:net";
-import { delimiter, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import process from "node:process";
+import { resolveWindowsCommand } from "./windows-command.mjs";
 
 const args = process.argv.slice(2);
 const specIndex = args.indexOf("--spec");
@@ -33,6 +34,29 @@ let exitObserved = false;
 let columns = spec.columns;
 let rows = spec.rows;
 const attached = new Set();
+const syncSleepCell = new Int32Array(new SharedArrayBuffer(4));
+
+function sleepSync(ms) {
+  Atomics.wait(syncSleepCell, 0, 0, ms);
+}
+
+function replaceStatusFile(temp, destination) {
+  const deadline = Date.now() + (process.platform === "win32" ? 1_500 : 0);
+  for (;;) {
+    try {
+      renameSync(temp, destination);
+      return;
+    } catch (error) {
+      const code = error?.code;
+      const retryable =
+        process.platform === "win32" &&
+        ["EPERM", "EBUSY", "EACCES"].includes(String(code)) &&
+        Date.now() < deadline;
+      if (!retryable) throw error;
+      sleepSync(25);
+    }
+  }
+}
 
 function writeStatus(fields) {
   const payload = {
@@ -50,7 +74,7 @@ function writeStatus(fields) {
   };
   const temp = `${statusPath}.tmp-${process.pid}`;
   writeFileSync(temp, `${JSON.stringify(payload)}\n`, { mode: 0o600 });
-  renameSync(temp, statusPath);
+  replaceStatusFile(temp, statusPath);
 }
 
 function killProcessTree(signal) {
@@ -131,51 +155,9 @@ function controlBytes(keys) {
   return keys.map((key) => map[key] ?? "").join("");
 }
 
-function windowsPathExt(env) {
-  const value = env.PATHEXT || env.Pathext || ".COM;.EXE;.BAT;.CMD";
-  return value
-    .split(";")
-    .map((item) => item.trim().toLowerCase())
-    .filter(Boolean);
-}
-
-function executableFile(path) {
-  try {
-    return statSync(path).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function resolveWindowsProgram(program, cwd, env) {
-  const pathValue = env.PATH || env.Path || env.path || "";
-  const extensions = windowsPathExt(env);
-  const hasExtension = extname(program) !== "";
-  const explicitPath = isAbsolute(program) || /[\\/]/.test(program);
-  const roots = explicitPath ? [cwd] : pathValue.split(delimiter).filter(Boolean);
-  for (const root of roots) {
-    const base = explicitPath ? (isAbsolute(program) ? program : resolve(cwd, program)) : join(root, program);
-    const candidates = hasExtension ? [base] : [base, ...extensions.map((extension) => `${base}${extension}`)];
-    for (const candidate of candidates) {
-      if (executableFile(candidate)) return candidate;
-    }
-  }
-  throw new Error(`File not found: ${program}`);
-}
-
-function cmdQuote(value) {
-  const meta = '&()[]{}^=;!\'+,`~|<>"';
-  if (!Array.from(value).some((character) => /\s/.test(character) || meta.includes(character))) return value;
-  return `"${value.replaceAll('"', '""')}"`;
-}
-
 function resolvePtyCommand(program, argv, cwd, env) {
   if (process.platform !== "win32") return { program, argv };
-  const resolved = resolveWindowsProgram(program, cwd, env);
-  const extension = extname(resolved).toLowerCase();
-  if (extension !== ".cmd" && extension !== ".bat") return { program: resolved, argv };
-  const command = [cmdQuote(resolved), ...argv.map((item) => cmdQuote(String(item)))].join(" ");
-  return { program: env.ComSpec || env.COMSPEC || "C:\\Windows\\System32\\cmd.exe", argv: ["/d", "/s", "/c", command] };
+  return resolveWindowsCommand(program, argv, cwd, env);
 }
 
 function parseRequest(socket, initial) {
@@ -265,7 +247,7 @@ async function main() {
   if (!program) throw new Error("interactive argv is empty");
   const childEnv = { ...process.env, ...spec.env };
   const command = resolvePtyCommand(program, spec.argv.slice(1), spec.cwd, childEnv);
-  ptyProcess = pty.spawn(command.program, command.argv, {
+  ptyProcess = pty.spawn(command.program, command.ptyArgv ?? command.argv, {
     name: process.env.TERM || "xterm-256color",
     cols: spec.columns,
     rows: spec.rows,

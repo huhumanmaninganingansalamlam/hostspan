@@ -10,7 +10,8 @@ import type { HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
 import { TOOL_NAMES, TOOLSET_HASH } from "../../src/mcp/registry.js";
 import { createHostSpanHttpServer } from "../../src/mcp/server.js";
-import { DB_SCHEMA_VERSION, openDatabase } from "../../src/state/database.js";
+import { openDatabase } from "../../src/state/database.js";
+import { inspectWindowsAcl } from "../../src/security/windows-acl.js";
 
 const roots: string[] = [];
 
@@ -106,28 +107,31 @@ describe("OAuth protected MCP", () => {
     expect(credential).toMatch(/^[A-Za-z0-9_-]{40,}$/);
     expect(captured).not.toContain(credential);
     expect(readFileSync(configPath, "utf8")).not.toContain(credential);
+    if (process.platform === "win32") {
+      expect(inspectWindowsAcl(configPath).private).toBe(true);
+      expect(inspectWindowsAcl(`${configPath}.bak`).private).toBe(true);
+      expect(inspectWindowsAcl(result.approval_secret_file).private).toBe(true);
+    }
   });
 
-  it("migrates an existing schema-1 database to the OAuth schema with a backup", () => {
-    const root = mkdtempSync(join(tmpdir(), "hostspan-oauth-migration-"));
+  it("rejects an unsupported schema-1 database without modifying it", () => {
+    const root = mkdtempSync(join(tmpdir(), "hostspan-oauth-unsupported-schema-"));
     roots.push(root);
     const path = join(root, "state.db");
-    const legacy = new Database(path);
-    legacy.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-    legacy.prepare("INSERT INTO meta(key,value) VALUES(?,?)").run("schema_version", "1");
-    legacy.close();
+    const unsupported = new Database(path);
+    unsupported.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    unsupported.prepare("INSERT INTO meta(key,value) VALUES(?,?)").run("schema_version", "1");
+    unsupported.close();
 
-    const db = openDatabase(path);
+    expect(() => openDatabase(path)).toThrow(/unsupported HostSpan database schema 1/);
+    const check = new Database(path, { readonly: true });
     try {
-      const version = db.prepare("SELECT value FROM meta WHERE key=?").get("schema_version") as { value: string };
-      expect(Number(version.value)).toBe(DB_SCHEMA_VERSION);
-      const oauthTable = db
-        .prepare("SELECT name FROM sqlite_master WHERE type=? AND name=?")
-        .get("table", "oauth_access_tokens") as { name: string } | undefined;
-      expect(oauthTable?.name).toBe("oauth_access_tokens");
-      expect(existsSync(`${path}.pre-migration.bak`)).toBe(true);
+      expect((check.prepare("SELECT value FROM meta WHERE key=?").get("schema_version") as { value: string }).value).toBe("1");
+      expect(
+        check.prepare("SELECT name FROM sqlite_master WHERE type=? AND name=?").get("table", "oauth_access_tokens"),
+      ).toBeUndefined();
     } finally {
-      db.close();
+      check.close();
     }
   });
 
@@ -164,7 +168,7 @@ describe("OAuth protected MCP", () => {
       expect(runtime.oauthRepo.clientCount()).toBe(2);
     } finally {
       await app.close();
-      runtime.close();
+      await runtime.close();
     }
   });
 
@@ -411,7 +415,7 @@ describe("OAuth protected MCP", () => {
       expect(replayedRefresh.json()).toMatchObject({ error: "invalid_grant" });
     } finally {
       await app.close();
-      runtime.close();
+      await runtime.close();
     }
   });
 

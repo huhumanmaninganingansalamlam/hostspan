@@ -112,6 +112,42 @@ export class ProcessesRepo {
       .all(nowIso) as ProcessRecord[];
   }
 
+  outputRetentionCandidates(): ProcessRecord[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM processes
+         WHERE state NOT IN ('accepted','launching','running')
+           AND output_expires_at IS NOT NULL
+         ORDER BY COALESCE(ended_at,started_at) ASC, process_id ASC`,
+      )
+      .all() as ProcessRecord[];
+  }
+
+  expireOutput(processId: string, nowIso = new Date().toISOString()): void {
+    this.db.prepare("UPDATE processes SET output_expires_at=? WHERE process_id=?").run(nowIso, processId);
+  }
+
+  pruneTerminalMetadataOlderThan(days: number, nowMs = Date.now()): number {
+    const nowIso = new Date(nowMs).toISOString();
+    const cutoff = new Date(nowMs - days * 86_400_000).toISOString();
+    return this.db
+      .prepare(
+        `DELETE FROM processes
+         WHERE state NOT IN ('accepted','launching','running')
+           AND ended_at IS NOT NULL
+           AND ended_at < ?
+           AND output_expires_at IS NOT NULL
+           AND output_expires_at <= ?
+           AND EXISTS (
+             SELECT 1 FROM operations o
+             WHERE o.idempotency_key=processes.idempotency_key
+               AND o.result_json IS NULL
+               AND o.error_json IS NULL
+           )`,
+      )
+      .run(cutoff, nowIso).changes;
+  }
+
   recent(limit = 200): ProcessRecord[] {
     return this.db.prepare("SELECT * FROM processes ORDER BY COALESCE(started_at, ended_at) DESC LIMIT ?").all(limit) as ProcessRecord[];
   }

@@ -46,10 +46,16 @@ jobs:
           test "$actual" = "$expected" || { echo "Runner architecture $actual does not match expected $expected"; exit 1; }
       - name: Check
         run: pnpm check
-      - name: Audit production dependencies
-        run: pnpm audit:prod
+      - name: Audit all dependencies
+        run: pnpm audit:all
       - name: Smoke installed CLI package
         run: pnpm package:smoke
+      - name: Build unpacked desktop runtime
+        run: pnpm desktop:dir
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Smoke unpacked desktop runtime
+        run: pnpm desktop:smoke
 
   desktop-package-linux:
     runs-on: ubuntu-24.04

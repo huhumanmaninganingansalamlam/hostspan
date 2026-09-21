@@ -44,6 +44,20 @@ const AllowedHostSchema = z
 
 export const CapabilitySchema = z.enum(["read", "write", "exec", "git", "terminal"]);
 
+export const PolicyGlobSchema = z
+  .string()
+  .min(1)
+  .max(512)
+  .refine(
+    (value) =>
+      !value.startsWith("!") &&
+      !/[\\[\]{}\r\n\0]/.test(value),
+    {
+      message:
+        "policy globs use portable forward-slash patterns with *, **, and ? only; leading !, backslash, bracket/brace syntax, NUL, and newlines are not supported",
+    },
+  );
+
 export const TerminalConfigSchema = z
   .object({
     backend: z.literal("pty").default("pty"),
@@ -73,8 +87,8 @@ export const TargetConfigSchema = z
     root: z.string().min(1),
     capabilities: z.array(CapabilitySchema).min(1),
     exec_profile: z.string().min(1).optional(),
-    deny_globs: z.array(z.string()).default([]),
-    ignore_globs: z.array(z.string()).default([]),
+    deny_globs: z.array(PolicyGlobSchema).max(256).default([]),
+    ignore_globs: z.array(PolicyGlobSchema).max(256).default([]),
   })
   .strict();
 
