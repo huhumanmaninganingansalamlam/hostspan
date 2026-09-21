@@ -369,6 +369,7 @@ export class ProcessSupervisor {
     this.options.processes.setBytes(processId, "stdout", bytes);
     const state = await this.options.terminal.inspect(record.backend_ref);
     if (!state.exists) {
+      if (record.state === "launching") return;
       this.finalize(processId, "unknown", record.exit_code, record.term_signal, "interactive_session_missing");
       return;
     }
@@ -500,7 +501,12 @@ export class ProcessSupervisor {
           deadlineAt,
           maxOutputBytes: effectiveMaxOutputBytes,
         });
-        this.options.processes.markRunning(processId, started.pid, null);
+        if (!this.options.processes.markRunning(processId, started.pid, null)) {
+          this.options.terminal.closeSync(session);
+          const current = this.options.processes.get(processId);
+          if (!current) throw new HostSpanError("PROCESS_UNKNOWN", "PTY process record disappeared during launch.");
+          return this.snapshot(processId, 0, 0, Math.min(input.max_output_bytes, 131_072));
+        }
         this.options.operations.setState(input.idempotency_key, "running", { state: "running", process_id: processId, backend: "pty" });
         this.options.logger?.info("process.started", { request_id: requestId, process_id: processId, pid: started.pid, backend: "pty", session });
         const beforeBytes = this.options.terminal.outputBytes(processId);
@@ -634,7 +640,7 @@ export class ProcessSupervisor {
     const markRunning = (pid: number, groupId: number): void => {
       const current = this.options.processes.get(processId);
       if (!current || TERMINAL_STATES.has(current.state)) return;
-      this.options.processes.markRunning(processId, pid, groupId);
+      if (!this.options.processes.markRunning(processId, pid, groupId)) return;
       this.options.operations.setState(input.idempotency_key, "running", { state: "running", process_id: processId });
       this.options.logger?.info("process.started", { request_id: requestId, process_id: processId, pid, pgid: groupId });
       runtime.deadlineTimer = setTimeout(() => {

@@ -142,6 +142,45 @@ function track(terminal: PtySessionManager, started: Record<string, unknown>): s
 }
 
 describe("durable interactive PTY process backend", () => {
+  it("keeps a launching PTY pending while its worker status is still appearing", async () => {
+    const { processes, supervisor } = fixture();
+    const processId = "proc_launch_pending";
+    processes.create({
+      process_id: processId,
+      idempotency_key: uuidv7(),
+      target_id: "test",
+      argv_digest: "sha256:launch-pending",
+      cwd_relative: ".",
+      backend: "pty",
+      backend_ref: processId,
+      deadline_at: new Date(Date.now() + 60_000).toISOString(),
+      max_output_bytes: 1024 * 1024,
+    });
+
+    await supervisor.reconcileInteractiveProcesses("test");
+
+    expect(processes.get(processId)).toMatchObject({ state: "launching", reason: null, ended_at: null });
+  });
+
+  it("does not revive a terminal process record as running", () => {
+    const { processes } = fixture();
+    const processId = "proc_terminal_no_revive";
+    processes.create({
+      process_id: processId,
+      idempotency_key: uuidv7(),
+      target_id: "test",
+      argv_digest: "sha256:no-revive",
+      cwd_relative: ".",
+      backend: "pty",
+      backend_ref: processId,
+    });
+    processes.markTerminal(processId, "unknown", null, null, "launch_race_probe");
+    const terminal = processes.get(processId);
+
+    expect(processes.markRunning(processId, 123, null)).toBe(false);
+    expect(processes.get(processId)).toMatchObject({ state: "unknown", reason: "launch_race_probe", ended_at: terminal?.ended_at });
+  });
+
   it("waits through a transient missing status while an exit is settling", async () => {
     const { terminal, db } = fixture();
     const snapshots = [

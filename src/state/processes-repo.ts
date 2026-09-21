@@ -50,8 +50,11 @@ export class ProcessesRepo {
       );
   }
 
-  markRunning(processId: string, pid: number | null, pgid: number | null): void {
-    this.db.prepare("UPDATE processes SET state='running', pid=?, pgid=?, started_at=? WHERE process_id=?").run(pid, pgid, new Date().toISOString(), processId);
+  markRunning(processId: string, pid: number | null, pgid: number | null): boolean {
+    const result = this.db
+      .prepare("UPDATE processes SET state='running', pid=?, pgid=?, started_at=?, exit_code=NULL, term_signal=NULL, reason=NULL, ended_at=NULL, output_expires_at=NULL WHERE process_id=? AND state='launching'")
+      .run(pid, pgid, new Date().toISOString(), processId);
+    return result.changes === 1;
   }
 
   markTerminal(processId: string, state: ProcessState, exitCode: number | null, signal: string | null, reason: string | null, expiresAt?: string): void {
