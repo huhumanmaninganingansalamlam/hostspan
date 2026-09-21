@@ -214,9 +214,18 @@ describe("durable interactive PTY process backend", () => {
   });
 
   it("reclaims a naturally exited PTY slot before admitting the next session", async () => {
-    const { supervisor, terminal, processes, db } = fixture(true, 1);
-    const first = await supervisor.start(ttyInput("setTimeout(()=>process.exit(0),50)", 10_000, 0), "req_pty_slot_first");
+    const { root, supervisor, terminal, processes, db } = fixture(true, 1);
+    const first = await supervisor.start(
+      ttyInput(
+        "const fs=require('node:fs');const timer=setInterval(()=>{if(fs.existsSync('exit-now')){clearInterval(timer);process.exit(0)}},10)",
+        10_000,
+        0,
+      ),
+      "req_pty_slot_first",
+    );
     const firstSession = track(terminal, first);
+    expect(first.state).toBe("running");
+    writeFileSync(join(root, "target", "exit-now"), "exit\n");
     await expect(terminal.waitForExitStatus(firstSession, process.platform === "win32" ? 5_000 : 2_000)).resolves.toMatchObject({
       exists: true,
       dead: true,
