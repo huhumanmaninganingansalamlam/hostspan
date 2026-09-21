@@ -116,7 +116,12 @@ function tooBroad(query: string): boolean {
 
 export async function fileSearch(target: TargetRuntime, input: FileSearchInput) {
   if (tooBroad(input.query)) throw new HostSpanError("SEARCH_SCOPE_TOO_BROAD", "Search query is empty or effectively match-all.");
-  const searchPaths = (input.paths.length ? input.paths : ["."]).map((path) => resolveTargetPath(target, path, "search").relative);
+  const guardedSearchPaths = (input.paths.length ? input.paths : ["."]).map((path) => resolveTargetPath(target, path, "search"));
+  const missingPath = guardedSearchPaths.find((path) => !path.exists);
+  if (missingPath) {
+    throw new HostSpanError("FILE_NOT_FOUND", `Search path does not exist: ${missingPath.relative}`);
+  }
+  const searchPaths = guardedSearchPaths.map((path) => path.relative);
   const args = [
     "--json",
     "--color",
@@ -142,10 +147,16 @@ export async function fileSearch(target: TargetRuntime, input: FileSearchInput) 
       maxBuffer: input.max_bytes + 64 * 1024,
     }));
   } catch (error) {
-    const cause = error as NodeJS.ErrnoException & { code?: string | number; stdout?: string };
+    const cause = error as NodeJS.ErrnoException & { code?: string | number; stdout?: string; killed?: boolean; signal?: NodeJS.Signals | null };
     if (cause.code === "ENOENT") throw new HostSpanError("SEARCH_BACKEND_UNAVAILABLE", "ripgrep is required but not available.", true);
     if (String(cause.code) === "1") stdout = cause.stdout ?? "";
     else if (cause.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw new HostSpanError("SEARCH_SCOPE_TOO_BROAD", "Search output exceeded max_bytes; narrow the scope.");
+    else if (cause.killed) {
+      throw new HostSpanError("DEADLINE_EXCEEDED", "Search exceeded its deadline.", true, {
+        resource: "file_search",
+        deadline_ms: input.deadline_ms,
+      });
+    }
     else throw new HostSpanError("SEARCH_BACKEND_UNAVAILABLE", `ripgrep failed: ${error instanceof Error ? error.message : String(error)}`, true);
   }
   const records: Array<Record<string, unknown>> = [];

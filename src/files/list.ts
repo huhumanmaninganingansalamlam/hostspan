@@ -1,5 +1,6 @@
 import { lstatSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
+import { HostSpanError } from "../mcp/errors.js";
 import type { PolicyEvaluator } from "../policy/evaluator.js";
 import { matchesAnyPolicyGlob } from "../policy/glob.js";
 import type { TargetRuntime } from "../targets/registry.js";
@@ -34,6 +35,7 @@ function ignored(target: TargetRuntime, rel: string): boolean {
 export function fileList(target: TargetRuntime, input: FileListInput, policy?: PolicyEvaluator) {
   const root = resolveTargetPath(target, input.path, "list");
   policy?.assertFileAllowed(target, root.relative, root.absolute, false);
+  if (!root.exists) throw new HostSpanError("FILE_NOT_FOUND", `Path does not exist: ${input.path}`);
   const entries: Array<Record<string, unknown>> = [];
   const offset = cursorOffset(input.cursor);
   const collectLimit = offset + input.max_entries + 1;

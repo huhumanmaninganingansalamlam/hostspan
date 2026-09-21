@@ -215,6 +215,13 @@ describe("file services", () => {
     expect(all.entries).toContainEqual(expect.objectContaining({ path: "link", type: "symlink" }));
   });
 
+  it("reports a missing list path as FILE_NOT_FOUND", () => {
+    const { target } = fixture();
+    expect(() => fileList(target, { path: "missing", depth: 1, max_entries: 20, include_hidden: true })).toThrowError(
+      expect.objectContaining<Partial<HostSpanError>>({ code: "FILE_NOT_FOUND" }),
+    );
+  });
+
   it.runIf(process.platform === "darwin")("lists Unicode and spaced names through the pinned Darwin directory handle", () => {
     const { root, target } = fixture();
     mkdirSync(join(root, "목록"));
@@ -296,6 +303,21 @@ describe("file services", () => {
       deadline_ms: 1000,
     });
     expect(result).toMatchObject({ match_count: 0, matches: [], truncated: false, backend: "ripgrep" });
+  });
+
+  it("reports a missing search path as FILE_NOT_FOUND", async () => {
+    const { target } = fixture();
+    await expect(
+      fileSearch(target, {
+        query: "needle",
+        paths: ["missing"],
+        context_before: 0,
+        context_after: 0,
+        max_matches: 10,
+        max_bytes: 4096,
+        deadline_ms: 1000,
+      }),
+    ).rejects.toEqual(expect.objectContaining<Partial<HostSpanError>>({ code: "FILE_NOT_FOUND" }));
   });
 
   it("rejects match-all searches before invoking ripgrep", async () => {
