@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 
@@ -22,6 +22,10 @@ function systemctl(args: string[]): { ok: boolean; output: string } {
 
 export function serviceUnitPath(): string {
   return join(homedir(), ".config", "systemd", "user", "hostspan.service");
+}
+
+export function systemdServiceInstalled(unitPath = serviceUnitPath(), platform = process.platform): boolean {
+  return platform === "linux" && existsSync(unitPath);
 }
 
 export function installSystemdService(configPath: string, cliPath = process.argv[1] ?? "hostspan"): { ok: boolean; unit_path: string; output: string } {

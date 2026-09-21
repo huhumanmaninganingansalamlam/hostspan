@@ -1,6 +1,8 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { serviceExecutionPath } from "../../src/cli/service.js";
+import { serviceExecutionPath, systemdServiceInstalled } from "../../src/cli/service.js";
 import { extractMarkedPath, mergePathValues } from "../../src/desktop/environment.js";
 
 describe("desktop environment", () => {
@@ -23,5 +25,19 @@ describe("desktop environment", () => {
     const nodePath = join(runtimeDir, "node");
     const inherited = [customDir, runtimeDir, systemDir, customDir].join(delimiter);
     expect(serviceExecutionPath(nodePath, inherited)).toBe([runtimeDir, customDir, systemDir].join(delimiter));
+  });
+
+  it("detects an installed Linux systemd service unit without enabling other platforms", () => {
+    const root = mkdtempSync(join(tmpdir(), "hostspan-service-unit-"));
+    const unit = join(root, "hostspan.service");
+    try {
+      expect(systemdServiceInstalled(unit, "linux")).toBe(false);
+      writeFileSync(unit, "[Unit]\n");
+      expect(systemdServiceInstalled(unit, "linux")).toBe(true);
+      expect(systemdServiceInstalled(unit, "darwin")).toBe(false);
+      expect(systemdServiceInstalled(unit, "win32")).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

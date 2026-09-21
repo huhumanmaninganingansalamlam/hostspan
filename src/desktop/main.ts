@@ -13,6 +13,7 @@ import {
 } from "../admin/snapshot.js";
 import { startDaemon, stopDaemon } from "../cli/daemon.js";
 import { runDoctor, type DoctorReport } from "../cli/doctor.js";
+import { runServiceCommand, systemdServiceInstalled } from "../cli/service.js";
 import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath } from "../config/paths.js";
 import type { Capability } from "../config/schema.js";
@@ -168,7 +169,18 @@ async function snapshot(): Promise<DesktopSnapshot> {
   return { ...base, auto_start: getAutoStart() };
 }
 
+function checkedServiceAction(action: "start" | "stop") {
+  const result = runServiceCommand(action);
+  if (!result.ok) throw new Error(`systemctl --user ${action} hostspan.service failed: ${result.output || "unknown error"}`);
+  return result;
+}
+
 async function daemonAction(action: "start" | "stop" | "restart") {
+  if (systemdServiceInstalled()) {
+    if (action === "start") return checkedServiceAction("start");
+    await stopDaemon(configPath);
+    return action === "stop" ? checkedServiceAction("stop") : checkedServiceAction("start");
+  }
   if (action === "restart") {
     await stopDaemon(configPath);
     return startDaemon(configPath, cliPath, nodePath);
