@@ -47,6 +47,34 @@ function nativeError(operation: string, path: string): Error {
   return new Error(`${operation} failed for ${path} (errno=${nativeKoffi().errno()})`);
 }
 
+export function darwinDirentLayout(arch: NodeJS.Architecture): {
+  recordLengthOffset: number;
+  nameLengthOffset: number;
+  nameLengthType: "uint8_t" | "uint16_t";
+  nameOffset: number;
+  maxNameLength: number;
+  maxRecordLength: number;
+} {
+  if (arch === "arm64") {
+    return {
+      recordLengthOffset: 16,
+      nameLengthOffset: 18,
+      nameLengthType: "uint16_t",
+      nameOffset: 21,
+      maxNameLength: 1023,
+      maxRecordLength: 1048,
+    };
+  }
+  return {
+    recordLengthOffset: 4,
+    nameLengthOffset: 7,
+    nameLengthType: "uint8_t",
+    nameOffset: 8,
+    maxNameLength: 255,
+    maxRecordLength: 264,
+  };
+}
+
 export function darwinOpenAt(dirfd: number, path: string, flags: number, mode = 0): number {
   const fd = api().openat(dirfd, path, flags, mode);
   if (fd < 0) throw nativeError("openat", path);
@@ -83,18 +111,32 @@ export function darwinReadDirectoryNames(fd: number): string[] {
         if (errno !== 0) throw new Error(`readdir failed for fd ${fd} (errno=${errno})`);
         break;
       }
-      // Calling the stable libc "readdir" symbol directly uses Darwin's
-      // legacy dirent ABI: uint32 inode, uint16 reclen, uint8 type,
-      // uint8 namlen, then a 256-byte name. We intentionally decode only
-      // the record length and name fields; inode width is irrelevant here.
-      const recordLength = Number(koffi.decode(entry, 4, "uint16_t"));
-      const nameLength = Number(koffi.decode(entry, 7, "uint8_t"));
-      if (recordLength < 8 || recordLength > 264 || nameLength < 1 || nameLength > 255) {
+      // Darwin exposes two readdir ABIs to 64-bit processes. Intel keeps the
+      // historical symbol layout for binary compatibility, while native
+      // Apple Silicon's readdir uses the 64-bit inode layout from dirent.h.
+      // Decode only reclen/namlen/name, selecting offsets from the process ABI.
+      const {
+        recordLengthOffset,
+        nameLengthOffset,
+        nameLengthType,
+        nameOffset,
+        maxNameLength,
+        maxRecordLength,
+      } = darwinDirentLayout(process.arch);
+      const recordLength = Number(koffi.decode(entry, recordLengthOffset, "uint16_t"));
+      const nameLength = Number(koffi.decode(entry, nameLengthOffset, nameLengthType));
+      if (
+        recordLength < nameOffset + 1 ||
+        recordLength > maxRecordLength ||
+        nameLength < 1 ||
+        nameLength > maxNameLength ||
+        nameOffset + nameLength > recordLength
+      ) {
         throw new Error(
-          `readdir returned an invalid Darwin dirent (reclen=${recordLength}, namlen=${nameLength})`,
+          `readdir returned an invalid Darwin dirent for ${process.arch} (reclen=${recordLength}, namlen=${nameLength})`,
         );
       }
-      const decoded = koffi.decode(entry, 8, "char", nameLength);
+      const decoded = koffi.decode(entry, nameOffset, "char", nameLength);
       if (typeof decoded !== "string") throw new Error("readdir returned a non-string Darwin filename");
       if (decoded !== "." && decoded !== "..") names.push(decoded);
     }

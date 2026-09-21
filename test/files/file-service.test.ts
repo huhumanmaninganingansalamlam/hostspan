@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { HostSpanConfig } from "../../src/config/schema.js";
 import { fileList } from "../../src/files/list.js";
 import { fileRead } from "../../src/files/read.js";
+import { darwinDirentLayout } from "../../src/files/darwin-fs.js";
 import { fileSearch } from "../../src/files/search.js";
 import type { HostSpanError } from "../../src/mcp/errors.js";
 import { TargetRegistry } from "../../src/targets/registry.js";
@@ -47,6 +48,25 @@ afterEach(() => {
 });
 
 describe("file services", () => {
+  it("pins the Darwin readdir layouts used by Intel and Apple Silicon", () => {
+    expect(darwinDirentLayout("x64")).toEqual({
+      recordLengthOffset: 4,
+      nameLengthOffset: 7,
+      nameLengthType: "uint8_t",
+      nameOffset: 8,
+      maxNameLength: 255,
+      maxRecordLength: 264,
+    });
+    expect(darwinDirentLayout("arm64")).toEqual({
+      recordLengthOffset: 16,
+      nameLengthOffset: 18,
+      nameLengthType: "uint16_t",
+      nameOffset: 21,
+      maxNameLength: 1023,
+      maxRecordLength: 1048,
+    });
+  });
+
   it("preserves UTF-8 boundaries when a byte cap cuts through a code point", () => {
     const { root, target } = fixture();
     writeFileSync(join(root, "utf8.txt"), "abc😀def\nsecond\n");

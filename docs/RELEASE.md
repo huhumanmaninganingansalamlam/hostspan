@@ -2,7 +2,7 @@
 
 ## Release contract
 
-- Version: `0.3.0-alpha.5`
+- Version: `0.3.0-alpha.6`
 - Toolset: `hostspan-v3`
 - MCP protocol target: `2026-07-28`
 - Qualified core platforms: Linux x64 (Ubuntu 24.04 LTS / WSL2), native Windows x64, and native macOS x64
@@ -63,7 +63,7 @@ These items are distribution/operational maturity work rather than missing Alpha
 
 `hostspan-v3` exposes the fixed 11-tool durable PTY lifecycle. Its approved public toolset hash is pinned in the contract test, so a schema/description/annotation change cannot silently retain the v3 contract. Refresh the ChatGPT app after upgrading server versions.
 
-`0.3.0-alpha.5` is the post-alpha.4 hardening baseline. It closes the audited late-line read (with a bounded 64 MiB line-scan ceiling), natural PTY slot reclamation, output-drain/termination recovery, runtime-reference cleanup, patch DB/journal crash-window, retention/quota, Windows ACL/path pinning, staged/rename Git summary, worker command-resolution, read-only diagnostic, and release-immutability gaps without changing the `hostspan-v3` MCP contract.
+`0.3.0-alpha.6` is the post-alpha.4 hardening baseline. It closes the audited late-line read (with a bounded 64 MiB line-scan ceiling), natural PTY slot reclamation, output-drain/termination recovery, runtime-reference cleanup, patch DB/journal crash-window, retention/quota, Windows ACL/path pinning, staged/rename Git summary, worker command-resolution, read-only diagnostic, and release-immutability gaps without changing the `hostspan-v3` MCP contract. Alpha.6 also fixes Darwin directory enumeration on native Apple Silicon by decoding the 64-bit `dirent` ABI rather than Intel's compatibility layout; the immutable alpha.5 tag exposed that failure in the hosted arm64 core gate and was not repointed.
 
 Config schema remains version 1 with `terminal.backend: pty` as the only interactive backend. The durable database schema is version 5. Alpha.5 intentionally starts a fresh durable-state generation rather than interpreting older schema 1–4 databases: an unsupported schema is rejected without mutation instead of being migrated or guessed. SQLite runs in WAL mode.
 
