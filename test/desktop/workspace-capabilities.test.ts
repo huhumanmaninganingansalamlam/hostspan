@@ -5,12 +5,12 @@ import {
 } from "../../src/desktop/workspace-capabilities.js";
 
 describe("desktop workspace capability defaults", () => {
-  it("keeps interactive terminal authority opt-in", () => {
-    expect(DEFAULT_WORKSPACE_CAPABILITIES).toEqual(["read", "write", "exec", "git"]);
+  it("defaults new workspaces to read-only authority", () => {
+    expect(DEFAULT_WORKSPACE_CAPABILITIES).toEqual(["read"]);
     expect(defaultWorkspaceCapability("read")).toBe(true);
-    expect(defaultWorkspaceCapability("write")).toBe(true);
-    expect(defaultWorkspaceCapability("exec")).toBe(true);
-    expect(defaultWorkspaceCapability("git")).toBe(true);
+    expect(defaultWorkspaceCapability("write")).toBe(false);
+    expect(defaultWorkspaceCapability("exec")).toBe(false);
+    expect(defaultWorkspaceCapability("git")).toBe(false);
     expect(defaultWorkspaceCapability("terminal")).toBe(false);
   });
 });

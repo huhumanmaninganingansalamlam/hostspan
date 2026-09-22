@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { HostSpanConfigSchema } from "../../src/config/schema.js";
+import { writeConfigAtomic } from "../../src/config/writer.js";
 import { ensureDesktopConfig } from "../../src/desktop/first-run.js";
 
 const roots: string[] = [];
@@ -31,8 +32,21 @@ describe("desktop first-run config", () => {
     });
     expect(first.targets).toEqual({});
 
+    first.targets.existing = {
+      label: "Existing workspace",
+      provider: "local",
+      root,
+      capabilities: ["read", "write", "exec", "git"],
+      exec_profile: "native-dev",
+      deny_globs: [],
+      ignore_globs: [],
+    };
+    writeConfigAtomic(configPath, first);
+    const existing = HostSpanConfigSchema.parse(parseYaml(readFileSync(configPath, "utf8")));
+
     expect(ensureDesktopConfig(configPath)).toEqual({ created: false, config_path: configPath });
     const second = HostSpanConfigSchema.parse(parseYaml(readFileSync(configPath, "utf8")));
-    expect(second).toEqual(first);
+    expect(second).toEqual(existing);
+    expect(second.targets.existing?.capabilities).toEqual(["read", "write", "exec", "git"]);
   });
 });

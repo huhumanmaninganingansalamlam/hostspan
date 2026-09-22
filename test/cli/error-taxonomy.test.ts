@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { writeDaemonPid } from "../../src/cli/daemon.js";
 import { main } from "../../src/cli/index.js";
 import { createInitialConfig } from "../../src/config/defaults.js";
+import { loadConfig } from "../../src/config/loader.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
 import type { HostSpanError } from "../../src/mcp/errors.js";
 
@@ -70,5 +71,44 @@ describe("CLI error taxonomy", () => {
         code: "TERMINAL_NOT_INTERACTIVE",
       }),
     );
+  });
+});
+
+describe("CLI target workspace defaults", () => {
+  it("defaults to read only while preserving explicit capability selection", async () => {
+    const configPath = configFixture();
+    const defaultRoot = mkdtempSync(join(tmpdir(), "hostspan-cli-target-default-"));
+    const explicitRoot = mkdtempSync(join(tmpdir(), "hostspan-cli-target-explicit-"));
+    roots.push(defaultRoot, explicitRoot);
+
+    const originalWrite = process.stdout.write;
+    process.stdout.write = (() => true) as typeof process.stdout.write;
+    try {
+      expect(
+        await main(["targets", "add", "--id", "default-read", "--root", defaultRoot, "--config", configPath]),
+      ).toBe(0);
+      expect(
+        await main([
+          "targets",
+          "add",
+          "--id",
+          "explicit-dev",
+          "--root",
+          explicitRoot,
+          "--capabilities",
+          "read,write,exec,git",
+          "--config",
+          configPath,
+        ]),
+      ).toBe(0);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+
+    const config = loadConfig(configPath);
+    expect(config.targets["default-read"]?.capabilities).toEqual(["read"]);
+    expect(config.targets["default-read"]?.exec_profile).toBeUndefined();
+    expect(config.targets["explicit-dev"]?.capabilities).toEqual(["read", "write", "exec", "git"]);
+    expect(config.targets["explicit-dev"]?.exec_profile).toBe("native-dev");
   });
 });
