@@ -9,6 +9,7 @@ const SAFE_ERROR_REASONS = new Set([
   "exec_profile_mode_unsupported",
   "exec_profile_not_configured",
   "file_read_scan_limit",
+  "git_content_filter_unsafe",
   "interactive_write_outcome_unknown",
   "interactive_write_restart_boundary",
   "invalid_glob",

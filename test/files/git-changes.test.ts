@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -167,4 +167,77 @@ describe("git_changes", () => {
       details: { resource: "git_status", max_status_bytes: 128 },
     });
   });
+  it.runIf(process.platform !== "win32")("does not execute fsmonitor or textconv helpers during read-only inspection", async () => {
+    const { root, git, target } = fixture();
+    const fsmonitorMarker = join(root, "fsmonitor-marker");
+    const textconvMarker = join(root, "textconv-marker");
+    const fsmonitorHelper = join(root, "fsmonitor-helper.sh");
+    const textconvHelper = join(root, "textconv-helper.sh");
+    writeFileSync(fsmonitorHelper, `#!/bin/sh\ntouch ${JSON.stringify(fsmonitorMarker)}\nprintf '0\\n'\n`);
+    writeFileSync(textconvHelper, `#!/bin/sh\ntouch ${JSON.stringify(textconvMarker)}\ncat "$1"\n`);
+    chmodSync(fsmonitorHelper, 0o700);
+    chmodSync(textconvHelper, 0o700);
+
+    writeFileSync(join(root, "binary.bin"), "base\n");
+    git("add", "binary.bin");
+    git("commit", "-qm", "fixture");
+    writeFileSync(join(root, ".gitattributes"), "*.bin diff=probe\n");
+    git("config", "core.fsmonitor", fsmonitorHelper);
+    git("config", "diff.probe.textconv", textconvHelper);
+    writeFileSync(join(root, "binary.bin"), "changed\n");
+
+    const result = await gitChanges(target, ["binary.bin"], 64 * 1024, false);
+
+    expect(result.status).toContainEqual(expect.objectContaining({ status: " M", path: "binary.bin" }));
+    expect(existsSync(fsmonitorMarker)).toBe(false);
+    expect(existsSync(textconvMarker)).toBe(false);
+  });
+
+  it("fails closed instead of executing working-tree content filters", async () => {
+    const { root, git, target } = fixture();
+    writeFileSync(join(root, "filtered.txt"), "base\n");
+    git("add", "filtered.txt");
+    git("commit", "-qm", "fixture");
+    writeFileSync(join(root, ".gitattributes"), "*.txt filter=probe\n");
+    git("config", "filter.probe.clean", "hostspan-nonexistent-clean-filter");
+    git("config", "filter.probe.required", "true");
+    writeFileSync(join(root, "filtered.txt"), "changed\n");
+
+    await expect(gitChanges(target, ["filtered.txt"], 64 * 1024, false)).rejects.toMatchObject({
+      code: "POLICY_UNENFORCEABLE",
+      details: { reason: "git_content_filter_unsafe", filtered_path_count: 1 },
+    });
+  });
+
+  it("ignores inherited Git environment overrides", async () => {
+    const { root, git, target } = fixture();
+    writeFileSync(join(root, "a.txt"), "base\n");
+    git("add", "a.txt");
+    git("commit", "-qm", "fixture");
+    writeFileSync(join(root, "a.txt"), "changed\n");
+    const previousGitDir = process.env.GIT_DIR;
+    process.env.GIT_DIR = join(root, "does-not-exist");
+    try {
+      const result = await gitChanges(target, ["a.txt"], 64 * 1024, false);
+      expect(result.status).toContainEqual(expect.objectContaining({ status: " M", path: "a.txt" }));
+    } finally {
+      if (previousGitDir === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = previousGitDir;
+    }
+  });
+
+  it.runIf(process.platform !== "win32")("treats Git-looking pathspecs as literal target paths", async () => {
+    const { root, git, target } = fixture();
+    const path = ":(glob)*.txt";
+    writeFileSync(join(root, path), "base\n");
+    execFileSync("git", ["--literal-pathspecs", "add", "--", path], { cwd: root });
+    git("commit", "-qm", "fixture");
+    writeFileSync(join(root, path), "changed\n");
+
+    const result = await gitChanges(target, [path], 64 * 1024, false);
+
+    expect(result.status).toContainEqual(expect.objectContaining({ status: " M", path }));
+    expect(result.diff).toContain("+changed");
+  });
+
 });

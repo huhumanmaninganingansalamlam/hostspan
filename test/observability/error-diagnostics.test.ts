@@ -44,4 +44,18 @@ describe("audit error diagnostics", () => {
       error_reason: "program_not_allowed",
     });
   });
+
+  it("records the safe Git filter policy reason without leaking repository details", () => {
+    const error = new HostSpanError("POLICY_UNENFORCEABLE", "private filter command", false, {
+      reason: "git_content_filter_unsafe",
+      filter_command: "/private/repo/filter.sh",
+      filtered_path_count: 2,
+    });
+
+    expect(auditErrorDiagnostics(error)).toEqual({
+      error_code: "POLICY_UNENFORCEABLE",
+      retryable: false,
+      error_reason: "git_content_filter_unsafe",
+    });
+  });
 });
