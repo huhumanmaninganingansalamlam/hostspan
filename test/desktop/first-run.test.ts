@@ -31,6 +31,12 @@ describe("desktop first-run config", () => {
       git_queue_timeout_ms: 1_000,
     });
     expect(first.targets).toEqual({});
+    expect(first.exec_profiles["native-dev"]).toMatchObject({
+      mode: "native",
+      policy: "trusted",
+      allowed_programs: [],
+      env_allowlist: [],
+    });
 
     first.targets.existing = {
       label: "Existing workspace",

@@ -60,15 +60,14 @@ export class PolicyEvaluator {
     if (!program) {
       throw new HostSpanError("SCOPE_DENIED", "Process argv must include a program.", false, { reason: "missing_program" });
     }
-    const hasTerminalAuthority = target.capabilities.includes("terminal");
-    const explicitProgramPath =
-      isAbsolute(program) || program.includes("/") || (process.platform === "win32" && program.includes("\\"));
-    if (!hasTerminalAuthority && (explicitProgramPath || !profile.allowed_programs.includes(basename(program)))) {
-      throw new HostSpanError("SCOPE_DENIED", `Program is not allowed by exec profile: ${program ?? "<missing>"}`, false, {
-        reason: "program_not_allowed",
-      });
-    }
-    if (!hasTerminalAuthority) {
+    if ((profile.policy ?? "restricted") === "restricted") {
+      const explicitProgramPath =
+        isAbsolute(program) || program.includes("/") || (process.platform === "win32" && program.includes("\\"));
+      if (explicitProgramPath || !profile.allowed_programs.includes(basename(program))) {
+        throw new HostSpanError("SCOPE_DENIED", `Program is not allowed by exec profile: ${program ?? "<missing>"}`, false, {
+          reason: "program_not_allowed",
+        });
+      }
       const deniedEnv = Object.keys(env).filter((key) => !profile.env_allowlist.includes(key));
       if (deniedEnv.length) {
         throw new HostSpanError("SCOPE_DENIED", `Environment variables are not allowed: ${deniedEnv.join(", ")}`, false, {

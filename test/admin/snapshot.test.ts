@@ -298,12 +298,38 @@ describe("local admin snapshot", () => {
     expect(afterAdd.targets["another-workspace"]).toMatchObject({
       label: "Another workspace",
       capabilities: ["read", "terminal", "exec"],
-      exec_profile: "native",
+      exec_profile: "native-trusted",
+    });
+    expect(afterAdd.targets.local?.exec_profile).toBe("native");
+    expect(afterAdd.exec_profiles.native?.policy).toBeUndefined();
+    expect(afterAdd.exec_profiles.native?.allowed_programs).toEqual(["node"]);
+    expect(afterAdd.exec_profiles["native-trusted"]).toMatchObject({
+      policy: "trusted",
+      allowed_programs: [],
+      env_allowlist: [],
+      max_deadline_ms: 60_000,
     });
 
     const removed = removeLocalWorkspace(configPath, "another-workspace");
     expect(removed).toMatchObject({ ok: true, target_id: "another-workspace", restart_required: true });
     expect(loadConfig(configPath).targets["another-workspace"]).toBeUndefined();
+  });
+
+  it("preserves an explicitly selected restricted exec profile", () => {
+    const { root, configPath } = fixture();
+    const workspace = join(root, "restricted-workspace");
+    mkdirSync(workspace, { recursive: true });
+
+    addLocalWorkspace(configPath, {
+      target_id: "restricted-workspace",
+      root: workspace,
+      capabilities: ["read", "exec"],
+      exec_profile: "native",
+    });
+    const config = loadConfig(configPath);
+    expect(config.targets["restricted-workspace"]?.exec_profile).toBe("native");
+    expect(config.exec_profiles.native?.policy).toBeUndefined();
+    expect(config.exec_profiles["native-trusted"]).toBeUndefined();
   });
 
   it("derives target id and label from the folder and avoids id collisions", () => {

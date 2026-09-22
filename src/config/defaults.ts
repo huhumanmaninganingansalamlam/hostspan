@@ -1,6 +1,20 @@
 import type { HostSpanConfig } from "./schema.js";
 import { defaultDataDir } from "./paths.js";
 
+export function createTrustedExecProfile(): HostSpanConfig["exec_profiles"][string] {
+  return {
+    mode: "native",
+    policy: "trusted",
+    allowed_programs: [],
+    env_allowlist: [],
+    default_deadline_ms: 30_000,
+    max_deadline_ms: 600_000,
+    default_output_bytes: 4_194_304,
+    max_output_bytes: 67_108_864,
+    max_concurrent_processes: 4,
+  };
+}
+
 export function createInitialConfig(): HostSpanConfig {
   return {
     schema_version: 1,
@@ -33,16 +47,7 @@ export function createInitialConfig(): HostSpanConfig {
     },
     targets: {},
     exec_profiles: {
-      "native-dev": {
-        mode: "native",
-        allowed_programs: ["git", "node", "npm", "pnpm", "python", "pytest", "cargo"],
-        env_allowlist: ["LANG", "LC_ALL", "CI", "NODE_ENV"],
-        default_deadline_ms: 30_000,
-        max_deadline_ms: 600_000,
-        default_output_bytes: 4_194_304,
-        max_output_bytes: 67_108_864,
-        max_concurrent_processes: 4,
-      },
+      "native-dev": createTrustedExecProfile(),
     },
   };
 }

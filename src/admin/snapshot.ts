@@ -1,5 +1,6 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { createTrustedExecProfile } from "../config/defaults.js";
 import { loadConfig } from "../config/loader.js";
 import type { Capability, HostSpanConfig } from "../config/schema.js";
 import { writeConfigAtomic } from "../config/writer.js";
@@ -51,9 +52,21 @@ function normalizedCapabilities(input: Capability[]): Capability[] {
   return capabilities;
 }
 
-function defaultExecProfile(config: HostSpanConfig): string | undefined {
-  if (config.exec_profiles["native-dev"]?.mode === "native") return "native-dev";
-  return Object.entries(config.exec_profiles).find(([, profile]) => profile.mode === "native")?.[0];
+function defaultTrustedExecProfile(config: HostSpanConfig): string {
+  const preferred = config.exec_profiles["native-dev"];
+  if (preferred?.mode === "native" && preferred.policy === "trusted") return "native-dev";
+  const existing = Object.entries(config.exec_profiles).find(
+    ([, profile]) => profile.mode === "native" && profile.policy === "trusted",
+  );
+  if (existing) return existing[0];
+
+  const base = preferred?.mode === "native" ? preferred : Object.values(config.exec_profiles).find((profile) => profile.mode === "native");
+  let profileName = "native-trusted";
+  for (let suffix = 2; config.exec_profiles[profileName]; suffix += 1) profileName = `native-trusted-${suffix}`;
+  config.exec_profiles[profileName] = base
+    ? { ...base, policy: "trusted", allowed_programs: [], env_allowlist: [] }
+    : createTrustedExecProfile();
+  return profileName;
 }
 
 export function addLocalWorkspace(configPath: string, input: AddWorkspaceInput) {
@@ -90,7 +103,7 @@ export function addLocalWorkspace(configPath: string, input: AddWorkspaceInput) 
     const profile = config.exec_profiles[requestedExecProfile];
     if (!profile || profile.mode !== "native") throw new Error(`unknown native exec profile: ${requestedExecProfile}`);
   }
-  const execProfile = capabilities.includes("exec") ? requestedExecProfile || defaultExecProfile(config) : undefined;
+  const execProfile = capabilities.includes("exec") ? requestedExecProfile || defaultTrustedExecProfile(config) : undefined;
   if (capabilities.includes("exec") && !execProfile) throw new Error("no native exec profile is configured.");
 
   config.targets[targetId] = {

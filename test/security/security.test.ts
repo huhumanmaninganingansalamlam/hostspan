@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { v7 as uuidv7 } from "uuid";
-import { PolicyGlobSchema, type HostSpanConfig } from "../../src/config/schema.js";
+import { ExecProfileSchema, PolicyGlobSchema, type HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
 import { createRuntime, main } from "../../src/cli/index.js";
 import { HostSpanLogger } from "../../src/observability/logger.js";
@@ -19,7 +19,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(options: { terminal?: boolean } = {}): { root: string; configPath: string } {
+function fixture(options: { terminal?: boolean; trusted?: boolean } = {}): { root: string; configPath: string } {
   const root = mkdtempSync(join(tmpdir(), "hostspan-security-"));
   roots.push(root);
   const targetRoot = join(root, "target");
@@ -50,8 +50,9 @@ function fixture(options: { terminal?: boolean } = {}): { root: string; configPa
     exec_profiles: {
       native: {
         mode: "native",
-        allowed_programs: ["node"],
-        env_allowlist: ["CI"],
+        ...(options.trusted ? { policy: "trusted" as const } : {}),
+        allowed_programs: options.trusted ? [] : ["node"],
+        env_allowlist: options.trusted ? [] : ["CI"],
         default_deadline_ms: 30_000,
         max_deadline_ms: 60_000,
         default_output_bytes: 1024 * 1024,
@@ -72,6 +73,16 @@ describe("security and operational boundaries", () => {
     for (const glob of ["!secret/**", "src/[ab].ts", "src/{a,b}.ts", "src\\secret\\**", "bad\nname"]) {
       expect(PolicyGlobSchema.safeParse(glob).success).toBe(false);
     }
+  });
+
+  it("keeps legacy exec profiles restricted while trusted profiles need no command allowlist", () => {
+    const legacy = ExecProfileSchema.parse({ mode: "native", allowed_programs: ["node"] });
+    expect(legacy.policy).toBeUndefined();
+    expect(legacy.allowed_programs).toEqual(["node"]);
+    expect(ExecProfileSchema.safeParse({ mode: "native" }).success).toBe(false);
+    const trusted = ExecProfileSchema.parse({ mode: "native", policy: "trusted" });
+    expect(trusted.allowed_programs).toEqual([]);
+    expect(trusted.env_allowlist).toEqual([]);
   });
 
   it.runIf(process.platform === "win32")("applies private Windows ACLs to config and durable state", async () => {
@@ -342,8 +353,8 @@ describe("security and operational boundaries", () => {
     }
   });
 
-  it("does not make non-interactive exec weaker than terminal authority", async () => {
-    const { configPath } = fixture({ terminal: true });
+  it("allows trusted exec to run arbitrary native programs and env overrides without terminal authority", async () => {
+    const { configPath } = fixture({ trusted: true });
     const runtime = createRuntime(configPath);
     try {
       let result = await runtime.handlers.process_start(
@@ -352,12 +363,12 @@ describe("security and operational boundaries", () => {
           target_id: "local",
           argv: [process.execPath, "-e", "process.stdout.write(process.env.HOSTSPAN_TEST_ENV ?? '')"],
           cwd: ".",
-          env: { HOSTSPAN_TEST_ENV: "terminal-authority-ok" },
+          env: { HOSTSPAN_TEST_ENV: "trusted-exec-ok" },
           wait_ms: 1_000,
           deadline_ms: 5_000,
           max_output_bytes: 4096,
         },
-        "req_terminal_authority_exec",
+        "req_trusted_exec",
       );
       let stdout = String(result.stdout ?? "");
       for (let attempt = 0; attempt < 12 && result.state === "running"; attempt += 1) {
@@ -369,16 +380,56 @@ describe("security and operational boundaries", () => {
             wait_ms: 500,
             max_bytes: 4096,
           },
-          `req_terminal_authority_poll_${attempt}`,
+          `req_trusted_exec_poll_${attempt}`,
         );
         stdout += String(result.stdout ?? "");
       }
       expect({ ...result, stdout }).toMatchObject({
         state: "succeeded",
-        stdout: "terminal-authority-ok",
+        stdout: "trusted-exec-ok",
         exit_code: 0,
         interactive: false,
       });
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("does not let terminal authority widen restricted non-interactive exec", async () => {
+    const { configPath } = fixture({ terminal: true });
+    const runtime = createRuntime(configPath);
+    try {
+      await expect(
+        runtime.handlers.process_start(
+          {
+            idempotency_key: uuidv7(),
+            target_id: "local",
+            argv: ["node", "-e", "process.stdout.write('should-not-run')"],
+            cwd: ".",
+            env: { HOSTSPAN_TEST_ENV: "should-not-pass" },
+            wait_ms: 100,
+            deadline_ms: 5_000,
+            max_output_bytes: 4096,
+          },
+          "req_terminal_restricted_env",
+        ),
+      ).rejects.toMatchObject({ code: "SCOPE_DENIED", details: { reason: "environment_not_allowed" } });
+
+      await expect(
+        runtime.handlers.process_start(
+          {
+            idempotency_key: uuidv7(),
+            target_id: "local",
+            argv: [process.execPath, "-e", "process.stdout.write('should-not-run')"],
+            cwd: ".",
+            env: {},
+            wait_ms: 100,
+            deadline_ms: 5_000,
+            max_output_bytes: 4096,
+          },
+          "req_terminal_restricted_program",
+        ),
+      ).rejects.toMatchObject({ code: "SCOPE_DENIED", details: { reason: "program_not_allowed" } });
     } finally {
       await runtime.close();
     }

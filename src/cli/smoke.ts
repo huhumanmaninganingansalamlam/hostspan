@@ -131,10 +131,11 @@ export async function runSmoke(context: SmokeContext, targetId: string): Promise
 
     if (target.capabilities.includes("exec") && target.exec_profile) {
       const profile = context.config.exec_profiles[target.exec_profile];
-      const embeddedNode = Boolean(process.versions.electron) && target.capabilities.includes("terminal");
-      if (embeddedNode || profile?.allowed_programs.includes("node")) {
-        const nodeProgram = embeddedNode ? process.execPath : "node";
-        const nodeEnv = embeddedNode ? { ELECTRON_RUN_AS_NODE: "1" } : {};
+      const trustedExec = profile?.policy === "trusted";
+      if (trustedExec || profile?.allowed_programs.includes("node")) {
+        const embeddedNode = Boolean(process.versions.electron);
+        const nodeProgram = trustedExec ? process.execPath : "node";
+        const nodeEnv = trustedExec && embeddedNode ? { ELECTRON_RUN_AS_NODE: "1" } : {};
         await record("short_process", async () => {
           let result = await context.handlers.process_start(
             {

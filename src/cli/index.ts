@@ -724,7 +724,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       const root = flag(argv, "--root");
       if (!targetId || !root) throw cliValidationError("targets add requires --id and --root");
       const capabilities = (flag(argv, "--capabilities") ?? "read").split(",").filter(Boolean) as Array<"read" | "write" | "exec" | "git" | "terminal">;
-      const execProfile = flag(argv, "--exec-profile") ?? (capabilities.includes("exec") ? "native-dev" : undefined);
+      const execProfile = flag(argv, "--exec-profile");
       print(
         addLocalWorkspace(configPath, {
           target_id: targetId,
