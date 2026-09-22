@@ -82,4 +82,17 @@ export class AuditRepo {
       .all(limit) as Array<Record<string, unknown> & { metadata_json: string }>;
     return rows.map(({ metadata_json, ...row }) => ({ ...row, metadata: JSON.parse(metadata_json) }));
   }
+
+  recentPerformanceEvents(limit = 10_000): Array<Record<string, unknown>> {
+    const bounded = Math.max(1, Math.min(Math.floor(limit), 50_000));
+    const rows = this.db
+      .prepare(
+        `SELECT event_id,request_id,idempotency_key,process_id,event_type,metadata_json,timestamp
+         FROM audit_events
+         WHERE event_type IN ('request.accepted','response.returned','request.aborted')
+         ORDER BY timestamp DESC,event_id DESC LIMIT ?`,
+      )
+      .all(bounded) as Array<Record<string, unknown> & { metadata_json: string }>;
+    return rows.map(({ metadata_json, ...row }) => ({ ...row, metadata: JSON.parse(metadata_json) }));
+  }
 }

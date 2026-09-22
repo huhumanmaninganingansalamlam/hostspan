@@ -59,6 +59,7 @@
     "check:workers": "node --check src/processes/windows-command.mjs && node --check src/processes/pty-worker.mjs && node --check src/processes/windows-job-worker.mjs",
     "doctor": "node dist/src/cli/index.js doctor",
     "smoke": "node dist/src/cli/index.js smoke",
+    "perf:baseline": "pnpm build && node scripts/performance-baseline.mjs",
     "lint": "biome lint src test",
     "check": "pnpm typecheck && pnpm lint && pnpm check:workers && pnpm test && pnpm build"
   },
