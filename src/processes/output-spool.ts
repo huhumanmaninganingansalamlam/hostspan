@@ -179,15 +179,29 @@ export function processSpoolBytes(dataDir: string): number {
   return total;
 }
 
-export function processOutputBytes(dataDir: string, processId: string): number {
+export function processOutputActivity(
+  dataDir: string,
+  processId: string,
+): { output_bytes: number; last_output_at: string | null } {
   const dir = join(dataDir, "spools", "processes", processId);
-  if (!existsSync(dir) || !statSync(dir).isDirectory()) return 0;
+  if (!existsSync(dir) || !statSync(dir).isDirectory()) return { output_bytes: 0, last_output_at: null };
   let total = 0;
+  let latestMtimeMs = 0;
   for (const stream of ["stdout.bin", "stderr.bin"]) {
     const path = join(dir, stream);
-    if (existsSync(path)) total += statSync(path).size;
+    if (!existsSync(path)) continue;
+    const stat = statSync(path);
+    total += stat.size;
+    if (stat.size > 0) latestMtimeMs = Math.max(latestMtimeMs, stat.mtimeMs);
   }
-  return total;
+  return {
+    output_bytes: total,
+    last_output_at: latestMtimeMs > 0 ? new Date(latestMtimeMs).toISOString() : null,
+  };
+}
+
+export function processOutputBytes(dataDir: string, processId: string): number {
+  return processOutputActivity(dataDir, processId).output_bytes;
 }
 
 export function cleanupExpiredProcessSpools(

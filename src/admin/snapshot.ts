@@ -3,6 +3,7 @@ import { basename, join, resolve } from "node:path";
 import { loadConfig } from "../config/loader.js";
 import type { Capability, HostSpanConfig } from "../config/schema.js";
 import { writeConfigAtomic } from "../config/writer.js";
+import { processOutputActivity } from "../processes/output-spool.js";
 import { PtySessionManager } from "../processes/pty-session.js";
 import { openReadOnlyDatabase } from "../state/database.js";
 import { TargetRegistry } from "../targets/registry.js";
@@ -213,20 +214,23 @@ export function buildAdminSnapshot(configPath: string, options: AdminSnapshotOpt
     if (!terminalProcessRecords.has(record.process_id)) terminalProcessRecords.set(record.process_id, record);
   }
   const terminalSessions = [...terminalProcessRecords.values()].map((record) => {
-      const session = typeof record.backend_ref === "string" ? record.backend_ref : null;
-      const live = terminal && session ? terminal.inspectSync(session) : undefined;
-      return {
-        ...record,
-        live: live?.exists ?? false,
-        dead: live?.dead ?? null,
-        ...(terminal && session
-          ? {
-              attach_command: terminal.humanAttachCommand(session, false),
-              attach_read_only_command: terminal.humanAttachCommand(session, true),
-            }
-          : {}),
-      };
-    });
+    const processId = record.process_id as string;
+    const session = typeof record.backend_ref === "string" ? record.backend_ref : null;
+    const live = terminal && session ? terminal.inspectSync(session) : undefined;
+    const output = processOutputActivity(config.server.data_dir, processId);
+    return {
+      ...record,
+      ...output,
+      live: live?.exists ?? false,
+      dead: live?.dead ?? null,
+      ...(terminal && session
+        ? {
+            attach_command: terminal.humanAttachCommand(session, false),
+            attach_read_only_command: terminal.humanAttachCommand(session, true),
+          }
+        : {}),
+    };
+  });
 
   return {
     server_version: SERVER_VERSION,

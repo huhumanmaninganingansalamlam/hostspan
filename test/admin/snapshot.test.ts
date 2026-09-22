@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -181,10 +181,20 @@ describe("local admin snapshot", () => {
     db.prepare("UPDATE processes SET started_at='2026-09-18T00:01:00.000Z', ended_at='2026-09-18T00:01:01.000Z' WHERE process_id='proc_newer_completed'").run();
     db.close();
 
+    const spoolDir = join(dataDir, "spools", "processes", "proc_active_terminal");
+    mkdirSync(spoolDir, { recursive: true });
+    writeFileSync(join(spoolDir, "stdout.bin"), "prompt\n");
+
     const snapshot = buildAdminSnapshot(configPath, { recent: 1 });
     expect(snapshot.recent_processes).toEqual([expect.objectContaining({ process_id: "proc_newer_completed" })]);
     expect(snapshot.terminal.sessions).toContainEqual(
-      expect.objectContaining({ process_id: "proc_active_terminal", state: "running", live: false }),
+      expect.objectContaining({
+        process_id: "proc_active_terminal",
+        state: "running",
+        live: false,
+        output_bytes: 7,
+        last_output_at: expect.any(String),
+      }),
     );
   });
 
