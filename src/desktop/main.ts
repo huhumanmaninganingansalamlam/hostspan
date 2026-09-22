@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Tray } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, type IpcMainInvokeEvent, Menu, nativeImage, Tray } from "electron";
 import {
   addLocalWorkspace,
   buildAdminSnapshot,
@@ -20,6 +20,16 @@ import type { Capability } from "../config/schema.js";
 import { PtySessionManager } from "../processes/pty-session.js";
 import { protectWindowsFile, protectWindowsTree } from "../security/windows-acl.js";
 import { prepareDesktopEnvironment } from "./environment.js";
+import {
+  DASHBOARD_CSP,
+  installDashboardNavigationGuards,
+  isTrustedDashboardIpc,
+  requireAttachInput,
+  requireBoolean,
+  requireDaemonAction,
+  requireString,
+  requireWorkspaceInput,
+} from "./ipc-security.js";
 import { ensureDesktopConfig } from "./first-run.js";
 import { trayMenuStateKey } from "./tray-menu-state.js";
 import { DEFAULT_WORKSPACE_CAPABILITIES, defaultWorkspaceCapability } from "./workspace-capabilities.js";
@@ -239,6 +249,7 @@ function removeWorkspace(targetId: string) {
 function html(): string {
   return `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="${DASHBOARD_CSP}">
 <title>HostSpan</title>
 <style>
 :root{color-scheme:dark}body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:#101218;color:#e9edf5}main{padding:16px;max-width:940px;margin:auto}h1{font-size:20px;margin:0}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.grow{flex:1}.card{background:#181c25;border:1px solid #2b3241;border-radius:10px;padding:12px;margin:10px 0}.cardhead{display:flex;align-items:center;gap:8px;margin-bottom:8px}.cardhead b{flex:1}button{background:#2b66f6;color:white;border:0;border-radius:7px;padding:7px 10px;cursor:pointer}button.secondary{background:#31394b}button.danger{background:#71323a}button:disabled{opacity:.45;cursor:default}.ok{color:#70dc9b}.bad{color:#ff8080}.warn{color:#f2c56b}.muted{color:#9aa6b8;font-size:12px}.message{min-height:18px;margin-top:6px;font-size:12px}.message.error{color:#ff8080}table{width:100%;border-collapse:collapse;font-size:13px}td,th{text-align:left;padding:6px;border-bottom:1px solid #2b3241;vertical-align:top}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;word-break:break-all}.scroll{max-height:230px;overflow:auto}.pill{padding:2px 6px;border-radius:10px;background:#283044;font-size:11px}.caps{display:flex;gap:8px;flex-wrap:wrap}.caps label{font-size:12px}.activity{padding:5px 0;border-bottom:1px solid #242a37}dialog{width:min(560px,90vw);border:1px solid #394359;border-radius:10px;background:#181c25;color:#e9edf5;padding:16px}dialog::backdrop{background:#0008}.field{margin:10px 0}.field label.title{display:block;font-size:12px;color:#9aa6b8;margin-bottom:4px}.field input[type=text]{box-sizing:border-box;width:100%;padding:8px;border:1px solid #3b455a;border-radius:6px;background:#11151d;color:#e9edf5}.pathrow{display:flex;gap:6px}.pathrow input{flex:1}
@@ -350,6 +361,7 @@ function createWindow(): BrowserWindow {
     ...(process.platform !== "darwin" && existsSync(appIconPath) ? { icon: appIconPath } : {}),
     webPreferences: { preload: preloadPath, contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
+  installDashboardNavigationGuards(window.webContents);
   void window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html())}`);
   window.on("close", (event) => {
     if (!quitting) {
@@ -390,31 +402,55 @@ async function refreshUi(): Promise<void> {
   if (window && !window.isDestroyed()) window.webContents.send("hostspan:update", data);
 }
 
-ipcMain.handle("hostspan:snapshot", () => snapshot());
-ipcMain.handle("hostspan:daemon", async (_event, action: "start" | "stop" | "restart") => {
+function assertDashboardSender(event: IpcMainInvokeEvent): void {
+  const contents = window && !window.isDestroyed() ? window.webContents : undefined;
+  if (!contents || !isTrustedDashboardIpc(event, contents)) throw new Error("desktop IPC rejected from untrusted renderer");
+}
+
+ipcMain.handle("hostspan:snapshot", (event) => {
+  assertDashboardSender(event);
+  return snapshot();
+});
+ipcMain.handle("hostspan:daemon", async (event, rawAction: unknown) => {
+  assertDashboardSender(event);
+  const action = requireDaemonAction(rawAction);
   if (action === "restart") return restartDaemonWithConfirmation();
   const result = await daemonAction(action);
   await refreshUi();
   return result;
 });
-ipcMain.handle("hostspan:doctor", () => doctorReport());
-ipcMain.handle("hostspan:choose-workspace", async () => {
+ipcMain.handle("hostspan:doctor", (event) => {
+  assertDashboardSender(event);
+  return doctorReport();
+});
+ipcMain.handle("hostspan:choose-workspace", async (event) => {
+  assertDashboardSender(event);
   const result = await dialog.showOpenDialog({ title: "Add HostSpan Workspace", properties: ["openDirectory"] });
   return { canceled: result.canceled, ...(result.filePaths[0] ? { path: result.filePaths[0] } : {}) };
 });
-ipcMain.handle("hostspan:add-workspace", async (_event, input: AddWorkspaceInput) => {
-  const result = addWorkspace(input);
+ipcMain.handle("hostspan:add-workspace", async (event, rawInput: unknown) => {
+  assertDashboardSender(event);
+  const result = addWorkspace(requireWorkspaceInput(rawInput));
   await refreshUi();
   return result;
 });
-ipcMain.handle("hostspan:remove-workspace", async (_event, targetId: string) => {
-  const result = removeWorkspace(targetId);
+ipcMain.handle("hostspan:remove-workspace", async (event, rawTargetId: unknown) => {
+  assertDashboardSender(event);
+  const result = removeWorkspace(requireString(rawTargetId, "target_id", 64));
   await refreshUi();
   return result;
 });
-ipcMain.handle("hostspan:get-autostart", () => getAutoStart());
-ipcMain.handle("hostspan:set-autostart", (_event, enabled: boolean) => setAutoStart(Boolean(enabled)));
-ipcMain.handle("hostspan:attach", (_event, input: { processId: string; readOnly: boolean }) => {
+ipcMain.handle("hostspan:get-autostart", (event) => {
+  assertDashboardSender(event);
+  return getAutoStart();
+});
+ipcMain.handle("hostspan:set-autostart", (event, rawEnabled: unknown) => {
+  assertDashboardSender(event);
+  return setAutoStart(requireBoolean(rawEnabled, "autostart"));
+});
+ipcMain.handle("hostspan:attach", (event, rawInput: unknown) => {
+  assertDashboardSender(event);
+  const input = requireAttachInput(rawInput);
   const config = loadConfig(configPath);
   if (!config.terminal) throw new Error("terminal support is not configured");
   const session = resolveTerminalSession(configPath, input.processId);
@@ -424,8 +460,9 @@ ipcMain.handle("hostspan:attach", (_event, input: { processId: string; readOnly:
   openAttach(input.processId, input.readOnly);
   return { ok: true };
 });
-ipcMain.handle("hostspan:copy", (_event, text: string) => {
-  clipboard.writeText(text);
+ipcMain.handle("hostspan:copy", (event, rawText: unknown) => {
+  assertDashboardSender(event);
+  clipboard.writeText(requireString(rawText, "clipboard text", 1_048_576));
   return { ok: true };
 });
 
