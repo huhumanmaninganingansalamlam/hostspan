@@ -21,6 +21,7 @@ import { PtySessionManager } from "../processes/pty-session.js";
 import { protectWindowsFile, protectWindowsTree } from "../security/windows-acl.js";
 import { prepareDesktopEnvironment } from "./environment.js";
 import { ensureDesktopConfig } from "./first-run.js";
+import { trayMenuStateKey } from "./tray-menu-state.js";
 
 declare global {
   interface Window {
@@ -52,6 +53,8 @@ const nodePath = process.env.HOSTSPAN_NODE ?? process.execPath;
 let tray: Tray | undefined;
 let window: BrowserWindow | undefined;
 let refreshTimer: NodeJS.Timeout | undefined;
+let lastTrayMenuStateKey: string | undefined;
+let lastTrayTooltip: string | undefined;
 let quitting = false;
 
 function icon() {
@@ -357,25 +360,31 @@ function createWindow(): BrowserWindow {
 
 async function refreshUi(): Promise<void> {
   const data = await snapshot();
-  tray?.setToolTip(`HostSpan ${data.daemon.running ? "running" : "stopped"}`);
-  tray?.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: `HostSpan ${data.daemon.running ? "Running" : "Stopped"}`, enabled: false },
-      { label: "Open Dashboard", click: () => { const w = createWindow(); w.show(); w.focus(); } },
-      { type: "separator" },
-      data.daemon.running
-        ? { label: "Stop HostSpan", click: () => void daemonAction("stop").then(refreshUi) }
-        : { label: "Start HostSpan", click: () => void daemonAction("start").then(refreshUi) },
-      { label: "Restart HostSpan", enabled: data.daemon.running, click: () => void restartDaemonWithConfirmation() },
-      { label: "Start at login", type: "checkbox", checked: data.auto_start, click: (item) => { setAutoStart(item.checked); void refreshUi(); } },
-      { type: "separator" },
-      { label: `Targets: ${data.targets.length}`, enabled: false },
-      { label: `Active: ${data.active_requests.length + data.active_processes.length}`, enabled: false },
-      { label: `Terminal sessions: ${data.terminal.sessions.filter((session) => session.live).length}`, enabled: false },
-      { type: "separator" },
-      { label: "Quit Tray", click: () => { quitting = true; app.quit(); } },
-    ]),
-  );
+  const tooltip = `HostSpan ${data.daemon.running ? "running" : "stopped"}`;
+  if (tray && tooltip !== lastTrayTooltip) {
+    tray.setToolTip(tooltip);
+    lastTrayTooltip = tooltip;
+  }
+  const menuStateKey = trayMenuStateKey(data);
+  if (tray && menuStateKey !== lastTrayMenuStateKey) {
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        { label: `HostSpan ${data.daemon.running ? "Running" : "Stopped"}`, enabled: false },
+        { label: "Open Dashboard", click: () => { const w = createWindow(); w.show(); w.focus(); } },
+        { type: "separator" },
+        data.daemon.running
+          ? { label: "Stop HostSpan", click: () => void daemonAction("stop").then(refreshUi) }
+          : { label: "Start HostSpan", click: () => void daemonAction("start").then(refreshUi) },
+        { label: "Restart HostSpan", enabled: data.daemon.running, click: () => void restartDaemonWithConfirmation() },
+        { label: "Start at login", type: "checkbox", checked: data.auto_start, click: (item) => { setAutoStart(item.checked); void refreshUi(); } },
+        { type: "separator" },
+        { label: `Targets: ${data.targets.length}`, enabled: false },
+        { type: "separator" },
+        { label: "Quit Tray", click: () => { quitting = true; app.quit(); } },
+      ]),
+    );
+    lastTrayMenuStateKey = menuStateKey;
+  }
   if (window && !window.isDestroyed()) window.webContents.send("hostspan:update", data);
 }
 
