@@ -18,6 +18,8 @@ const GIT_READ_ONLY_ARGS = [
   "--no-pager",
   "-c",
   "core.fsmonitor=false",
+  "-c",
+  `core.attributesFile=${GIT_NULL_CONFIG}`,
 ] as const;
 
 
@@ -54,13 +56,14 @@ interface BoundedGitOutput {
 function safeGitEnvironment(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (!key.startsWith("GIT_") && value !== undefined) env[key] = value;
+    if (!key.toUpperCase().startsWith("GIT_") && value !== undefined) env[key] = value;
   }
   return {
     ...env,
     GIT_CONFIG_GLOBAL: GIT_NULL_CONFIG,
     GIT_CONFIG_SYSTEM: GIT_NULL_CONFIG,
     GIT_CONFIG_NOSYSTEM: "1",
+    GIT_ATTR_NOSYSTEM: "1",
     GIT_OPTIONAL_LOCKS: "0",
     GIT_PAGER: "cat",
     GIT_TERMINAL_PROMPT: "0",
@@ -138,7 +141,13 @@ function decodeUtf8Prefix(buffer: Buffer): string {
   return buffer.toString("utf8");
 }
 
-function collectGitOutput(cwd: string, args: string[], maxStdoutBytes: number, stdin?: Buffer): Promise<BoundedGitOutput> {
+function collectGitOutput(
+  cwd: string,
+  args: string[],
+  maxStdoutBytes: number,
+  stdin?: Buffer,
+  allowedExitCodes: readonly number[] = [0],
+): Promise<BoundedGitOutput> {
   return new Promise((resolve, reject) => {
     const child = spawn("git", [...GIT_READ_ONLY_ARGS, ...args], {
       cwd,
@@ -203,7 +212,7 @@ function collectGitOutput(cwd: string, args: string[], maxStdoutBytes: number, s
         return;
       }
       const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
-      if (code !== 0) {
+      if (code === null || !allowedExitCodes.includes(code)) {
         reject(new Error(`git ${args[0] ?? "<command>"} exited ${code ?? "null"}${signal ? ` (${signal})` : ""}${stderr ? `: ${stderr}` : ""}`));
         return;
       }
@@ -235,6 +244,40 @@ async function boundedStatus(cwd: string, args: string[], maxStatusBytes: number
     );
   }
   return result.stdout.toString("utf8");
+}
+
+async function hasConfiguredContentFilters(cwd: string): Promise<boolean> {
+  const result = await collectGitOutput(
+    cwd,
+    ["config", "--includes", "--name-only", "--null", "--get-regexp", "^filter[.].*[.](clean|process)$"],
+    MAX_GIT_ATTRIBUTE_BYTES,
+    undefined,
+    [0, 1],
+  );
+  if (result.total_stdout_bytes > result.stdout.length) {
+    throw new HostSpanError("OUTPUT_LIMIT", "Git filter configuration inspection exceeded HostSpan's internal bound.", false, {
+      resource: "git_attributes",
+      max_attribute_bytes: MAX_GIT_ATTRIBUTE_BYTES,
+    });
+  }
+  return result.stdout.length > 0;
+}
+
+async function trackedPathsForAttributePreflight(cwd: string, pathArgs: string[]): Promise<string[]> {
+  const result = await collectGitOutput(cwd, ["ls-files", "--cached", "-z", ...pathArgs], MAX_GIT_ATTRIBUTE_BYTES);
+  if (result.total_stdout_bytes > result.stdout.length) {
+    throw new HostSpanError("OUTPUT_LIMIT", "Git tracked-path attribute preflight exceeded HostSpan's internal bound.", false, {
+      resource: "git_attributes",
+      max_attribute_bytes: MAX_GIT_ATTRIBUTE_BYTES,
+    });
+  }
+  return result.stdout.toString("utf8").split("\0").filter(Boolean);
+}
+
+async function preflightWorkingTreeFilters(cwd: string, pathArgs: string[]): Promise<void> {
+  if (!(await hasConfiguredContentFilters(cwd))) return;
+  const trackedPaths = await trackedPathsForAttributePreflight(cwd, pathArgs);
+  await assertNoWorkingTreeFilters(cwd, trackedPaths);
 }
 
 async function assertNoWorkingTreeFilters(cwd: string, paths: string[]): Promise<void> {
@@ -296,6 +339,8 @@ export async function gitChanges(
     : ["."];
   const pathArgs = ["--", ...includePaths];
 
+  await preflightWorkingTreeFilters(repositoryRoot, pathArgs);
+
   const [stagedText, unstagedText, untrackedText] = await Promise.all([
     boundedStatus(
       repositoryRoot,
@@ -334,7 +379,6 @@ export async function gitChanges(
   const unstagedPaths = [
     ...new Set(statusEntries.filter((entry) => entry.status !== "??" && entry.status[1] !== " ").map((entry) => entry.path)),
   ];
-  await assertNoWorkingTreeFilters(repositoryRoot, unstagedPaths);
 
   const emptyDiff = { text: "", truncated: false };
   const [staged, unstaged] = await Promise.all([

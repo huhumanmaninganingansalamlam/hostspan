@@ -209,6 +209,54 @@ describe("git_changes", () => {
     });
   });
 
+  it.runIf(process.platform !== "win32")("preflights content filters before any clean helper can execute", async () => {
+    const { root, git, target } = fixture();
+    const marker = join(root, "clean-filter-marker");
+    const helper = join(root, "clean-filter.sh");
+    writeFileSync(helper, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\ncat\n`);
+    chmodSync(helper, 0o700);
+    writeFileSync(join(root, "filtered.txt"), "base\n");
+    git("add", "filtered.txt");
+    git("commit", "-qm", "fixture");
+    writeFileSync(join(root, ".gitattributes"), "*.txt filter=probe\n");
+    git("config", "filter.probe.clean", helper);
+    writeFileSync(join(root, "filtered.txt"), "changed\n");
+
+    await expect(gitChanges(target, ["filtered.txt"], 64 * 1024, false)).rejects.toMatchObject({
+      code: "POLICY_UNENFORCEABLE",
+      details: { reason: "git_content_filter_unsafe", filtered_path_count: 1 },
+    });
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it.runIf(process.platform !== "win32")("ignores user-level attributes during read-only Git inspection", async () => {
+    const { root, git, target } = fixture();
+    const xdg = join(root, "xdg");
+    const gitConfigDir = join(xdg, "git");
+    const marker = join(root, "global-filter-marker");
+    const helper = join(root, "global-filter.sh");
+    mkdirSync(gitConfigDir, { recursive: true });
+    writeFileSync(join(gitConfigDir, "attributes"), "*.txt filter=probe\n");
+    writeFileSync(helper, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\ncat\n`);
+    chmodSync(helper, 0o700);
+    git("config", "filter.probe.clean", helper);
+    writeFileSync(join(root, "plain.txt"), "base\n");
+    git("add", "plain.txt");
+    git("commit", "-qm", "fixture");
+    writeFileSync(join(root, "plain.txt"), "changed\n");
+
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = xdg;
+    try {
+      const result = await gitChanges(target, ["plain.txt"], 64 * 1024, false);
+      expect(result.status).toContainEqual(expect.objectContaining({ status: " M", path: "plain.txt" }));
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousXdg;
+    }
+  });
+
   it("ignores inherited Git environment overrides", async () => {
     const { root, git, target } = fixture();
     writeFileSync(join(root, "a.txt"), "base\n");

@@ -30,13 +30,14 @@ Do not describe Alpha as secure sandboxed execution. A future sandbox provider m
 - Reads use no-follow opening and recheck containment before returning the descriptor.
 - Target deny globs are enforced by typed file tools and excluded from Git summaries/search scope.
 - Target deny/ignore globs intentionally use one portable subset across HostSpan, ripgrep, and Git: forward-slash paths with literal characters plus `*`, `**`, and `?`. Leading `!`, backslashes, bracket classes, and brace expansion are rejected at config validation instead of receiving tool-specific meanings.
+- `git_changes` is a dedicated bounded Git inspection path, not general process authority. It ignores inherited Git environment/config and user/system attributes, disables fsmonitor, optional locks, external diff, and text conversion, and preflights repo-local content filters before any working-tree comparison. A configured clean/process filter affecting the requested tracked scope fails closed without executing the helper.
 - The active HostSpan config and its backup are protected from `file_patch` self-mutation.
 - Patch apply requires an `expected_sha256`, stages all requested files before commit, validates before writes, performs per-file atomic replacement, verifies after hashes, and records a durable transaction journal.
 - Multi-file patching is not advertised as a single filesystem transaction. Crash recovery reports `verified`, `rolled_back`, or `unknown` based on observed hashes.
 
 ## Process and terminal boundary
 
-- `process_start` is the only spawn path.
+- `process_start` is the only general-purpose process spawn path. The separate `git_changes` implementation may spawn only its fixed, bounded read-only Git inspection commands under the restrictions above.
 - Non-interactive commands are argv arrays with `shell=false`. On `exec`-only targets they remain subject to the target exec profile's `allowed_programs` and env allowlist in addition to deadline, output, and concurrency limits.
 - `tty=true` is a separate authority path: the target must explicitly grant the `terminal` capability and HostSpan launches a daemon-independent PTY session worker.
 - `process_write` is valid only for PTY-backed interactive processes. It can send text, selected control keys, and terminal resize updates. Every write requires its own UUIDv7 idempotency key; duplicate retries join/replay the original write, while an unprovable crash-boundary outcome becomes `PROCESS_UNKNOWN` and is never automatically retyped.
