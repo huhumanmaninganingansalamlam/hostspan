@@ -202,6 +202,27 @@ describe("durable interactive PTY process backend", () => {
     db.close();
   });
 
+  it("joins concurrent PTY starts with the same idempotency key before launch", async () => {
+    const { supervisor, terminal, processes, db } = fixture();
+    const input = ttyInput("setTimeout(()=>{},60000)", 10_000, 0);
+
+    const [first, joined] = await Promise.all([
+      supervisor.start(input, "req_pty_parallel_start_1"),
+      supervisor.start(input, "req_pty_parallel_start_2"),
+    ]);
+
+    expect(joined.process_id).toBe(first.process_id);
+    expect(processes.getByKey(input.idempotency_key)?.process_id).toBe(first.process_id);
+    expect(
+      (
+        db.prepare("SELECT count(*) AS count FROM processes WHERE idempotency_key=?").get(input.idempotency_key) as {
+          count: number;
+        }
+      ).count,
+    ).toBe(1);
+    track(terminal, first);
+  });
+
   it("supports interactive input, polling, resize, attach metadata, and idempotent writes", async () => {
     const { supervisor, terminal, db } = fixture();
     const script = [

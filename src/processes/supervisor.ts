@@ -429,6 +429,9 @@ export class ProcessSupervisor {
     const cwd = resolveTargetPath(target, input.cwd, "exec");
     if (!cwd.exists) throw new HostSpanError("FILE_NOT_FOUND", `Process cwd does not exist: ${input.cwd}`);
     const profile = interactive ? undefined : this.options.policy.validateExec(target, input.argv, input.env, input.deadline_ms, input.max_output_bytes);
+    if (interactive && this.options.terminal && this.options.config.terminal) {
+      await this.reconcileInteractiveProcesses(input.target_id);
+    }
     const resolution = this.options.operations.resolve(input.idempotency_key, "process_start", input, input.target_id);
     if (resolution.kind !== "new") {
       const existing = this.options.processes.getByKey(input.idempotency_key);
@@ -454,7 +457,6 @@ export class ProcessSupervisor {
         this.options.operations.setState(input.idempotency_key, "failed", undefined, error);
         throw error;
       }
-      await this.reconcileInteractiveProcesses(input.target_id);
       if (this.options.processes.activeCountForTargetBackend(input.target_id, "pty") >= this.options.config.terminal.max_concurrent_sessions) {
         const error = new HostSpanError("SCOPE_DENIED", `Target ${input.target_id} reached max_concurrent_terminal_sessions.`, false, {
           reason: "max_concurrent_terminal_sessions",

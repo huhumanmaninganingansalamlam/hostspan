@@ -162,6 +162,72 @@ describe("HostSpan Alpha acceptance", () => {
     }
   });
 
+  it("serves concurrent stateless MCP clients without cross-request state", async () => {
+    const { configPath } = fixture();
+    const runtime = createRuntime(configPath);
+    const app = createHostSpanHttpServer({
+      listen_host: "127.0.0.1",
+      listen_port: 39393,
+      max_inflight_mcp_requests: 64,
+      handlers: runtime.handlers,
+      responseContext: () => ({ toolset_hash: TOOLSET_HASH, policy_epoch: runtime.config.policy_epoch }),
+      status: {
+        health: () => ({ server_version: "test" }),
+        readiness: () => ({ ready: true, degraded: false }),
+      },
+    });
+    try {
+      const address = await app.listen({ host: "127.0.0.1", port: 0 });
+      const responses = await Promise.all(
+        Array.from({ length: 24 }, async (_, index) => {
+          const meta = {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": { name: `parallel-client-${index}`, version: "1.0.0" },
+            "io.modelcontextprotocol/clientCapabilities": {},
+          };
+          const response = await fetch(`${address}/mcp`, {
+            method: "POST",
+            headers: {
+              accept: "application/json, text/event-stream",
+              "content-type": "application/json",
+              "mcp-method": "tools/call",
+              "mcp-name": "system_status",
+              "mcp-protocol-version": "2026-07-28",
+            },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: `parallel-${index}`,
+              method: "tools/call",
+              params: { name: "system_status", arguments: {}, _meta: meta },
+            }),
+          });
+          expect(response.status).toBe(200);
+          return (await response.json()) as {
+            result?: { structuredContent?: { request_id?: string; toolset_hash?: string; policy_epoch?: number } };
+          };
+        }),
+      );
+
+      const requestIds = responses.map((response) => response.result?.structuredContent?.request_id);
+      expect(requestIds.every((requestId) => typeof requestId === "string")).toBe(true);
+      expect(new Set(requestIds).size).toBe(24);
+      for (const response of responses) {
+        expect(response.result?.structuredContent).toMatchObject({
+          toolset_hash: TOOLSET_HASH,
+          policy_epoch: runtime.config.policy_epoch,
+        });
+      }
+
+      const requestIdSet = new Set(requestIds);
+      const events = runtime.audit.recent(200).filter((event) => requestIdSet.has(String(event.request_id)));
+      expect(events.filter((event) => event.event_type === "request.accepted")).toHaveLength(24);
+      expect(events.filter((event) => event.event_type === "response.returned")).toHaveLength(24);
+    } finally {
+      await app.close();
+      await runtime.close();
+    }
+  });
+
   it("passes doctor and the full local smoke workflow", async () => {
     const { configPath } = fixture();
     const doctor = await runDoctor(configPath);
