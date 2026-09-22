@@ -164,24 +164,24 @@ export function buildAdminSnapshot(configPath: string, options: AdminSnapshotOpt
         timestamp: row.timestamp,
         metadata: JSON.parse(row.metadata_json),
       }));
+      const activeCutoff = new Date(Date.now() - 5 * 60_000).toISOString();
       const unmatched = db
         .prepare(
           `SELECT a.request_id,a.metadata_json,a.timestamp
            FROM audit_events a
            WHERE a.event_type='request.accepted'
+             AND a.timestamp >= ?
              AND NOT EXISTS (
                SELECT 1 FROM audit_events done
                WHERE done.request_id=a.request_id
                  AND done.event_type IN ('response.returned','request.aborted')
+                 AND done.timestamp >= ?
              )
            ORDER BY a.timestamp DESC
            LIMIT 100`,
         )
-        .all() as Array<{ request_id: string; metadata_json: string; timestamp: string }>;
-      const activeCutoff = Date.now() - 5 * 60_000;
-      activeRequests = unmatched
-        .filter((row) => new Date(row.timestamp).getTime() >= activeCutoff)
-        .map((row) => ({ request_id: row.request_id, timestamp: row.timestamp, metadata: JSON.parse(row.metadata_json) }));
+        .all(activeCutoff, activeCutoff) as Array<{ request_id: string; metadata_json: string; timestamp: string }>;
+      activeRequests = unmatched.map((row) => ({ request_id: row.request_id, timestamp: row.timestamp, metadata: JSON.parse(row.metadata_json) }));
       const processProjection = "process_id,target_id,backend,backend_ref,state,started_at,ended_at,reason";
       recentProcesses = db
         .prepare(

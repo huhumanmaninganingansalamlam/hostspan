@@ -152,6 +152,32 @@ describe("local admin snapshot", () => {
     expect(daemonStatus(configPath).running).toBe(false);
   });
 
+  it("limits active-request matching to the same recent window returned by the snapshot", () => {
+    const { configPath, dataDir } = fixture();
+    const db = openDatabase(join(dataDir, "state.db"));
+    const audit = new AuditRepo(db);
+    audit.append({ request_id: "req_recent_active", event_type: "request.accepted", metadata: { tool: "file_read" } });
+    audit.append({ request_id: "req_recent_done", event_type: "request.accepted", metadata: { tool: "file_list" } });
+    audit.append({ request_id: "req_recent_done", event_type: "response.returned", metadata: { tool: "file_list" } });
+    db.prepare(
+      "INSERT INTO audit_events(event_id,request_id,idempotency_key,process_id,event_type,metadata_json,timestamp) VALUES(?,?,?,?,?,?,?)",
+    ).run(
+      "evt_old_active",
+      "req_old_active",
+      null,
+      null,
+      "request.accepted",
+      JSON.stringify({ tool: "file_search" }),
+      new Date(Date.now() - 10 * 60_000).toISOString(),
+    );
+    db.close();
+
+    const snapshot = buildAdminSnapshot(configPath, { recent: 20 });
+    expect(snapshot.active_requests).toContainEqual(expect.objectContaining({ request_id: "req_recent_active" }));
+    expect(snapshot.active_requests).not.toContainEqual(expect.objectContaining({ request_id: "req_recent_done" }));
+    expect(snapshot.active_requests).not.toContainEqual(expect.objectContaining({ request_id: "req_old_active" }));
+  });
+
   it("keeps active PTY sessions visible outside the recent-process limit", () => {
     const { configPath, dataDir } = fixture();
     const db = openDatabase(join(dataDir, "state.db"));
