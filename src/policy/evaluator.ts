@@ -23,18 +23,34 @@ export class PolicyEvaluator {
   assertFileAllowed(target: TargetRuntime, relativePath: string, absolutePath: string, write = false): void {
     const normalized = relativePath.replaceAll("\\", "/");
     if (matchesAnyPolicyGlob(normalized, target.deny_globs)) {
-      throw new HostSpanError("SCOPE_DENIED", `Path is denied by target policy: ${relativePath}`);
+      throw new HostSpanError("SCOPE_DENIED", `Path is denied by target policy: ${relativePath}`, false, {
+        reason: "path_denied_by_policy",
+      });
     }
     if (write && this.protectedPaths.has(canonicalPolicyPath(absolutePath))) {
-      throw new HostSpanError("SCOPE_DENIED", "HostSpan admin configuration cannot be modified through MCP file tools.");
+      throw new HostSpanError("SCOPE_DENIED", "HostSpan admin configuration cannot be modified through MCP file tools.", false, {
+        reason: "admin_config_mutation_denied",
+      });
     }
   }
 
   execProfile(target: TargetRuntime): ExecProfile {
-    if (!target.exec_profile) throw new HostSpanError("SCOPE_DENIED", `Target ${target.target_id} has no exec profile.`);
+    if (!target.exec_profile) {
+      throw new HostSpanError("SCOPE_DENIED", `Target ${target.target_id} has no exec profile.`, false, {
+        reason: "target_missing_exec_profile",
+      });
+    }
     const profile = this.config.exec_profiles[target.exec_profile];
-    if (!profile) throw new HostSpanError("TARGET_NOT_READY", `Exec profile ${target.exec_profile} is not configured.`);
-    if (profile.mode !== "native") throw new HostSpanError("POLICY_UNENFORCEABLE", "Alpha only supports native execution.");
+    if (!profile) {
+      throw new HostSpanError("TARGET_NOT_READY", `Exec profile ${target.exec_profile} is not configured.`, false, {
+        reason: "exec_profile_not_configured",
+      });
+    }
+    if (profile.mode !== "native") {
+      throw new HostSpanError("POLICY_UNENFORCEABLE", "Alpha only supports native execution.", false, {
+        reason: "exec_profile_mode_unsupported",
+      });
+    }
     return profile;
   }
 
@@ -42,20 +58,34 @@ export class PolicyEvaluator {
     const profile = this.execProfile(target);
     const program = argv[0];
     if (!program) {
-      throw new HostSpanError("SCOPE_DENIED", "Process argv must include a program.");
+      throw new HostSpanError("SCOPE_DENIED", "Process argv must include a program.", false, { reason: "missing_program" });
     }
     const hasTerminalAuthority = target.capabilities.includes("terminal");
     const explicitProgramPath =
       isAbsolute(program) || program.includes("/") || (process.platform === "win32" && program.includes("\\"));
     if (!hasTerminalAuthority && (explicitProgramPath || !profile.allowed_programs.includes(basename(program)))) {
-      throw new HostSpanError("SCOPE_DENIED", `Program is not allowed by exec profile: ${program ?? "<missing>"}`);
+      throw new HostSpanError("SCOPE_DENIED", `Program is not allowed by exec profile: ${program ?? "<missing>"}`, false, {
+        reason: "program_not_allowed",
+      });
     }
     if (!hasTerminalAuthority) {
       const deniedEnv = Object.keys(env).filter((key) => !profile.env_allowlist.includes(key));
-      if (deniedEnv.length) throw new HostSpanError("SCOPE_DENIED", `Environment variables are not allowed: ${deniedEnv.join(", ")}`);
+      if (deniedEnv.length) {
+        throw new HostSpanError("SCOPE_DENIED", `Environment variables are not allowed: ${deniedEnv.join(", ")}`, false, {
+          reason: "environment_not_allowed",
+        });
+      }
     }
-    if (deadlineMs > profile.max_deadline_ms) throw new HostSpanError("SCOPE_DENIED", "deadline_ms exceeds exec profile maximum.");
-    if (maxOutputBytes > profile.max_output_bytes) throw new HostSpanError("SCOPE_DENIED", "max_output_bytes exceeds exec profile maximum.");
+    if (deadlineMs > profile.max_deadline_ms) {
+      throw new HostSpanError("SCOPE_DENIED", "deadline_ms exceeds exec profile maximum.", false, {
+        reason: "deadline_exceeds_profile",
+      });
+    }
+    if (maxOutputBytes > profile.max_output_bytes) {
+      throw new HostSpanError("SCOPE_DENIED", "max_output_bytes exceeds exec profile maximum.", false, {
+        reason: "output_limit_exceeds_profile",
+      });
+    }
     return profile;
   }
 }

@@ -284,7 +284,7 @@ describe("security and operational boundaries", () => {
           },
           "req_env",
         ),
-      ).rejects.toMatchObject({ code: "SCOPE_DENIED" });
+      ).rejects.toMatchObject({ code: "SCOPE_DENIED", details: { reason: "environment_not_allowed" } });
     } finally {
       await runtime.close();
     }
@@ -308,7 +308,7 @@ describe("security and operational boundaries", () => {
           },
           "req_exec_allowlist",
         ),
-      ).rejects.toMatchObject({ code: "SCOPE_DENIED" });
+      ).rejects.toMatchObject({ code: "SCOPE_DENIED", details: { reason: "program_not_allowed" } });
       await expect(
         runtime.handlers.process_start(
           {
@@ -323,7 +323,20 @@ describe("security and operational boundaries", () => {
           },
           "req_exec_explicit_path",
         ),
-      ).rejects.toMatchObject({ code: "SCOPE_DENIED" });
+      ).rejects.toMatchObject({ code: "SCOPE_DENIED", details: { reason: "program_not_allowed" } });
+
+      const aborted = runtime.audit.recent().find(
+        (event) => event.request_id === "req_exec_allowlist" && event.event_type === "request.aborted",
+      );
+      expect(aborted?.metadata).toMatchObject({
+        tool: "process_start",
+        stage: "handler",
+        error_code: "SCOPE_DENIED",
+        error_reason: "program_not_allowed",
+        retryable: false,
+      });
+      expect(JSON.stringify(aborted?.metadata)).not.toContain("bash");
+      expect(JSON.stringify(aborted?.metadata)).not.toContain("should-not-run");
     } finally {
       await runtime.close();
     }

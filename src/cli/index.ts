@@ -34,6 +34,7 @@ import type {
   SystemStatusInput,
   TargetListInput,
 } from "../mcp/schemas.js";
+import { auditErrorDiagnostics } from "../observability/error-diagnostics.js";
 import { HostSpanLogger } from "../observability/logger.js";
 import { buildSupportExport, writeSupportExportAtomic } from "../observability/support-export.js";
 import { PolicyEvaluator } from "../policy/evaluator.js";
@@ -335,7 +336,7 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
       audit.append({
         request_id: requestId,
         event_type: "request.aborted",
-        metadata: { tool, stage: "handler", error_code: known.code, total_ms: Date.now() - started },
+        metadata: { tool, stage: "handler", ...auditErrorDiagnostics(known), total_ms: Date.now() - started },
         ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
       });
       throw error;
