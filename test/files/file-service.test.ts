@@ -98,6 +98,25 @@ describe("file services", () => {
     expect(result.returned_range.bytes_scanned).toBeGreaterThan(64);
   });
 
+  it("stops scanning once max_bytes already caps the returned range", () => {
+    const { root, target } = fixture();
+    writeFileSync(join(root, "long-line.txt"), Buffer.alloc(2 * 1024 * 1024, 0x78));
+    const result = fileRead(target, {
+      path: "long-line.txt",
+      start_line: 1,
+      end_line: 1,
+      max_bytes: 4096,
+      include_sha256: false,
+    });
+    expect(result).toMatchObject({
+      binary: false,
+      returned_range: { start_line: 1, end_line: 1, bytes_scanned: 4096 },
+      truncated_before: false,
+      truncated_after: true,
+    });
+    expect("text" in result ? Buffer.byteLength(result.text) : 0).toBe(4096);
+  });
+
   it("fails boundedly when a requested line range would require an excessive scan", () => {
     const { root, target } = fixture();
     writeFileSync(join(root, "wide.txt"), "0123456789abcdef\n".repeat(32));

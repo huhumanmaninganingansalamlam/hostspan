@@ -101,17 +101,24 @@ function scanLineRange(
   dataStart: number,
   startLine: number,
   endLine: number,
+  maxReturnedBytes: number,
   scanLimitBytes: number,
 ): { start: number | null; end: number; scanned: number; binary: boolean; endedOnNewline: boolean } {
   let line = 1;
   let rangeStart: number | null = startLine === 1 ? dataStart : null;
   let rangeEnd: number | undefined;
+  let endedOnNewline = false;
   let position = dataStart;
   const chunk = Buffer.allocUnsafe(64 * 1024);
   const width = encoding === "utf-8" ? 1 : 2;
 
   while (position < size && rangeEnd === undefined) {
-    if (position - dataStart >= scanLimitBytes) {
+    const responseEnd = rangeStart === null ? undefined : Math.min(size, rangeStart + maxReturnedBytes);
+    if (responseEnd !== undefined && position >= responseEnd) {
+      rangeEnd = responseEnd;
+      break;
+    }
+    if (rangeStart === null && position - dataStart >= scanLimitBytes) {
       throw new HostSpanError(
         "SCOPE_DENIED",
         "file_read scan exceeded the bounded 64 MiB line-search window; narrow the location with file_search or request a smaller file.",
@@ -119,13 +126,21 @@ function scanLineRange(
         { reason: "file_read_scan_limit", max_scan_bytes: scanLimitBytes, scanned_bytes: position - dataStart },
       );
     }
-    let requested = Math.min(chunk.length, size - position, scanLimitBytes - (position - dataStart));
+    let requested = Math.min(chunk.length, size - position);
+    if (rangeStart === null) requested = Math.min(requested, scanLimitBytes - (position - dataStart));
+    else if (responseEnd !== undefined) requested = Math.min(requested, responseEnd - position);
     if (width === 2 && requested % 2 !== 0 && position + requested < size) requested -= 1;
     if (requested <= 0) break;
     const bytes = readSync(fd, chunk, 0, requested, position);
     if (!bytes) break;
     const usable = width === 2 ? bytes - (bytes % 2) : bytes;
     for (let index = 0; index < usable; index += width) {
+      const absolute = position + index;
+      const cappedEnd = rangeStart === null ? undefined : Math.min(size, rangeStart + maxReturnedBytes);
+      if (cappedEnd !== undefined && absolute >= cappedEnd) {
+        rangeEnd = cappedEnd;
+        break;
+      }
       if (encoding === "utf-8" && chunk[index] === 0) {
         return { start: rangeStart, end: position + index, scanned: position + index + 1, binary: true, endedOnNewline: false };
       }
@@ -139,6 +154,7 @@ function scanLineRange(
       const afterNewline = position + index + width;
       if (line === endLine) {
         rangeEnd = afterNewline;
+        endedOnNewline = true;
         break;
       }
       line += 1;
@@ -152,7 +168,7 @@ function scanLineRange(
     end: rangeEnd ?? size,
     scanned: Math.min(size, position),
     binary: false,
-    endedOnNewline: rangeEnd !== undefined,
+    endedOnNewline,
   };
 }
 
@@ -176,7 +192,8 @@ export function fileRead(target: TargetRuntime, input: FileReadInput, scanLimitB
     const stat = fstatSync(fd);
     if (!stat.isFile()) throw new HostSpanError("FILE_NOT_FOUND", `Not a regular file: ${input.path}`);
     const detected = detectTextEncoding(fd, stat.size);
-    const range = scanLineRange(fd, stat.size, detected.encoding, detected.dataStart, input.start_line, input.end_line, scanLimitBytes);
+    const maxReturnedBytes = detected.encoding === "utf-8" ? input.max_bytes : input.max_bytes - (input.max_bytes % 2);
+    const range = scanLineRange(fd, stat.size, detected.encoding, detected.dataStart, input.start_line, input.end_line, maxReturnedBytes, scanLimitBytes);
     const metadata = {
       path: path.relative,
       encoding: range.binary ? "binary" : detected.encoding,
