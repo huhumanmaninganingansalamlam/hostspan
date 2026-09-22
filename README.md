@@ -24,6 +24,12 @@ Every file/Git/process request names a persistent `target_id`; no ChatGPT sessio
 
 Linux x64 and macOS x64 use Unix PTYs and POSIX process groups. Native Windows x64 uses ConPTY plus a Job Object-backed process-tree controller. WSL2 remains a Linux runtime and is not counted as Windows qualification. Linux x64, native Windows x64, and native macOS x64 have passed the full Alpha core gate, installed CLI smoke, and packaged-runtime verification. macOS arm64 remains release-runner qualified rather than locally hardware-qualified. GUI/browser computer-use, multi-host routing, LSP/CodeGraph, and claims of sandboxed execution remain out of scope.
 
+## Hardening and optimization roadmap
+
+The current `hostspan-v3` behavior remains the shipping contract. Planned permission, performance, and future-contract changes are tracked separately in [Hardening and optimization roadmap](docs/ROADMAP.md) so documentation does not present future behavior as already implemented.
+
+The roadmap keeps the runtime small: tighten default authority, remove unnecessary model/tool round trips, optimize measured hot paths before adding caches, and preserve narrow backend seams so a future GUI computer-use provider can reuse the same policy/audit/lifecycle foundations without expanding today's public MCP surface.
+
 ## Requirements
 
 For the packaged desktop app, HostSpan bundles its Node/Electron runtime and ripgrep. Install Git only if you use `git_changes`.
