@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { createConnection, createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { loadConfig } from "../config/loader.js";
+import { HostSpanError } from "../mcp/errors.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
@@ -215,8 +216,11 @@ export async function stopDaemon(configPath: string): Promise<{ running: boolean
   if (!current.running || !current.pid) return { running: false, pid: null };
   const receipt = await requestDaemonShutdown(configPath);
   if (!receipt || receipt.pid !== current.pid) {
-    throw new Error(
+    throw new HostSpanError(
+      "VALIDATION_FAILED",
       `Refusing to signal pid ${current.pid}: the authenticated HostSpan daemon control channel did not confirm that process identity.`,
+      false,
+      { reason: "daemon_identity_unconfirmed", pid: current.pid },
     );
   }
   const deadline = Date.now() + 5_000;

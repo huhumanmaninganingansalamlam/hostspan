@@ -18,7 +18,7 @@ import { resolveTargetPath } from "../files/path-guard.js";
 import { fileRead } from "../files/read.js";
 import { fileSearch, SearchConcurrencyLimiter } from "../files/search.js";
 import { ripgrepExecutable } from "../files/ripgrep.js";
-import { asHostSpanError } from "../mcp/errors.js";
+import { asHostSpanError, HostSpanError } from "../mcp/errors.js";
 import { TOOL_NAMES, TOOLSET_HASH, toolsetDocument, type HostSpanToolHandlers } from "../mcp/registry.js";
 import { createHostSpanHttpServer, listenHostSpan } from "../mcp/server.js";
 import type {
@@ -122,6 +122,10 @@ function has(args: string[], name: string): boolean {
 
 function print(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function cliValidationError(message: string, details: Record<string, unknown> = {}): HostSpanError {
+  return new HostSpanError("VALIDATION_FAILED", message, false, details);
 }
 
 function cachedExecutableProbe(command: string, args: string[] = ["--version"], ttlMs = 5_000): () => boolean {
@@ -493,10 +497,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       print(daemonStatus(configPath));
       return 0;
     }
-    throw new Error("daemon requires start, stop, or status");
+    throw cliValidationError("daemon requires start, stop, or status");
   }
   if (command === "init") {
-    if (existsSync(configPath)) throw new Error(`config already exists: ${configPath}`);
+    if (existsSync(configPath)) throw cliValidationError(`config already exists: ${configPath}`);
     writeConfigAtomic(configPath, createInitialConfig());
     print({ ok: true, config_path: configPath, next: "hostspan targets add --id <target> --root <absolute-path>" });
     return 0;
@@ -510,9 +514,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const action = argv[1];
     const config = loadConfig(configPath);
     if (action === "init") {
-      if (config.oauth) throw new Error("OAuth is already configured. Use hostspan oauth rotate-secret to rotate credentials.");
+      if (config.oauth) throw cliValidationError("OAuth is already configured. Use hostspan oauth rotate-secret to rotate credentials.");
       const publicUrl = flag(argv, "--public-url");
-      if (!publicUrl) throw new Error("oauth init requires --public-url https://host/mcp");
+      if (!publicUrl) throw cliValidationError("oauth init requires --public-url https://host/mcp");
       const setup = createOAuthSetup(publicUrl);
       const hostname = new URL(setup.config.public_mcp_url).hostname;
       const allowedHosts = new Set(config.server.allowed_hosts ?? []);
@@ -547,7 +551,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       return 0;
     }
     if (action === "rotate-secret") {
-      if (!config.oauth) throw new Error("OAuth is not configured. Run hostspan oauth init first.");
+      if (!config.oauth) throw cliValidationError("OAuth is not configured. Run hostspan oauth init first.");
       const rotated = rotateOAuthApprovalSecret(config.oauth);
       config.oauth = rotated.config;
       config.policy_epoch += 1;
@@ -567,17 +571,17 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       });
       return 0;
     }
-    throw new Error("oauth requires init, status, or rotate-secret");
+    throw cliValidationError("oauth requires init, status, or rotate-secret");
   }
   if (command === "serve") {
     const existingDaemon = daemonStatus(configPath);
     if (existingDaemon.running && existingDaemon.pid !== process.pid) {
-      throw new Error(`HostSpan is already running with pid ${existingDaemon.pid}.`);
+      throw cliValidationError(`HostSpan is already running with pid ${existingDaemon.pid}.`);
     }
     const runtime = createRuntime(configPath);
     if (!isLoopbackHost(runtime.config.server.listen_host) && !runtime.oauth) {
       await runtime.close();
-      throw new Error("Non-loopback listen_host requires OAuth. Run hostspan oauth init --public-url https://<host>/mcp first.");
+      throw cliValidationError("Non-loopback listen_host requires OAuth. Run hostspan oauth init --public-url https://<host>/mcp first.");
     }
     const app = createHostSpanHttpServer({
       listen_host: runtime.config.server.listen_host,
@@ -669,23 +673,23 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     }
     if (action === "attach") {
       const processId = flag(argv, "--process") ?? argv[2];
-      if (!processId) throw new Error("terminal attach requires --process PROCESS_ID");
-      if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("terminal attach requires an interactive local terminal.");
+      if (!processId) throw cliValidationError("terminal attach requires --process PROCESS_ID");
+      if (!process.stdin.isTTY || !process.stdout.isTTY) throw new HostSpanError("TERMINAL_NOT_INTERACTIVE", "terminal attach requires an interactive local terminal.");
       const config = loadConfig(configPath);
-      if (!config.terminal) throw new Error("terminal support is not configured.");
+      if (!config.terminal) throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "terminal support is not configured.");
       const session = resolveTerminalSession(configPath, processId);
-      if (!session) throw new Error(`interactive process not found: ${processId}`);
+      if (!session) throw new HostSpanError("PROCESS_NOT_FOUND", `interactive process not found: ${processId}`, false, { process_id: processId });
       const manager = new PtySessionManager(config.server.data_dir, config.terminal);
       await manager.attach(session.session, has(argv, "--read-only"));
       return 0;
     }
-    throw new Error("terminal requires list or attach");
+    throw cliValidationError("terminal requires list or attach");
   }
   if (command === "smoke") {
     const targetId = flag(argv, "--target");
-    if (!targetId) throw new Error("smoke requires --target TARGET");
+    if (!targetId) throw cliValidationError("smoke requires --target TARGET", { reason: "missing_argument", argument: "--target" });
     if (daemonStatus(configPath).running) {
-      throw new Error("hostspan smoke requires the daemon to be stopped so validation cannot mutate live recovery state.");
+      throw cliValidationError("hostspan smoke requires the daemon to be stopped so validation cannot mutate live recovery state.", { reason: "daemon_running" });
     }
     const runtime = createRuntime(configPath);
     try {
@@ -707,7 +711,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     if (action === "add") {
       const targetId = flag(argv, "--id");
       const root = flag(argv, "--root");
-      if (!targetId || !root) throw new Error("targets add requires --id and --root");
+      if (!targetId || !root) throw cliValidationError("targets add requires --id and --root");
       const capabilities = (flag(argv, "--capabilities") ?? "read,write,exec,git").split(",").filter(Boolean) as Array<"read" | "write" | "exec" | "git" | "terminal">;
       const execProfile = flag(argv, "--exec-profile") ?? (capabilities.includes("exec") ? "native-dev" : undefined);
       print(
@@ -723,16 +727,17 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     }
     if (action === "remove") {
       const targetId = flag(argv, "--id") ?? argv[2];
-      if (!targetId || !config.targets[targetId]) throw new Error("targets remove requires an existing target id");
+      if (!targetId) throw cliValidationError("targets remove requires an existing target id", { reason: "missing_argument", argument: "--id" });
+      if (!config.targets[targetId]) throw new HostSpanError("TARGET_NOT_FOUND", `Unknown target_id: ${targetId}`, false, { target_id: targetId });
       print(removeLocalWorkspace(configPath, targetId));
       return 0;
     }
-    throw new Error("targets requires list, add, or remove");
+    throw cliValidationError("targets requires list, add, or remove");
   }
   if (command === "policy" && argv[1] === "validate") {
     const config = loadConfig(configPath);
     for (const [targetId, target] of Object.entries(config.targets)) {
-      if (target.exec_profile && !config.exec_profiles[target.exec_profile]) throw new Error(`target ${targetId} references missing exec profile ${target.exec_profile}`);
+      if (target.exec_profile && !config.exec_profiles[target.exec_profile]) throw cliValidationError(`target ${targetId} references missing exec profile ${target.exec_profile}`);
     }
     print({ ok: true, policy_epoch: config.policy_epoch, native_execution: true, sandboxed: false });
     return 0;
@@ -795,9 +800,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       print(result);
       return result.ok ? 0 : 1;
     }
-    throw new Error("service requires install|start|stop|restart|status");
+    throw cliValidationError("service requires install|start|stop|restart|status");
   }
-  throw new Error(`unknown command: ${command}`);
+  throw cliValidationError(`unknown command: ${command}`, { reason: "unknown_command", command });
 }
 
 function isDirectCliEntry(argvPath: string | undefined): boolean {
