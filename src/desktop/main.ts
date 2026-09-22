@@ -22,6 +22,7 @@ import { protectWindowsFile, protectWindowsTree } from "../security/windows-acl.
 import { prepareDesktopEnvironment } from "./environment.js";
 import { ensureDesktopConfig } from "./first-run.js";
 import { trayMenuStateKey } from "./tray-menu-state.js";
+import { DEFAULT_WORKSPACE_CAPABILITIES, defaultWorkspaceCapability } from "./workspace-capabilities.js";
 
 declare global {
   interface Window {
@@ -258,11 +259,11 @@ function html(): string {
     <div class="field"><label class="title">Target ID <span class="muted">(optional)</span></label><input id="wsId" type="text" placeholder="Auto-generated from folder name"></div>
     <div class="field"><label class="title">Label <span class="muted">(optional)</span></label><input id="wsLabel" type="text" placeholder="Uses folder name"></div>
     <div class="field"><label class="title">Capabilities</label><div class="caps">
-      <label><input type="checkbox" data-cap="read" checked> Read</label>
-      <label><input type="checkbox" data-cap="write" checked> Write</label>
-      <label><input type="checkbox" data-cap="exec" checked> Exec</label>
-      <label><input type="checkbox" data-cap="git" checked> Git</label>
-      <label><input type="checkbox" data-cap="terminal" checked> Interactive terminal</label>
+      <label><input type="checkbox" data-cap="read"${defaultWorkspaceCapability("read") ? " checked" : ""}> Read</label>
+      <label><input type="checkbox" data-cap="write"${defaultWorkspaceCapability("write") ? " checked" : ""}> Write</label>
+      <label><input type="checkbox" data-cap="exec"${defaultWorkspaceCapability("exec") ? " checked" : ""}> Exec</label>
+      <label><input type="checkbox" data-cap="git"${defaultWorkspaceCapability("git") ? " checked" : ""}> Git</label>
+      <label><input type="checkbox" data-cap="terminal"${defaultWorkspaceCapability("terminal") ? " checked" : ""}> Interactive terminal</label>
     </div><div class="muted" style="margin-top:6px">Interactive terminal grants full native terminal authority as your OS user.</div></div>
     <div class="row" style="justify-content:flex-end"><button id="cancelWorkspace" type="button" class="secondary">Cancel</button><button id="saveWorkspace" type="button">Save</button></div>
   </form>
@@ -270,6 +271,7 @@ function html(): string {
 </main>
 <script>
 let snapshot;
+const defaultWorkspaceCapabilities=${JSON.stringify(DEFAULT_WORKSPACE_CAPABILITIES)};
 const e=id=>document.getElementById(id);
 const esc=v=>String(v??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const short=v=>String(v??'').slice(0,12);
@@ -283,7 +285,7 @@ function resetWorkspaceDialog(){
   e('wsLabel').value='';
   e('wsId').placeholder='Auto-generated from folder name';
   e('wsLabel').placeholder='Uses folder name';
-  document.querySelectorAll('[data-cap]').forEach(input=>{input.checked=true});
+  document.querySelectorAll('[data-cap]').forEach(input=>{input.checked=defaultWorkspaceCapabilities.includes(input.dataset.cap)});
 }
 function updateWorkspaceSuggestions(path){
   e('wsId').placeholder='Auto: '+targetIdFromPath(path);
