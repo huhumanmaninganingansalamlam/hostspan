@@ -26,7 +26,7 @@ const SAFE_ERROR_REASONS = new Set([
   "unknown_command",
 ]);
 
-const SAFE_ERROR_RESOURCES = new Set(["file_search", "process_output_spool"]);
+const SAFE_ERROR_RESOURCES = new Set(["file_search", "git_changes", "process_output_spool"]);
 
 export function auditErrorDiagnostics(error: HostSpanError): Record<string, unknown> {
   const metadata: Record<string, unknown> = {

@@ -45,6 +45,21 @@ describe("audit error diagnostics", () => {
     });
   });
 
+  it("records Git saturation as a safe resource without queue internals", () => {
+    const error = new HostSpanError("SERVER_BUSY", "Git inspection capacity is saturated.", true, {
+      resource: "git_changes",
+      active: 4,
+      queued: 8,
+      repository: "/private/repo",
+    });
+
+    expect(auditErrorDiagnostics(error)).toEqual({
+      error_code: "SERVER_BUSY",
+      retryable: true,
+      error_resource: "git_changes",
+    });
+  });
+
   it("records the safe Git filter policy reason without leaking repository details", () => {
     const error = new HostSpanError("POLICY_UNENFORCEABLE", "private filter command", false, {
       reason: "git_content_filter_unsafe",

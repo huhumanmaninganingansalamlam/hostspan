@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { HostSpanError } from "../mcp/errors.js";
+import { BoundedConcurrencyLimiter } from "../runtime/concurrency-limiter.js";
 import { matchesAnyPolicyGlob } from "../policy/glob.js";
 import type { TargetRuntime } from "../targets/registry.js";
 import { resolveTargetPath } from "./path-guard.js";
@@ -18,6 +19,19 @@ const GIT_READ_ONLY_ARGS = [
   "-c",
   "core.fsmonitor=false",
 ] as const;
+
+
+export class GitConcurrencyLimiter extends BoundedConcurrencyLimiter {
+  constructor(maxConcurrent: number, maxQueued: number, queueTimeoutMs: number) {
+    super({
+      maxConcurrent,
+      maxQueued,
+      queueTimeoutMs,
+      resource: "git_changes",
+      label: "Git inspection",
+    });
+  }
+}
 
 interface GitStatusEntry {
   status: string;

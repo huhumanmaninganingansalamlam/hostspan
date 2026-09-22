@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { relative, resolve } from "node:path";
 import { statSync } from "node:fs";
 import { HostSpanError } from "../mcp/errors.js";
+import { BoundedConcurrencyLimiter } from "../runtime/concurrency-limiter.js";
 import type { TargetRuntime } from "../targets/registry.js";
 import { resolveTargetPath } from "./path-guard.js";
 import { ripgrepExecutable } from "./ripgrep.js";
@@ -10,81 +11,14 @@ import { matchesAnyPolicyGlob } from "../policy/glob.js";
 
 const execFileAsync = promisify(execFile);
 
-interface SearchWaiter {
-  resolve: () => void;
-  reject: (error: HostSpanError) => void;
-  timer: NodeJS.Timeout;
-}
-
-export class SearchConcurrencyLimiter {
-  private active = 0;
-  private readonly queue: SearchWaiter[] = [];
-
-  constructor(
-    private readonly maxConcurrent: number,
-    private readonly maxQueued: number,
-    private readonly queueTimeoutMs: number,
-  ) {}
-
-  snapshot(): { active: number; queued: number; max_concurrent: number; max_queued: number } {
-    return {
-      active: this.active,
-      queued: this.queue.length,
-      max_concurrent: this.maxConcurrent,
-      max_queued: this.maxQueued,
-    };
-  }
-
-  async run<T>(operation: () => Promise<T>): Promise<T> {
-    await this.acquire();
-    try {
-      return await operation();
-    } finally {
-      this.release();
-    }
-  }
-
-  private async acquire(): Promise<void> {
-    if (this.active < this.maxConcurrent) {
-      this.active += 1;
-      return;
-    }
-    if (this.queue.length >= this.maxQueued) {
-      throw this.busyError();
-    }
-    await new Promise<void>((resolve, reject) => {
-      const waiter: SearchWaiter = {
-        resolve: () => {
-          clearTimeout(waiter.timer);
-          this.active += 1;
-          resolve();
-        },
-        reject,
-        timer: setTimeout(() => {
-          const index = this.queue.indexOf(waiter);
-          if (index >= 0) this.queue.splice(index, 1);
-          reject(this.busyError());
-        }, this.queueTimeoutMs),
-      };
-      waiter.timer.unref();
-      this.queue.push(waiter);
-    });
-  }
-
-  private release(): void {
-    this.active = Math.max(0, this.active - 1);
-    const next = this.queue.shift();
-    next?.resolve();
-  }
-
-  private busyError(): HostSpanError {
-    return new HostSpanError("SERVER_BUSY", "Search capacity is saturated; retry after a short delay.", true, {
+export class SearchConcurrencyLimiter extends BoundedConcurrencyLimiter {
+  constructor(maxConcurrent: number, maxQueued: number, queueTimeoutMs: number) {
+    super({
+      maxConcurrent,
+      maxQueued,
+      queueTimeoutMs,
       resource: "file_search",
-      active: this.active,
-      queued: this.queue.length,
-      max_concurrent: this.maxConcurrent,
-      max_queued: this.maxQueued,
-      queue_timeout_ms: this.queueTimeoutMs,
+      label: "Search",
     });
   }
 }

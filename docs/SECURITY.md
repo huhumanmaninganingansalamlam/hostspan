@@ -111,6 +111,7 @@ HostSpan fails bounded rather than spawning unbounded work under request bursts:
 
 - `/mcp` admits at most `server.max_inflight_mcp_requests` requests at once (128 by default); excess HTTP requests receive `503` plus `Retry-After: 1`.
 - `file_search` admits at most `server.max_concurrent_searches` ripgrep children (8 by default), queues at most `server.max_queued_searches` (16), and returns retryable `SERVER_BUSY` when the queue is full or waits longer than `server.search_queue_timeout_ms` (1 second).
+- `git_changes` admits at most `server.max_concurrent_git_changes` inspections (4 by default), queues at most `server.max_queued_git_changes` (8), and returns retryable `SERVER_BUSY` when the queue is full or waits longer than `server.git_queue_timeout_ms` (1 second). Each admitted inspection may run a small bounded set of read-only Git plumbing commands, so this separate limit prevents Git child-process amplification under multi-agent bursts.
 - `process_start` remains separately bounded per target by the selected exec profile's `max_concurrent_processes`.
 - PTY-backed interactive sessions are separately bounded by `terminal.max_concurrent_sessions` (16 by default) per target.
 - `system_status` and readiness use lightweight SQLite responsiveness checks; full `PRAGMA integrity_check` remains in `hostspan doctor` rather than running on every status request.

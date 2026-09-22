@@ -120,6 +120,9 @@ export const HostSpanConfigSchema = z
         max_concurrent_searches: z.number().int().min(1).max(64).optional(),
         max_queued_searches: z.number().int().min(0).max(1024).optional(),
         search_queue_timeout_ms: z.number().int().min(1).max(30_000).optional(),
+        max_concurrent_git_changes: z.number().int().min(1).max(64).optional(),
+        max_queued_git_changes: z.number().int().min(0).max(1024).optional(),
+        git_queue_timeout_ms: z.number().int().min(1).max(30_000).optional(),
       })
       .strict()
       .superRefine((server, context) => {

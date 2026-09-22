@@ -85,7 +85,7 @@ Readiness http://127.0.0.1:39393/readyz
 
 The default bind is loopback-only, but `server.listen_host` is configurable for LAN/container/reverse-proxy deployments. Host header validation remains enabled for every bind. **Any non-loopback HostSpan server additionally requires built-in OAuth and fails closed when OAuth is missing.** `readyz` represents server/database readiness; missing ripgrep is reported as degraded so non-search tools stay usable, while `file_search` returns `SEARCH_BACKEND_UNAVAILABLE`.
 
-HostSpan also applies local overload and retention boundaries so several agents cannot amplify one burst into unbounded host work. Defaults are 128 in-flight MCP requests, 8 concurrent ripgrep searches, 16 queued searches, and a 1-second search queue timeout. Search overflow returns retryable `SERVER_BUSY`; process execution is independently bounded by each exec profile's `max_concurrent_processes`. Durable audit history is bounded by both `audit_days` and `max_audit_events` (500,000 by default). Completed process output expires after 60 minutes by default, the retained spool budget defaults to 1 GiB, and old operation response payloads are compacted after 14 days without deleting their idempotency-key tombstones. Once those payloads and retained output are gone, redundant completed process/patch detail rows are also pruned while the operation tombstone remains.
+HostSpan also applies local overload and retention boundaries so several agents cannot amplify one burst into unbounded host work. Defaults are 128 in-flight MCP requests, 8 concurrent ripgrep searches with 16 queued, and 4 concurrent Git inspections with 8 queued; both queues time out after 1 second. Search or Git inspection overflow returns retryable `SERVER_BUSY`; process execution is independently bounded by each exec profile's `max_concurrent_processes`. Durable audit history is bounded by both `audit_days` and `max_audit_events` (500,000 by default). Completed process output expires after 60 minutes by default, the retained spool budget defaults to 1 GiB, and old operation response payloads are compacted after 14 days without deleting their idempotency-key tombstones. Once those payloads and retained output are gone, redundant completed process/patch detail rows are also pruned while the operation tombstone remains.
 
 ```yaml
 server:
@@ -93,6 +93,9 @@ server:
   max_concurrent_searches: 8
   max_queued_searches: 16
   search_queue_timeout_ms: 1000
+  max_concurrent_git_changes: 4
+  max_queued_git_changes: 8
+  git_queue_timeout_ms: 1000
 
 retention:
   completed_process_output_ttl_minutes: 60
