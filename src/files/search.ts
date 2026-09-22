@@ -147,7 +147,8 @@ export async function fileSearch(target: TargetRuntime, input: FileSearchInput) 
       maxBuffer: input.max_bytes + 64 * 1024,
     }));
   } catch (error) {
-    const cause = error as NodeJS.ErrnoException & { code?: string | number; stdout?: string; killed?: boolean; signal?: NodeJS.Signals | null };
+    const cause = error as NodeJS.ErrnoException & { code?: string | number; stdout?: string; stderr?: string; killed?: boolean; signal?: NodeJS.Signals | null };
+    const stderr = cause.stderr ?? "";
     if (cause.code === "ENOENT") throw new HostSpanError("SEARCH_BACKEND_UNAVAILABLE", "ripgrep is required but not available.", true);
     if (String(cause.code) === "1") stdout = cause.stdout ?? "";
     else if (cause.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw new HostSpanError("SEARCH_SCOPE_TOO_BROAD", "Search output exceeded max_bytes; narrow the scope.");
@@ -155,6 +156,18 @@ export async function fileSearch(target: TargetRuntime, input: FileSearchInput) 
       throw new HostSpanError("DEADLINE_EXCEEDED", "Search exceeded its deadline.", true, {
         resource: "file_search",
         deadline_ms: input.deadline_ms,
+      });
+    }
+    else if (/regex parse error:/i.test(stderr)) {
+      throw new HostSpanError("VALIDATION_FAILED", "Search query is not a valid regular expression.", false, {
+        resource: "file_search",
+        reason: "invalid_regex",
+      });
+    }
+    else if (/error parsing glob/i.test(stderr)) {
+      throw new HostSpanError("VALIDATION_FAILED", "Search glob is invalid.", false, {
+        resource: "file_search",
+        reason: "invalid_glob",
       });
     }
     else throw new HostSpanError("SEARCH_BACKEND_UNAVAILABLE", `ripgrep failed: ${error instanceof Error ? error.message : String(error)}`, true);

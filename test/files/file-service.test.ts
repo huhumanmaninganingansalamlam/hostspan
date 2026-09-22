@@ -320,6 +320,47 @@ describe("file services", () => {
     ).rejects.toEqual(expect.objectContaining<Partial<HostSpanError>>({ code: "FILE_NOT_FOUND" }));
   });
 
+  it("reports an invalid search regex as VALIDATION_FAILED", async () => {
+    const { target } = fixture();
+    await expect(
+      fileSearch(target, {
+        query: "fileList(",
+        paths: ["."],
+        context_before: 0,
+        context_after: 0,
+        max_matches: 10,
+        max_bytes: 4096,
+        deadline_ms: 1000,
+      }),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<HostSpanError>>({
+        code: "VALIDATION_FAILED",
+        details: expect.objectContaining({ reason: "invalid_regex" }),
+      }),
+    );
+  });
+
+  it("reports an invalid search glob as VALIDATION_FAILED", async () => {
+    const { target } = fixture();
+    await expect(
+      fileSearch(target, {
+        query: "needle",
+        glob: "[",
+        paths: ["."],
+        context_before: 0,
+        context_after: 0,
+        max_matches: 10,
+        max_bytes: 4096,
+        deadline_ms: 1000,
+      }),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<HostSpanError>>({
+        code: "VALIDATION_FAILED",
+        details: expect.objectContaining({ reason: "invalid_glob" }),
+      }),
+    );
+  });
+
   it("rejects match-all searches before invoking ripgrep", async () => {
     const { target } = fixture();
     await expect(
