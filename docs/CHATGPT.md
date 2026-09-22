@@ -123,12 +123,6 @@ ChatGPT may cache tool names/descriptions/schemas. `hostspan-v3` intentionally k
 
 A breaking contract must use a new toolset version rather than silently changing `hostspan-v3`.
 
-## Current behavior versus planned hardening
-
-The current Developer Mode contract is still `hostspan-v3`; future defaults and a future breaking contract must not be inferred from the roadmap. In particular, the current desktop Add Workspace flow defaults to `read`, `write`, `exec`, and `git` while `terminal` is opt-in, and current `exec`-only targets still enforce their configured executable/environment allowlists.
-
-The planned direction is documented in [Hardening and optimization roadmap](ROADMAP.md): new workspaces should begin with `read` authority only; explicitly enabling trusted `exec` should not require users to register normal developer CLIs one by one; a restricted executable-allowlist profile remains an optional policy mode rather than the default trusted-development workflow. These changes are not active until their implementation task lands and the relevant release is installed.
-
 ## Interactive terminal use
 
 Targets with the explicit `terminal` capability may start `process_start` with `tty=true`. ChatGPT then uses the same durable `process_id` with `process_poll`, `process_write`, and `process_cancel`. `process_write` can send text, control keys such as `C-c`, and resize updates, and every write carries its own UUIDv7 idempotency key. The HostSpan PTY session worker survives daemon restart; an ambiguous write that crosses a crash boundary is reported as unknown rather than replayed automatically.
