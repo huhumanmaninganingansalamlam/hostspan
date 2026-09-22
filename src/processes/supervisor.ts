@@ -185,10 +185,7 @@ export class ProcessSupervisor {
 
   async reconcileInteractiveProcesses(targetId?: string): Promise<void> {
     if (!this.options.terminal) return;
-    const active = this.options.processes
-      .active()
-      .filter((record) => record.backend === "pty" && (targetId === undefined || record.target_id === targetId));
-    for (const record of active) await this.syncInteractiveState(record.process_id);
+    for (const record of this.options.processes.activeInteractive(targetId)) await this.syncInteractiveState(record.process_id);
   }
 
   private async terminateInteractive(

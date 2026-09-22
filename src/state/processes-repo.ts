@@ -89,6 +89,12 @@ export class ProcessesRepo {
     return this.db.prepare("SELECT * FROM processes WHERE state IN ('accepted','launching','running')").all() as ProcessRecord[];
   }
 
+  activeInteractive(targetId?: string): ProcessRecord[] {
+    const base = "SELECT * FROM processes WHERE state IN ('accepted','launching','running') AND backend='pty'";
+    if (targetId === undefined) return this.db.prepare(base).all() as ProcessRecord[];
+    return this.db.prepare(`${base} AND target_id=?`).all(targetId) as ProcessRecord[];
+  }
+
   activeCount(): number {
     return (this.db.prepare("SELECT count(*) AS count FROM processes WHERE state IN ('accepted','launching','running')").get() as { count: number }).count;
   }

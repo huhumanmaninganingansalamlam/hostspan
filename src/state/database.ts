@@ -58,6 +58,16 @@ const REQUIRED_COLUMNS: Record<(typeof CURRENT_TABLES)[number], readonly string[
   oauth_refresh_tokens: ["token_hash", "client_id", "scope", "resource", "expires_at", "revoked_at"],
 };
 
+function ensurePerformanceIndexes(db: HostSpanDatabase): void {
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS processes_active_backend_target_idx
+      ON processes(backend,target_id,started_at,process_id)
+      WHERE state IN ('accepted','launching','running');
+    CREATE INDEX IF NOT EXISTS processes_activity_idx
+      ON processes(COALESCE(started_at,ended_at) DESC,process_id DESC);
+  `);
+}
+
 function currentSchemaVersion(db: HostSpanDatabase): number | null {
   const meta = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='meta'").get() as { name: string } | undefined;
   if (!meta) return null;
@@ -172,6 +182,7 @@ export function openDatabase(path: string): HostSpanDatabase {
     db.pragma("foreign_keys = ON");
     if (!existed || userTableNames(db).length === 0) initializeCurrentSchema(db);
     else validateCurrentSchema(db);
+    ensurePerformanceIndexes(db);
     db.pragma("journal_mode = WAL");
   } catch (error) {
     db.close();

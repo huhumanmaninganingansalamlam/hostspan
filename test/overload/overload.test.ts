@@ -9,6 +9,7 @@ import type { HostSpanToolHandlers } from "../../src/mcp/registry.js";
 import { createHostSpanHttpServer } from "../../src/mcp/server.js";
 import { AuditRepo } from "../../src/state/audit-repo.js";
 import { DB_SCHEMA_VERSION, databaseHealthy, databaseResponsive, openDatabase } from "../../src/state/database.js";
+import { ProcessesRepo } from "../../src/state/processes-repo.js";
 
 const roots: string[] = [];
 
@@ -120,6 +121,59 @@ describe("overload stability", () => {
     }
   });
 
+  it("keeps periodic process lookups off retained process history scans", () => {
+    const root = mkdtempSync(join(tmpdir(), "hostspan-process-indexes-"));
+    roots.push(root);
+    const db = openDatabase(join(root, "state.db"));
+    try {
+      const activePlan = db
+        .prepare(
+          "EXPLAIN QUERY PLAN SELECT * FROM processes WHERE state IN ('accepted','launching','running') AND backend='pty' AND target_id=?",
+        )
+        .all("local") as Array<{ detail: string }>;
+      expect(activePlan.map((row) => row.detail).join("\n")).toContain("processes_active_backend_target_idx");
+
+      const activeListPlan = db
+        .prepare("EXPLAIN QUERY PLAN SELECT * FROM processes WHERE state IN ('accepted','launching','running') ORDER BY started_at DESC")
+        .all() as Array<{ detail: string }>;
+      expect(activeListPlan.map((row) => row.detail).join("\n")).toContain("processes_active_backend_target_idx");
+
+      const activeCountPlan = db
+        .prepare("EXPLAIN QUERY PLAN SELECT count(*) AS count FROM processes WHERE state IN ('accepted','launching','running')")
+        .all() as Array<{ detail: string }>;
+      expect(activeCountPlan.map((row) => row.detail).join("\n")).toContain("processes_active_backend_target_idx");
+
+      const recentPlan = db
+        .prepare("EXPLAIN QUERY PLAN SELECT * FROM processes ORDER BY COALESCE(started_at,ended_at) DESC LIMIT 40")
+        .all() as Array<{ detail: string }>;
+      expect(recentPlan.map((row) => row.detail).join("\n")).toContain("processes_activity_idx");
+
+      const processes = new ProcessesRepo(db);
+      processes.create({
+        process_id: "proc_native_active",
+        idempotency_key: "0199e78d-4c00-7000-8000-000000000921",
+        target_id: "local",
+        argv_digest: "sha256:native",
+        cwd_relative: ".",
+      });
+      processes.markRunning("proc_native_active", 100, 100);
+      processes.create({
+        process_id: "proc_pty_active",
+        idempotency_key: "0199e78d-4c00-7000-8000-000000000922",
+        target_id: "local",
+        argv_digest: "sha256:pty",
+        cwd_relative: ".",
+        backend: "pty",
+      });
+      processes.markRunning("proc_pty_active", 101, null);
+      expect(processes.activeInteractive().map((record) => record.process_id)).toEqual(["proc_pty_active"]);
+      expect(processes.activeInteractive("local").map((record) => record.process_id)).toEqual(["proc_pty_active"]);
+      expect(processes.activeInteractive("other")).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("reopens the current WAL database without creating a side-copy backup", () => {
     const root = mkdtempSync(join(tmpdir(), "hostspan-current-db-"));
     roots.push(root);
@@ -128,11 +182,18 @@ describe("overload stability", () => {
     first
       .prepare("INSERT INTO audit_events(event_id,request_id,event_type,metadata_json,timestamp) VALUES(?,?,?,?,?)")
       .run("evt_current", "req_current", "test", "{}", new Date().toISOString());
+    first.exec("DROP INDEX processes_active_backend_target_idx; DROP INDEX processes_activity_idx;");
     first.close();
 
     const reopened = openDatabase(path);
     try {
       expect((reopened.prepare("SELECT count(*) AS count FROM audit_events WHERE event_id='evt_current'").get() as { count: number }).count).toBe(1);
+      const indexes = new Set(
+        (reopened.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'processes_%_idx'").all() as Array<{ name: string }>).map(
+          (row) => row.name,
+        ),
+      );
+      expect(indexes).toEqual(new Set(["processes_active_backend_target_idx", "processes_activity_idx"]));
       expect(existsSync(`${path}.bak`)).toBe(false);
     } finally {
       reopened.close();
