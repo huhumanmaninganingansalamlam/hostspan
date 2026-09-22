@@ -23,7 +23,7 @@ describe("desktop first-run config", () => {
 
     expect(ensureDesktopConfig(configPath)).toEqual({ created: true, config_path: configPath });
     const first = HostSpanConfigSchema.parse(parseYaml(readFileSync(configPath, "utf8")));
-    expect(first.terminal).toMatchObject({ backend: "pty", max_concurrent_sessions: 4 });
+    expect(first.terminal).toMatchObject({ backend: "pty", max_concurrent_sessions: 16 });
     expect(first.targets).toEqual({});
 
     expect(ensureDesktopConfig(configPath)).toEqual({ created: false, config_path: configPath });

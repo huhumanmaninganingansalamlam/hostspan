@@ -24,7 +24,7 @@ export function createInitialConfig(): HostSpanConfig {
     },
     terminal: {
       backend: "pty",
-      max_concurrent_sessions: 4,
+      max_concurrent_sessions: 16,
       attach_history_bytes: 65_536,
       max_output_bytes: 16_777_216,
     },

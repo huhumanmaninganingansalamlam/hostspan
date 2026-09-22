@@ -61,7 +61,7 @@ export const PolicyGlobSchema = z
 export const TerminalConfigSchema = z
   .object({
     backend: z.literal("pty").default("pty"),
-    max_concurrent_sessions: z.number().int().positive().max(64).default(4),
+    max_concurrent_sessions: z.number().int().positive().max(64).default(16),
     attach_history_bytes: z.number().int().min(0).max(4 * 1024 * 1024).default(65_536),
     max_output_bytes: z.number().int().positive().max(268_435_456).default(16_777_216),
   })
