@@ -12,6 +12,16 @@ export function serviceExecutionPath(nodePath = process.execPath, inheritedPath 
   return [...new Set(entries)].join(delimiter);
 }
 
+export function buildSystemdServiceUnit(
+  configPath: string,
+  cliPath = process.argv[1] ?? "hostspan",
+  nodePath = process.execPath,
+  inheritedPath = process.env.PATH ?? "",
+): string {
+  const executable = cliPath === "hostspan" ? "hostspan" : resolve(cliPath);
+  return `[Unit]\nDescription=HostSpan MCP execution gateway\nAfter=network-online.target\n\n[Service]\nType=simple\nKillMode=process\nEnvironment=${systemdQuote(`PATH=${serviceExecutionPath(nodePath, inheritedPath)}`)}\nExecStart=${systemdQuote(nodePath)} ${systemdQuote(executable)} serve --config ${systemdQuote(resolve(configPath))}\nRestart=on-failure\nRestartSec=2\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n`;
+}
+
 function systemctl(args: string[]): { ok: boolean; output: string } {
   const result = spawnSync("systemctl", ["--user", ...args], { encoding: "utf8" });
   return {
@@ -32,8 +42,7 @@ export function installSystemdService(configPath: string, cliPath = process.argv
   if (process.platform !== "linux") return { ok: false, unit_path: serviceUnitPath(), output: "Alpha service management supports systemd on Linux/WSL2 only." };
   const unitPath = serviceUnitPath();
   mkdirSync(dirname(unitPath), { recursive: true, mode: 0o700 });
-  const executable = cliPath === "hostspan" ? "hostspan" : resolve(cliPath);
-  const unit = `[Unit]\nDescription=HostSpan MCP execution gateway\nAfter=network-online.target\n\n[Service]\nType=simple\nEnvironment=${systemdQuote(`PATH=${serviceExecutionPath()}`)}\nExecStart=${systemdQuote(process.execPath)} ${systemdQuote(executable)} serve --config ${systemdQuote(resolve(configPath))}\nRestart=on-failure\nRestartSec=2\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n`;
+  const unit = buildSystemdServiceUnit(configPath, cliPath);
   writeFileSync(unitPath, unit, { mode: 0o600 });
   chmodSync(unitPath, 0o600);
   const reload = systemctl(["daemon-reload"]);

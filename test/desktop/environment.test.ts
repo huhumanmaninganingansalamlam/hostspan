@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { serviceExecutionPath, systemdServiceInstalled } from "../../src/cli/service.js";
+import { buildSystemdServiceUnit, serviceExecutionPath, systemdServiceInstalled } from "../../src/cli/service.js";
 import { extractMarkedPath, mergePathValues } from "../../src/desktop/environment.js";
 
 describe("desktop environment", () => {
@@ -39,5 +39,14 @@ describe("desktop environment", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it.runIf(process.platform === "linux")("preserves PTY workers across systemd daemon restart", () => {
+    const runtimeDir = join(process.cwd(), "runtime", "bin");
+    const nodePath = join(runtimeDir, "node");
+    const inherited = ["/custom/bin", runtimeDir, "/usr/bin"].join(delimiter);
+    const unit = buildSystemdServiceUnit("/tmp/hostspan config.yaml", "/tmp/hostspan cli.js", nodePath, inherited);
+    expect(unit).toContain("\nKillMode=process\n");
+    expect(unit).toContain(`Environment="PATH=${[runtimeDir, "/custom/bin", "/usr/bin"].join(delimiter)}"`);
   });
 });
