@@ -333,6 +333,16 @@ export class ProcessSupervisor {
     const stderr = interactive
       ? { text: "", next_cursor: stderrCursor, earliest_cursor: 0, bytes_returned: 0 }
       : spool.read("stderr", stderrCursor, perStream);
+    const outputBytes = record.stdout_bytes + record.stderr_bytes;
+    const outputBudget =
+      record.max_output_bytes !== null && record.max_output_bytes > 0
+        ? {
+            scope: "process_lifetime",
+            limit_bytes: record.max_output_bytes,
+            used_bytes: outputBytes,
+            remaining_bytes: Math.max(0, record.max_output_bytes - outputBytes),
+          }
+        : undefined;
     return {
       state: record.state,
       process_id: processId,
@@ -346,6 +356,7 @@ export class ProcessSupervisor {
       output_expires_at: record.output_expires_at,
       backend: record.backend,
       interactive,
+      ...(outputBudget ? { output_budget: outputBudget } : {}),
       ...(interactive && record.backend_ref && this.options.terminal
         ? {
             terminal_session: record.backend_ref,

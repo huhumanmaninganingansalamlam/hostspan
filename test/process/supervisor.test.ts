@@ -136,6 +136,12 @@ describe("process supervisor", () => {
     const result = await supervisor.start(startInput(), "req_short");
     expect(result.state).toBe("succeeded");
     expect(result.stdout).toBe("ok");
+    expect(result.output_budget).toEqual({
+      scope: "process_lifetime",
+      limit_bytes: 1024 * 1024,
+      used_bytes: 2,
+      remaining_bytes: 1024 * 1024 - 2,
+    });
     expect(result.native_execution).toBe(true);
     expect(result.sandboxed).toBe(false);
   });
@@ -351,6 +357,12 @@ describe("process supervisor", () => {
     );
     expect(capped.state).toBe("failed");
     expect(capped.reason).toBe("output_limit");
+    expect(capped.output_budget).toEqual({
+      scope: "process_lifetime",
+      limit_bytes: 128,
+      used_bytes: 128,
+      remaining_bytes: 0,
+    });
     expect(Buffer.byteLength(String(capped.stdout))).toBeLessThanOrEqual(128);
   });
 });

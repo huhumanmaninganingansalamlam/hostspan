@@ -216,6 +216,11 @@ describe("durable interactive PTY process backend", () => {
     expect(started.backend).toBe("pty");
     expect(String(started.human_attach_command)).toContain("hostspan terminal attach --process");
     expect(String(started.human_attach_read_only_command)).toContain("--read-only");
+    const startedBudget = started.output_budget as Record<string, unknown>;
+    expect(startedBudget.scope).toBe("process_lifetime");
+    expect(startedBudget.limit_bytes).toBe(1024 * 1024);
+    expect(Number(startedBudget.used_bytes)).toBeGreaterThan(0);
+    expect(startedBudget.remaining_bytes).toBe(1024 * 1024 - Number(startedBudget.used_bytes));
 
     const cursor = Number(started.next_stdout_cursor ?? 0);
     const writeInput: ProcessWriteToolInput = {
@@ -249,6 +254,11 @@ describe("durable interactive PTY process backend", () => {
     }
     expect(transcript).toContain("HELLO world");
     expect(current.state).toBe("succeeded");
+    const completedBudget = current.output_budget as Record<string, unknown>;
+    expect(completedBudget.scope).toBe("process_lifetime");
+    expect(completedBudget.limit_bytes).toBe(1024 * 1024);
+    expect(Number(completedBudget.used_bytes)).toBeGreaterThanOrEqual(Number(startedBudget.used_bytes));
+    expect(completedBudget.remaining_bytes).toBe(1024 * 1024 - Number(completedBudget.used_bytes));
     db.close();
   });
 
