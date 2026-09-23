@@ -1,15 +1,18 @@
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { v7 as uuidv7 } from "uuid";
+import { main } from "../../src/cli/index.js";
 import type { HostSpanConfig } from "../../src/config/schema.js";
+import { writeConfigAtomic } from "../../src/config/writer.js";
 import type { ProcessWriteToolInput } from "../../src/mcp/schemas.js";
 import { PolicyEvaluator } from "../../src/policy/evaluator.js";
 import { PtySessionManager } from "../../src/processes/pty-session.js";
 import { recoverProcesses } from "../../src/processes/recovery.js";
 import { ProcessSupervisor } from "../../src/processes/supervisor.js";
-import { openDatabase } from "../../src/state/database.js";
+import { claimRuntimeGeneration, openDatabase, runtimeGeneration } from "../../src/state/database.js";
 import { OperationsRepo } from "../../src/state/operations-repo.js";
 import { ProcessesRepo } from "../../src/state/processes-repo.js";
 import { TargetRegistry } from "../../src/targets/registry.js";
@@ -54,7 +57,7 @@ afterEach(async () => {
   }
 });
 
-function fixture(terminalCapability = true, maxConcurrentSessions = 2) {
+function fixture(terminalCapability = true, maxConcurrentSessions = 2, requireOwnership = false, listenPort = 39393) {
   const root = mkdtempSync(join(tmpdir(), "hostspan-pty-"));
   roots.push(root);
   const targetRoot = join(root, "target");
@@ -63,7 +66,7 @@ function fixture(terminalCapability = true, maxConcurrentSessions = 2) {
   const config: HostSpanConfig = {
     schema_version: 1,
     policy_epoch: 1,
-    server: { listen_host: "127.0.0.1", listen_port: 39393, data_dir: dataDir },
+    server: { listen_host: "127.0.0.1", listen_port: listenPort, data_dir: dataDir },
     retention: {
       completed_process_output_ttl_minutes: 60,
       operation_result_days: 14,
@@ -100,6 +103,8 @@ function fixture(terminalCapability = true, maxConcurrentSessions = 2) {
       },
     },
   };
+  const configPath = join(root, "config.yaml");
+  writeConfigAtomic(configPath, config);
   const db = openDatabase(join(dataDir, "state.db"));
   databases.push(db);
   const operations = new OperationsRepo(db);
@@ -107,7 +112,7 @@ function fixture(terminalCapability = true, maxConcurrentSessions = 2) {
   const targets = new TargetRegistry(config);
   const terminalConfig = config.terminal;
   if (!terminalConfig) throw new Error("terminal fixture configuration is missing");
-  const terminal = new PtySessionManager(dataDir, terminalConfig);
+  const terminal = new PtySessionManager(dataDir, terminalConfig, { requireOwnership });
   const supervisor = new ProcessSupervisor({
     config,
     targets,
@@ -116,7 +121,7 @@ function fixture(terminalCapability = true, maxConcurrentSessions = 2) {
     processes,
     terminal,
   });
-  return { root, config, db, operations, processes, targets, terminal, supervisor };
+  return { root, configPath, config, db, operations, processes, targets, terminal, supervisor };
 }
 
 function ttyInput(script: string, deadlineMs = 10_000, waitMs = 300) {
@@ -342,6 +347,76 @@ describe("durable interactive PTY process backend", () => {
     expect(cancelled.state).toBe("cancelled");
     expect(first.terminal.inspectSync(session)).toMatchObject({ exists: true, dead: true, reason: "cancel_requested" });
     db.close();
+  });
+
+  it("does not claim PTY runtime ownership when serve cannot bind", async () => {
+    const blocker = createServer();
+    await new Promise<void>((resolveListen, rejectListen) => {
+      const onError = (error: Error) => rejectListen(error);
+      blocker.once("error", onError);
+      blocker.listen(0, "127.0.0.1", () => {
+        blocker.off("error", onError);
+        resolveListen();
+      });
+    });
+    const address = blocker.address();
+    if (!address || typeof address === "string") throw new Error("test blocker did not return a TCP port");
+    const setup = fixture(true, 2, true, address.port);
+    expect(runtimeGeneration(setup.db)).toBe(0);
+    setup.db.close();
+
+    try {
+      await expect(main(["serve", "--config", setup.configPath])).rejects.toMatchObject({ code: "EADDRINUSE" });
+    } finally {
+      await new Promise<void>((resolveClose) => blocker.close(() => resolveClose()));
+    }
+
+    const check = openDatabase(join(setup.config.server.data_dir, "state.db"));
+    try {
+      expect(runtimeGeneration(check)).toBe(0);
+    } finally {
+      check.close();
+    }
+  });
+
+  it("fences stale PTY owners after runtime generation takeover", async () => {
+    const first = fixture(true, 2, true);
+    const terminalConfig = first.config.terminal;
+    if (!terminalConfig) throw new Error("terminal fixture configuration is missing");
+    const generation1 = claimRuntimeGeneration(first.db);
+    first.terminal.activateOwnership(generation1);
+    const script = [
+      "process.stdin.setEncoding('utf8');",
+      "console.log('READY');",
+      "process.stdin.on('data',chunk=>{console.log('GOT:'+chunk.trim());process.exit(0);});",
+    ].join("");
+    const started = await first.supervisor.start(ttyInput(script, 10_000, 300), "req_pty_owner_start");
+    const session = String(started.terminal_session);
+    sessions.push({ terminal: first.terminal, session });
+
+    const secondTerminal = new PtySessionManager(first.config.server.data_dir, terminalConfig, { requireOwnership: true });
+    const generation2 = claimRuntimeGeneration(first.db);
+    expect(generation2).toBe(generation1 + 1);
+    secondTerminal.activateOwnership(generation2);
+    const tracked = sessions[sessions.length - 1];
+    if (tracked) tracked.terminal = secondTerminal;
+
+    await expect(first.terminal.write(session, { chars: "stale", control_keys: ["Enter"] })).rejects.toMatchObject({
+      code: "SERVER_BUSY",
+      retryable: true,
+      details: { resource: "pty_runtime", reason: "stale_runtime_owner" },
+    });
+    await expect(first.terminal.close(session, 50)).rejects.toMatchObject({
+      code: "SERVER_BUSY",
+      details: { resource: "pty_runtime", reason: "stale_runtime_owner" },
+    });
+
+    await expect(secondTerminal.write(session, { chars: "fresh", control_keys: ["Enter"] })).resolves.toBeUndefined();
+    const exited = await secondTerminal.waitForExitStatus(session, process.platform === "win32" ? 5_000 : 2_000);
+    expect(exited).toMatchObject({ exists: true, dead: true });
+    const stdout = readFileSync(join(first.config.server.data_dir, "spools", "processes", String(started.process_id), "stdout.bin"), "utf8");
+    expect(stdout).toContain("GOT:fresh");
+    first.db.close();
   });
 
   it("kills PTY descendants when process_cancel terminates an interactive session", async () => {

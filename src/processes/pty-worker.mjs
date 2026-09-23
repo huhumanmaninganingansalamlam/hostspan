@@ -58,6 +58,23 @@ function replaceStatusFile(temp, destination) {
   }
 }
 
+function currentOwnerGeneration() {
+  if (!spec.ownerPath) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(spec.ownerPath, "utf8"));
+    const generation = Number(parsed.generation);
+    return Number.isSafeInteger(generation) && generation > 0 ? generation : null;
+  } catch {
+    return null;
+  }
+}
+
+function ownerGenerationIsCurrent(generation) {
+  if (!spec.ownerPath) return true;
+  const current = currentOwnerGeneration();
+  return Number.isSafeInteger(generation) && generation > 0 && current === generation;
+}
+
 function writeStatus(fields) {
   const payload = {
     schema_version: 1,
@@ -69,6 +86,7 @@ function writeStatus(fields) {
     rows,
     output_bytes: outputBytes,
     ipc_token: spec.ipcToken,
+    owner_generation: spec.ownerPath ? currentOwnerGeneration() : null,
     updated_at: new Date().toISOString(),
     ...fields,
   };
@@ -133,6 +151,11 @@ function appendOutput(data) {
       attached.delete(socket);
       continue;
     }
+    if (socket.hostspanOwnerGeneration !== undefined && !ownerGenerationIsCurrent(socket.hostspanOwnerGeneration)) {
+      socket.destroy();
+      attached.delete(socket);
+      continue;
+    }
     if (socket.writableLength > 1024 * 1024) {
       socket.destroy();
       attached.delete(socket);
@@ -190,6 +213,11 @@ async function handleRequest(socket, request, rest) {
     socket.end(`${JSON.stringify({ ok: false, error: "unauthorized" })}\n`);
     return;
   }
+  const mutating = request.op === "write" || request.op === "terminate" || (request.op === "attach" && !request.read_only);
+  if (mutating && !ownerGenerationIsCurrent(request.owner_generation)) {
+    socket.end(`${JSON.stringify({ ok: false, error: "stale_owner" })}\n`);
+    return;
+  }
   if (request.op === "write") {
     if (finished) {
       socket.end(`${JSON.stringify({ ok: false, error: "session_exited" })}\n`);
@@ -230,8 +258,22 @@ async function handleRequest(socket, request, rest) {
     socket.on("close", () => attached.delete(socket));
     socket.on("error", () => attached.delete(socket));
     if (!request.read_only) {
-      if (rest.length) ptyProcess.write(rest.toString("utf8"));
-      socket.on("data", (chunk) => ptyProcess.write(chunk.toString("utf8")));
+      const ownerGeneration = request.owner_generation;
+      socket.hostspanOwnerGeneration = ownerGeneration;
+      if (rest.length) {
+        if (!ownerGenerationIsCurrent(ownerGeneration)) {
+          socket.destroy();
+          return;
+        }
+        ptyProcess.write(rest.toString("utf8"));
+      }
+      socket.on("data", (chunk) => {
+        if (!ownerGenerationIsCurrent(ownerGeneration)) {
+          socket.destroy();
+          return;
+        }
+        ptyProcess.write(chunk.toString("utf8"));
+      });
     }
     return;
   }

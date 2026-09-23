@@ -210,6 +210,29 @@ export function openMemoryDatabase(): HostSpanDatabase {
   return db;
 }
 
+export function claimRuntimeGeneration(db: HostSpanDatabase): number {
+  const claim = db.transaction(() => {
+    const row = db.prepare("SELECT value FROM meta WHERE key='runtime_generation'").get() as { value: string } | undefined;
+    const current = row ? Number(row.value) : 0;
+    if (!Number.isSafeInteger(current) || current < 0 || current >= Number.MAX_SAFE_INTEGER) {
+      throw new Error(`invalid HostSpan runtime generation: ${row?.value ?? "<missing>"}`);
+    }
+    const next = current + 1;
+    db.prepare(
+      `INSERT INTO meta(key,value) VALUES('runtime_generation', ?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+    ).run(String(next));
+    return next;
+  });
+  return claim.immediate();
+}
+
+export function runtimeGeneration(db: HostSpanDatabase): number {
+  const row = db.prepare("SELECT value FROM meta WHERE key='runtime_generation'").get() as { value: string } | undefined;
+  const generation = row ? Number(row.value) : 0;
+  return Number.isSafeInteger(generation) && generation >= 0 ? generation : 0;
+}
+
 export function databaseHealthy(db: HostSpanDatabase): boolean {
   const row = db.pragma("integrity_check", { simple: true });
   return row === "ok";

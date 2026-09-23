@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +28,7 @@ interface WorkerStatus {
   rows: number;
   output_bytes: number;
   ipc_token: string;
+  owner_generation?: number | null;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -56,12 +57,57 @@ function shellQuote(value: string): string {
 export class PtySessionManager implements InteractiveSessionManager {
   readonly backend = "pty" as const;
   private readonly workerPath = fileURLToPath(new URL("./pty-worker.mjs", import.meta.url));
+  private ownerGeneration: number | null = null;
+  private readonly requireOwnership: boolean;
 
   constructor(
     private readonly dataDir: string,
     private readonly config: TerminalConfig,
+    options: { requireOwnership?: boolean } = {},
   ) {
+    this.requireOwnership = options.requireOwnership ?? false;
     mkdirSync(join(dataDir, "sessions"), { recursive: true, mode: 0o700 });
+  }
+
+  activateOwnership(generation: number): void {
+    if (!Number.isSafeInteger(generation) || generation <= 0) throw new Error(`invalid PTY runtime generation: ${generation}`);
+    const path = this.runtimeOwnerPath();
+    const current = this.readRuntimeOwnerGeneration();
+    if (current !== null && current > generation) throw new Error(`cannot replace PTY runtime generation ${current} with stale generation ${generation}`);
+    const temp = `${path}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`;
+    try {
+      writeFileSync(temp, `${JSON.stringify({ schema_version: 1, generation })}\n`, { mode: 0o600 });
+      chmodSync(temp, 0o600);
+      renameSync(temp, path);
+      chmodSync(path, 0o600);
+    } finally {
+      rmSync(temp, { force: true });
+    }
+    this.ownerGeneration = generation;
+  }
+
+  currentOwnerGeneration(): number | null {
+    return this.readRuntimeOwnerGeneration();
+  }
+
+  private mutationGeneration(): number | undefined {
+    const current = this.readRuntimeOwnerGeneration();
+    if (this.ownerGeneration !== null) {
+      if (current !== this.ownerGeneration) {
+        throw new HostSpanError("SERVER_BUSY", "PTY runtime ownership changed; reconnect to the active HostSpan daemon.", true, {
+          resource: "pty_runtime",
+          reason: "stale_runtime_owner",
+        });
+      }
+      return this.ownerGeneration;
+    }
+    if (this.requireOwnership) {
+      throw new HostSpanError("SERVER_BUSY", "PTY runtime ownership is not active yet.", true, {
+        resource: "pty_runtime",
+        reason: "runtime_ownership_inactive",
+      });
+    }
+    return current ?? undefined;
   }
 
   sessionName(processId: string): string {
@@ -89,6 +135,7 @@ export class PtySessionManager implements InteractiveSessionManager {
     for (const key of Object.keys(input.env)) {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new HostSpanError("SCOPE_DENIED", `Invalid terminal environment variable name: ${key}`);
     }
+    const ownerGeneration = this.mutationGeneration();
     const session = this.sessionName(input.processId);
     const sessionDir = this.sessionDir(session);
     rmSync(sessionDir, { recursive: true, force: true });
@@ -110,6 +157,7 @@ export class PtySessionManager implements InteractiveSessionManager {
         attachHistoryBytes: this.config.attach_history_bytes,
         socketPath: this.socketPath(session),
         ipcToken,
+        ...(ownerGeneration === undefined ? {} : { ownerGeneration, ownerPath: this.runtimeOwnerPath() }),
         maxOutputBytes: Math.min(input.maxOutputBytes, this.config.max_output_bytes),
       })}\n`,
       { mode: 0o600 },
@@ -214,6 +262,7 @@ export class PtySessionManager implements InteractiveSessionManager {
   closeSync(session: string): void {
     const status = this.readStatus(session);
     if (!status || status.status === "exited" || status.status === "failed") return;
+    this.mutationGeneration();
     const pid = status.pty_pid;
     if (pid) {
       if (process.platform === "win32") {
@@ -305,6 +354,7 @@ export class PtySessionManager implements InteractiveSessionManager {
     const state = this.inspectSync(session);
     if (!state.exists) throw new Error(`PTY session is no longer available: ${session}`);
     if (state.dead) throw new Error(`PTY session has already exited: ${session}`);
+    const ownerGeneration = readOnly ? undefined : this.mutationGeneration();
     await new Promise<void>((resolve, reject) => {
       const socket = createConnection(this.socketPath(session));
       let acknowledged = false;
@@ -319,12 +369,12 @@ export class PtySessionManager implements InteractiveSessionManager {
       const close = () => socket.destroy();
       const resize = () => {
         if (readOnly || !process.stdout.isTTY) return;
-        void this.write(session, {
+        void this.request(session, {
           chars: "",
           control_keys: [],
           columns: process.stdout.columns,
           rows: process.stdout.rows,
-        }).catch(() => undefined);
+        }, ownerGeneration).catch(() => undefined);
       };
       socket.once("connect", () => {
         const status = this.readStatus(session);
@@ -333,7 +383,7 @@ export class PtySessionManager implements InteractiveSessionManager {
           reject(new Error("PTY session authentication state is unavailable"));
           return;
         }
-        socket.write(`${JSON.stringify({ op: "attach", read_only: readOnly, token: status.ipc_token })}\n`);
+        socket.write(`${JSON.stringify({ op: "attach", read_only: readOnly, token: status.ipc_token, ...(ownerGeneration === undefined ? {} : { owner_generation: ownerGeneration }) })}\n`);
       });
       socket.on("data", (chunk) => {
         if (!acknowledged) {
@@ -343,7 +393,7 @@ export class PtySessionManager implements InteractiveSessionManager {
           const response = JSON.parse(header.subarray(0, newline).toString("utf8")) as { ok: boolean; error?: string };
           if (!response.ok) {
             socket.destroy();
-            reject(new Error(response.error ?? "attach failed"));
+            reject(response.error === "stale_owner" ? new HostSpanError("SERVER_BUSY", "PTY runtime ownership changed; reconnect to the active HostSpan daemon.", true, { resource: "pty_runtime", reason: "stale_runtime_owner" }) : new Error(response.error ?? "attach failed"));
             return;
           }
           acknowledged = true;
@@ -382,7 +432,7 @@ export class PtySessionManager implements InteractiveSessionManager {
     });
   }
 
-  private request(session: string, payload: Record<string, unknown>): Promise<void> {
+  private request(session: string, payload: Record<string, unknown>, ownerGeneration = this.mutationGeneration()): Promise<void> {
     return new Promise((resolve, reject) => {
       const status = this.readStatus(session);
       if (!status?.ipc_token) {
@@ -396,7 +446,7 @@ export class PtySessionManager implements InteractiveSessionManager {
         reject(new Error("PTY worker request timed out"));
       }, 5_000);
       timer.unref();
-      socket.once("connect", () => socket.write(`${JSON.stringify({ ...payload, token: status.ipc_token })}\n`));
+      socket.once("connect", () => socket.write(`${JSON.stringify({ ...payload, token: status.ipc_token, ...(ownerGeneration === undefined ? {} : { owner_generation: ownerGeneration }) })}\n`));
       socket.on("data", (chunk) => {
         buffer += chunk.toString("utf8");
         const newline = buffer.indexOf("\n");
@@ -405,7 +455,12 @@ export class PtySessionManager implements InteractiveSessionManager {
         const response = JSON.parse(buffer.slice(0, newline)) as { ok: boolean; error?: string };
         socket.end();
         if (response.ok) resolve();
-        else reject(new Error(response.error ?? "PTY worker request failed"));
+        else if (response.error === "stale_owner") {
+          reject(new HostSpanError("SERVER_BUSY", "PTY runtime ownership changed; reconnect to the active HostSpan daemon.", true, {
+            resource: "pty_runtime",
+            reason: "stale_runtime_owner",
+          }));
+        } else reject(new Error(response.error ?? "PTY worker request failed"));
       });
       socket.once("error", (error) => {
         clearTimeout(timer);
@@ -428,6 +483,27 @@ export class PtySessionManager implements InteractiveSessionManager {
       if (attempt < 4) sleepSync(5);
     }
     return undefined;
+  }
+
+  private readRuntimeOwnerGeneration(): number | null {
+    const path = this.runtimeOwnerPath();
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      if (existsSync(path)) {
+        try {
+          const parsed = JSON.parse(readFileSync(path, "utf8")) as { generation?: unknown };
+          const generation = Number(parsed.generation);
+          return Number.isSafeInteger(generation) && generation > 0 ? generation : null;
+        } catch {
+          // Atomic replacement can briefly race a Windows reader.
+        }
+      }
+      if (attempt < 4) sleepSync(5);
+    }
+    return null;
+  }
+
+  private runtimeOwnerPath(): string {
+    return join(this.dataDir, "sessions", "runtime-owner.json");
   }
 
   private missingSnapshot(): InteractiveSessionSnapshot {

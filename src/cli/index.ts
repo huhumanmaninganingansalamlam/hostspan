@@ -46,6 +46,7 @@ import { recoverProcesses } from "../processes/recovery.js";
 import { ProcessSupervisor } from "../processes/supervisor.js";
 import { AuditRepo } from "../state/audit-repo.js";
 import {
+  claimRuntimeGeneration,
   databaseResponsive,
   openDatabase,
   openMemoryDatabase,
@@ -84,6 +85,7 @@ export interface HostSpanRuntime {
   oauthRepo: OAuthRepo;
   oauth?: OAuthService;
   handlers: HostSpanToolHandlers;
+  activateSessionOwnership(): number | null;
   close(): Promise<void>;
 }
 
@@ -191,7 +193,10 @@ function isLoopbackHost(host: string): boolean {
   return ["127.0.0.1", "localhost", "::1"].includes(host.toLowerCase());
 }
 
-export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime {
+export function createRuntime(
+  configPath = defaultConfigPath(),
+  options: { deferSessionOwnership?: boolean } = {},
+): HostSpanRuntime {
   const resolvedConfigPath = resolve(configPath);
   const config = loadConfig(resolvedConfigPath);
   protectWindowsFile(resolvedConfigPath);
@@ -218,14 +223,28 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
   recoverPatchTransactions(targets, transactions);
   const removedPatchJournals = cleanupTerminalPatchJournals(transactions);
   if (removedPatchJournals.length) logger.info("patch.journals_cleaned", { count: removedPatchJournals.length });
-  const terminal = config.terminal ? new PtySessionManager(config.server.data_dir, config.terminal) : undefined;
-  const recoveredProcesses = recoverProcesses(
-    processes,
-    operations,
-    terminal,
-    config.retention.completed_process_output_ttl_minutes,
-  );
-  for (const recovered of recoveredProcesses) logger.info("process.recovered", recovered);
+  const terminal = config.terminal
+    ? new PtySessionManager(config.server.data_dir, config.terminal, { requireOwnership: true })
+    : undefined;
+  let sessionOwnershipActive = !terminal;
+  let runtimeGeneration: number | null = null;
+  const activateSessionOwnership = (): number | null => {
+    if (!terminal) return null;
+    if (sessionOwnershipActive) return runtimeGeneration;
+    const generation = claimRuntimeGeneration(db);
+    terminal.activateOwnership(generation);
+    runtimeGeneration = generation;
+    const recoveredProcesses = recoverProcesses(
+      processes,
+      operations,
+      terminal,
+      config.retention.completed_process_output_ttl_minutes,
+    );
+    for (const recovered of recoveredProcesses) logger.info("process.recovered", recovered);
+    sessionOwnershipActive = true;
+    return generation;
+  };
+  if (!options.deferSessionOwnership) activateSessionOwnership();
   const runRetentionMaintenance = () => {
     const now = new Date().toISOString();
     const removedPatchJournals = cleanupTerminalPatchJournals(transactions);
@@ -282,10 +301,10 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
   let processMaintenanceInflight = Promise.resolve();
   let closeRuntimePromise: Promise<void> | undefined;
   const processMaintenanceTimer = setInterval(() => {
-    if (closing) return;
+    if (closing || !sessionOwnershipActive) return;
     processMaintenanceInflight = processMaintenanceInflight
       .then(async () => {
-        if (closing) return;
+        if (closing || !sessionOwnershipActive) return;
         await supervisor.reconcileInteractiveProcesses();
       })
       .catch((error) => {
@@ -459,6 +478,7 @@ export function createRuntime(configPath = defaultConfigPath()): HostSpanRuntime
     oauthRepo,
     ...(oauth ? { oauth } : {}),
     handlers,
+    activateSessionOwnership,
     close: () => {
       if (closeRuntimePromise) return closeRuntimePromise;
       closing = true;
@@ -589,7 +609,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     if (existingDaemon.running && existingDaemon.pid !== process.pid) {
       throw cliValidationError(`HostSpan is already running with pid ${existingDaemon.pid}.`);
     }
-    const runtime = createRuntime(configPath);
+    const runtime = createRuntime(configPath, { deferSessionOwnership: true });
     if (!isLoopbackHost(runtime.config.server.listen_host) && !runtime.oauth) {
       await runtime.close();
       throw cliValidationError("Non-loopback listen_host requires OAuth. Run hostspan oauth init --public-url https://<host>/mcp first.");
@@ -608,12 +628,29 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       },
       trace: (event, metadata) => runtime.logger.info(event, metadata),
     });
-    const address = await listenHostSpan(app, runtime.config.server.listen_host, runtime.config.server.listen_port);
+    let address: string;
+    try {
+      address = await listenHostSpan(app, runtime.config.server.listen_host, runtime.config.server.listen_port);
+    } catch (error) {
+      await app.close().catch(() => undefined);
+      await runtime.close();
+      throw error;
+    }
     let requestShutdown!: () => void;
     const shutdownRequested = new Promise<void>((resolveShutdown) => {
       requestShutdown = resolveShutdown;
     });
-    const control = await startDaemonControlServer(configPath, requestShutdown);
+    const control = await (async () => {
+      try {
+        const started = await startDaemonControlServer(configPath, requestShutdown);
+        runtime.activateSessionOwnership();
+        return started;
+      } catch (error) {
+        await app.close().catch(() => undefined);
+        await runtime.close();
+        throw error;
+      }
+    })();
     const shutdown = async () => {
       try {
         await runtime.supervisor.shutdown();
