@@ -305,8 +305,32 @@ describe("file services", () => {
       max_bytes: 300,
       deadline_ms: 5_000,
     });
-    expect(result.truncated).toBe(true);
+    expect(result).toMatchObject({
+      truncated: true,
+      truncation_reason: "max_bytes",
+    });
+    expect(result.returned_record_bytes).toBeLessThanOrEqual(300);
     expect(Buffer.byteLength(JSON.stringify(result.matches), "utf8")).toBeLessThanOrEqual(320);
+  });
+
+  it("reports max_matches as the search truncation reason", async () => {
+    const { root, target } = fixture();
+    writeFileSync(join(root, "many-matches.txt"), Array.from({ length: 10 }, (_, index) => `needle-${index}`).join("\n"));
+    const result = await fileSearch(target, {
+      query: "needle",
+      paths: ["."],
+      context_before: 0,
+      context_after: 0,
+      max_matches: 2,
+      max_bytes: 64 * 1024,
+      deadline_ms: 5_000,
+    });
+    expect(result).toMatchObject({
+      match_count: 2,
+      truncated: true,
+      truncation_reason: "max_matches",
+    });
+    expect(result.returned_record_bytes).toBeGreaterThan(0);
   });
 
   it("returns an empty result when ripgrep finds no matches", async () => {

@@ -110,6 +110,7 @@ export async function fileSearch(target: TargetRuntime, input: FileSearchInput) 
   let matches = 0;
   let returnedBytes = 0;
   let responseTruncated = false;
+  let truncationReason: "max_bytes" | "max_matches" | "backend_output" | undefined;
   for (const line of stdout.split("\n")) {
     if (!line) continue;
     const event = JSON.parse(line) as RipgrepEvent;
@@ -133,6 +134,7 @@ export async function fileSearch(target: TargetRuntime, input: FileSearchInput) 
     const recordBytes = Buffer.byteLength(JSON.stringify(record), "utf8");
     if (returnedBytes + recordBytes > input.max_bytes) {
       responseTruncated = true;
+      truncationReason = "max_bytes";
       break;
     }
     records.push(record);
@@ -140,13 +142,18 @@ export async function fileSearch(target: TargetRuntime, input: FileSearchInput) 
     if (event.type === "match") matches += 1;
     if (matches >= input.max_matches) {
       responseTruncated = true;
+      truncationReason = "max_matches";
       break;
     }
   }
+  const backendOutputTruncated = Buffer.byteLength(stdout) > input.max_bytes;
+  if (!truncationReason && backendOutputTruncated) truncationReason = "backend_output";
   return {
     matches: records,
     match_count: matches,
-    truncated: responseTruncated || Buffer.byteLength(stdout) > input.max_bytes,
+    returned_record_bytes: returnedBytes,
+    truncated: responseTruncated || backendOutputTruncated,
+    ...(truncationReason ? { truncation_reason: truncationReason } : {}),
     backend: "ripgrep",
     binary: "ignored",
     hidden: false,
