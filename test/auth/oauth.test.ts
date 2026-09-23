@@ -216,7 +216,7 @@ describe("OAuth protected MCP", () => {
       expect(resourceMetadata.json()).toMatchObject({
         resource: "https://mcp.example.com/mcp",
         authorization_servers: ["https://mcp.example.com/"],
-        scopes_supported: ["hostspan"],
+        scopes_supported: ["hostspan.read", "hostspan.write", "hostspan.exec", "hostspan.terminal"],
       });
 
       const serverMetadata = await app.inject({
@@ -230,7 +230,7 @@ describe("OAuth protected MCP", () => {
         token_endpoint: "https://mcp.example.com/token",
         registration_endpoint: "https://mcp.example.com/register",
         code_challenge_methods_supported: ["S256"],
-        scopes_supported: ["hostspan"],
+        scopes_supported: ["hostspan.read", "hostspan.write", "hostspan.exec", "hostspan.terminal"],
       });
       expect(serverMetadata.json()).not.toHaveProperty("authorization_response_iss_parameter_supported");
 

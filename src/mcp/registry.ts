@@ -1,7 +1,16 @@
 import { createHash } from "node:crypto";
-import type { McpServer, ToolAnnotations } from "@modelcontextprotocol/server";
+import type { McpServer, ServerContext, ToolAnnotations } from "@modelcontextprotocol/server";
 import { z } from "zod";
+import {
+  HOSTSPAN_OAUTH_SCOPE_EXEC,
+  HOSTSPAN_OAUTH_SCOPE_READ,
+  HOSTSPAN_OAUTH_SCOPE_TERMINAL,
+  HOSTSPAN_OAUTH_SCOPE_WRITE,
+  oauthScopesGrant,
+  type HostSpanOAuthScope,
+} from "../auth/oauth-scopes.js";
 import { TOOLSET_VERSION } from "../version.js";
+import { HostSpanError } from "./errors.js";
 import { errorResult, requestId, successResult, type ResponseContext } from "./result.js";
 import {
   FileListInputSchema,
@@ -175,75 +184,146 @@ export interface HostSpanToolHandlers {
   process_cancel(input: ProcessCancelToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
 }
 
+export interface HostSpanToolAuthorization {
+  processBackend(processId: string): "native" | "pty" | undefined;
+}
+
 export type ResponseContextProvider = () => ResponseContext;
+
+function requestOAuthScopes(context: ServerContext): readonly string[] | undefined {
+  return context.http?.authInfo?.scopes;
+}
+
+function requireOAuthScope(context: ServerContext, requiredScope: HostSpanOAuthScope): void {
+  const grantedScopes = requestOAuthScopes(context);
+  if (!grantedScopes || oauthScopesGrant(grantedScopes, requiredScope)) return;
+  throw new HostSpanError("SCOPE_DENIED", `OAuth scope ${requiredScope} is required for this tool.`, false, {
+    reason: "oauth_scope",
+    required_scope: requiredScope,
+    granted_scopes: [...grantedScopes],
+  });
+}
+
+function requireAnyOAuthScope(context: ServerContext, requiredScopes: readonly HostSpanOAuthScope[]): void {
+  const grantedScopes = requestOAuthScopes(context);
+  if (!grantedScopes || requiredScopes.some((scope) => oauthScopesGrant(grantedScopes, scope))) return;
+  throw new HostSpanError("SCOPE_DENIED", "A process mutation OAuth scope is required for this tool.", false, {
+    reason: "oauth_scope",
+    required_scopes: [...requiredScopes],
+    granted_scopes: [...grantedScopes],
+  });
+}
+
+function authorizeProcessCancel(
+  context: ServerContext,
+  input: ProcessCancelToolInput,
+  authorization: HostSpanToolAuthorization | undefined,
+): void {
+  if (!requestOAuthScopes(context)) return;
+  if (!authorization) {
+    throw new HostSpanError("POLICY_UNENFORCEABLE", "OAuth process cancellation scope cannot be resolved.", false, {
+      reason: "oauth_scope_resolver_unavailable",
+    });
+  }
+  const backend = authorization.processBackend(input.process_id);
+  if (backend === "pty") {
+    requireOAuthScope(context, HOSTSPAN_OAUTH_SCOPE_TERMINAL);
+    return;
+  }
+  if (backend === "native") {
+    requireOAuthScope(context, HOSTSPAN_OAUTH_SCOPE_EXEC);
+    return;
+  }
+  requireAnyOAuthScope(context, [HOSTSPAN_OAUTH_SCOPE_EXEC, HOSTSPAN_OAUTH_SCOPE_TERMINAL]);
+}
 
 async function invoke<T>(
   input: T,
   handler: (input: T, requestId: string) => Promise<Record<string, unknown>> | Record<string, unknown>,
   context: ResponseContextProvider,
+  authorize?: (input: T) => void,
 ) {
   const id = requestId();
   try {
+    authorize?.(input);
     return successResult(context(), await handler(input, id), id);
   } catch (error) {
     return errorResult(context(), error, id);
   }
 }
 
-export function registerHostSpanTools(server: McpServer, handlers: HostSpanToolHandlers, context: ResponseContextProvider): void {
+export function registerHostSpanTools(
+  server: McpServer,
+  handlers: HostSpanToolHandlers,
+  context: ResponseContextProvider,
+  authorization?: HostSpanToolAuthorization,
+): void {
   server.registerTool(
     "system_status",
     { description: TOOL_DEFINITIONS[0].description, inputSchema: SystemStatusInputSchema, annotations: TOOL_DEFINITIONS[0].annotations },
-    (input) => invoke(input, handlers.system_status.bind(handlers), context),
+    (input, requestContext) =>
+      invoke(input, handlers.system_status.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
   );
   server.registerTool(
     "target_list",
     { description: TOOL_DEFINITIONS[1].description, inputSchema: TargetListInputSchema, annotations: TOOL_DEFINITIONS[1].annotations },
-    (input) => invoke(input, handlers.target_list.bind(handlers), context),
+    (input, requestContext) =>
+      invoke(input, handlers.target_list.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
   );
   server.registerTool(
     "file_list",
     { description: TOOL_DEFINITIONS[2].description, inputSchema: FileListInputSchema, annotations: TOOL_DEFINITIONS[2].annotations },
-    (input) => invoke(input, handlers.file_list.bind(handlers), context),
+    (input, requestContext) =>
+      invoke(input, handlers.file_list.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
   );
   server.registerTool(
     "file_read",
     { description: TOOL_DEFINITIONS[3].description, inputSchema: FileReadInputSchema, annotations: TOOL_DEFINITIONS[3].annotations },
-    (input) => invoke(input, handlers.file_read.bind(handlers), context),
+    (input, requestContext) =>
+      invoke(input, handlers.file_read.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
   );
   server.registerTool(
     "file_search",
     { description: TOOL_DEFINITIONS[4].description, inputSchema: FileSearchInputSchema, annotations: TOOL_DEFINITIONS[4].annotations },
-    (input) => invoke(input, handlers.file_search.bind(handlers), context),
+    (input, requestContext) =>
+      invoke(input, handlers.file_search.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
   );
   server.registerTool(
     "file_patch",
     { description: TOOL_DEFINITIONS[5].description, inputSchema: FilePatchInputSchema, annotations: TOOL_DEFINITIONS[5].annotations },
-    (input) => invoke(input, handlers.file_patch.bind(handlers), context),
+    (input, requestContext) =>
+      invoke(input, handlers.file_patch.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_WRITE)),
   );
   server.registerTool(
     "git_changes",
     { description: TOOL_DEFINITIONS[6].description, inputSchema: GitChangesInputSchema, annotations: TOOL_DEFINITIONS[6].annotations },
-    (input) => invoke(input, handlers.git_changes.bind(handlers), context),
+    (input, requestContext) =>
+      invoke(input, handlers.git_changes.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
   );
   server.registerTool(
     "process_start",
     { description: TOOL_DEFINITIONS[7].description, inputSchema: ProcessStartInputSchema, annotations: TOOL_DEFINITIONS[7].annotations },
-    (input) => invoke(input, handlers.process_start.bind(handlers), context),
+    (input, requestContext) =>
+      invoke(input, handlers.process_start.bind(handlers), context, (parsed) =>
+        requireOAuthScope(requestContext, parsed.tty ? HOSTSPAN_OAUTH_SCOPE_TERMINAL : HOSTSPAN_OAUTH_SCOPE_EXEC),
+      ),
   );
   server.registerTool(
     "process_poll",
     { description: TOOL_DEFINITIONS[8].description, inputSchema: ProcessPollInputSchema, annotations: TOOL_DEFINITIONS[8].annotations },
-    (input) => invoke(input, handlers.process_poll.bind(handlers), context),
+    (input, requestContext) =>
+      invoke(input, handlers.process_poll.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
   );
   server.registerTool(
     "process_write",
     { description: TOOL_DEFINITIONS[9].description, inputSchema: ProcessWriteInputSchema, annotations: TOOL_DEFINITIONS[9].annotations },
-    (input) => invoke(input, handlers.process_write.bind(handlers), context),
+    (input, requestContext) =>
+      invoke(input, handlers.process_write.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_TERMINAL)),
   );
   server.registerTool(
     "process_cancel",
     { description: TOOL_DEFINITIONS[10].description, inputSchema: ProcessCancelInputSchema, annotations: TOOL_DEFINITIONS[10].annotations },
-    (input) => invoke(input, handlers.process_cancel.bind(handlers), context),
+    (input, requestContext) =>
+      invoke(input, handlers.process_cancel.bind(handlers), context, (parsed) => authorizeProcessCancel(requestContext, parsed, authorization)),
   );
 }

@@ -5,6 +5,14 @@ import {
   type AuthInfo,
   type OAuthTokenVerifier,
 } from "@modelcontextprotocol/server";
+import {
+  HOSTSPAN_OAUTH_SCOPES,
+  HOSTSPAN_OAUTH_SCOPE_READ,
+  LEGACY_HOSTSPAN_OAUTH_SCOPE,
+  isSupportedHostSpanOAuthScope,
+  oauthScopeCanNarrow,
+  splitOAuthScopes,
+} from "./oauth-scopes.js";
 import type { OAuthConfig } from "../config/schema.js";
 import type {
   OAuthAuthorizationRequestRecord,
@@ -12,8 +20,6 @@ import type {
 } from "../state/oauth-repo.js";
 import type { OAuthRepo } from "../state/oauth-repo.js";
 
-const HOSTSPAN_SCOPE = "hostspan";
-const ALLOWED_SCOPES = new Set([HOSTSPAN_SCOPE]);
 
 export class OAuthHttpError extends Error {
   constructor(
@@ -87,13 +93,12 @@ function normalizePublicMcpUrl(value: string): string {
 }
 
 function normalizeScope(scope: string | undefined): string {
-  const items = scope?.trim() ? scope.trim().split(/\s+/) : [HOSTSPAN_SCOPE];
-  const unique = [...new Set(items)];
-  if (!unique.includes(HOSTSPAN_SCOPE)) {
-    throw new OAuthHttpError(400, "invalid_scope", `The ${HOSTSPAN_SCOPE} scope is required.`);
-  }
+  const unique = scope?.trim() ? splitOAuthScopes(scope) : [HOSTSPAN_OAUTH_SCOPE_READ];
   for (const item of unique) {
-    if (!ALLOWED_SCOPES.has(item)) throw new OAuthHttpError(400, "invalid_scope", `Unsupported OAuth scope: ${item}`);
+    if (!isSupportedHostSpanOAuthScope(item)) throw new OAuthHttpError(400, "invalid_scope", `Unsupported OAuth scope: ${item}`);
+  }
+  if (unique.includes(LEGACY_HOSTSPAN_OAUTH_SCOPE) && unique.length > 1) {
+    throw new OAuthHttpError(400, "invalid_scope", `The legacy ${LEGACY_HOSTSPAN_OAUTH_SCOPE} scope cannot be combined with granular scopes.`);
   }
   return unique.join(" ");
 }
@@ -184,7 +189,7 @@ export class OAuthService implements OAuthTokenVerifier {
       grant_types_supported: ["authorization_code", "refresh_token"],
       token_endpoint_auth_methods_supported: ["none"],
       code_challenge_methods_supported: ["S256"],
-      scopes_supported: [HOSTSPAN_SCOPE],
+      scopes_supported: [...HOSTSPAN_OAUTH_SCOPES],
     };
   }
 
@@ -192,7 +197,7 @@ export class OAuthService implements OAuthTokenVerifier {
     return {
       resource: this.publicMcpUrl,
       authorization_servers: [this.issuer],
-      scopes_supported: [HOSTSPAN_SCOPE],
+      scopes_supported: [...HOSTSPAN_OAUTH_SCOPES],
       resource_name: "HostSpan MCP",
     };
   }
@@ -412,8 +417,7 @@ export class OAuthService implements OAuthTokenVerifier {
     let scope = record.scope;
     if (form.get("scope")) {
       const requested = normalizeScope(form.get("scope") ?? undefined);
-      const granted = new Set(record.scope.split(/\s+/));
-      if (requested.split(/\s+/).some((item) => !granted.has(item))) {
+      if (!oauthScopeCanNarrow(record.scope, requested)) {
         throw new OAuthHttpError(400, "invalid_scope", "Refresh cannot increase scopes.");
       }
       scope = requested;

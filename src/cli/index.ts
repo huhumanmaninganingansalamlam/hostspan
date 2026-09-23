@@ -19,7 +19,7 @@ import { fileRead } from "../files/read.js";
 import { fileSearch, SearchConcurrencyLimiter } from "../files/search.js";
 import { ripgrepExecutable } from "../files/ripgrep.js";
 import { asHostSpanError, HostSpanError } from "../mcp/errors.js";
-import { TOOL_NAMES, TOOLSET_HASH, toolsetDocument, type HostSpanToolHandlers } from "../mcp/registry.js";
+import { TOOL_NAMES, TOOLSET_HASH, toolsetDocument, type HostSpanToolAuthorization, type HostSpanToolHandlers } from "../mcp/registry.js";
 import { createHostSpanHttpServer, listenHostSpan } from "../mcp/server.js";
 import type {
   FileListToolInput,
@@ -85,6 +85,7 @@ export interface HostSpanRuntime {
   oauthRepo: OAuthRepo;
   oauth?: OAuthService;
   handlers: HostSpanToolHandlers;
+  authorization: HostSpanToolAuthorization;
   activateSessionOwnership(): number | null;
   close(): Promise<void>;
 }
@@ -458,6 +459,13 @@ export function createRuntime(
       traced("process_cancel", input, requestId, () => supervisor.cancel(input)),
   };
 
+  const authorization: HostSpanToolAuthorization = {
+    processBackend: (processId) => {
+      const backend = processes.get(processId)?.backend;
+      return backend === "native" || backend === "pty" ? backend : undefined;
+    },
+  };
+
   return {
     config,
     configPath: resolvedConfigPath,
@@ -478,6 +486,7 @@ export function createRuntime(
     oauthRepo,
     ...(oauth ? { oauth } : {}),
     handlers,
+    authorization,
     activateSessionOwnership,
     close: () => {
       if (closeRuntimePromise) return closeRuntimePromise;
@@ -620,6 +629,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       ...(runtime.config.server.allowed_hosts ? { allowed_hosts: runtime.config.server.allowed_hosts } : {}),
       max_inflight_mcp_requests: runtime.config.server.max_inflight_mcp_requests ?? 128,
       ...(runtime.oauth ? { oauth: runtime.oauth } : {}),
+      authorization: runtime.authorization,
       handlers: runtime.handlers,
       responseContext: () => ({ toolset_hash: TOOLSET_HASH, policy_epoch: runtime.config.policy_epoch }),
       status: {

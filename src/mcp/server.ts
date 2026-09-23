@@ -14,7 +14,7 @@ import {
   type OAuthService,
 } from "../auth/oauth-service.js";
 import { SERVER_VERSION } from "../version.js";
-import { registerHostSpanTools, type HostSpanToolHandlers, type ResponseContextProvider } from "./registry.js";
+import { registerHostSpanTools, type HostSpanToolAuthorization, type HostSpanToolHandlers, type ResponseContextProvider } from "./registry.js";
 
 export interface ServerStatusProvider {
   health(): Record<string, unknown>;
@@ -27,6 +27,7 @@ export interface HostSpanHttpServerOptions {
   allowed_hosts?: string[];
   max_inflight_mcp_requests?: number;
   oauth?: OAuthService;
+  authorization?: HostSpanToolAuthorization;
   handlers: HostSpanToolHandlers;
   responseContext: ResponseContextProvider;
   status: ServerStatusProvider;
@@ -50,7 +51,11 @@ export function resolveAllowedHosts(listenHost: string, configured: string[] = [
   return [normalizeAllowedHost(listenHost)];
 }
 
-export function createMcpServer(handlers: HostSpanToolHandlers, responseContext: ResponseContextProvider): McpServer {
+export function createMcpServer(
+  handlers: HostSpanToolHandlers,
+  responseContext: ResponseContextProvider,
+  authorization?: HostSpanToolAuthorization,
+): McpServer {
   const server = new McpServer(
     { name: "hostspan", version: SERVER_VERSION },
     {
@@ -58,7 +63,7 @@ export function createMcpServer(handlers: HostSpanToolHandlers, responseContext:
         "HostSpan operates on explicit persistent target_id values. File paths are target-relative. Side-effect tools require idempotency keys.",
     },
   );
-  registerHostSpanTools(server, handlers, responseContext);
+  registerHostSpanTools(server, handlers, responseContext, authorization);
   return server;
 }
 
@@ -76,7 +81,7 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
     options.trace?.("transport.error", { message: error.message });
   };
   const mcpHandler = createMcpHandler(
-    () => createMcpServer(options.handlers, options.responseContext),
+    () => createMcpServer(options.handlers, options.responseContext, options.authorization),
     {
       onerror: reportTransportError,
       responseMode: "auto",
@@ -132,7 +137,6 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
       try {
         const auth = await verifyBearerToken(request.headers.authorization, {
           verifier: options.oauth,
-          requiredScopes: ["hostspan"],
           resourceMetadataUrl: options.oauth.resourceMetadataUrl,
         });
         Object.assign(request.raw, { auth });
@@ -140,7 +144,6 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
         return sendWebResponse(
           reply,
           bearerAuthChallengeResponse(error, {
-            requiredScopes: ["hostspan"],
             resourceMetadataUrl: options.oauth.resourceMetadataUrl,
           }),
         );
@@ -187,7 +190,7 @@ function authorizationPage(prompt: ReturnType<OAuthService["beginAuthorization"]
     `<p><strong>Client:</strong> ${escapeHtml(prompt.client_name)}</p>`,
     `<p><strong>Scopes:</strong> ${escapeHtml(prompt.scope)}</p>`,
     `<p><strong>Resource:</strong> ${escapeHtml(prompt.resource)}</p>`,
-    "<p>This grants access to the local HostSpan targets allowed by server policy, including write/exec when configured.</p>",
+    "<p>OAuth scopes and HostSpan target policy are both enforced. Approval never grants authority beyond either boundary.</p>",
     '<form method="post">',
     `<input type="hidden" name="request_id" value="${escapeHtml(prompt.request_id)}">`,
     '<label>HostSpan approval secret<br><input style="width:100%;max-width:560px" type="password" name="approval_secret" autocomplete="off" required></label>',
