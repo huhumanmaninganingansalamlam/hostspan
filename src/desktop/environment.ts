@@ -27,6 +27,43 @@ export function extractMarkedPath(stdout: string): string | undefined {
   return value || undefined;
 }
 
+export interface DesktopLaunchSpec {
+  path: string;
+  args: string[];
+}
+
+export function desktopLaunchSpec(input: {
+  platform: NodeJS.Platform;
+  isPackaged: boolean;
+  execPath: string;
+  mainPath: string;
+  appImage?: string;
+  linuxDevelopmentExecPath?: string;
+}): DesktopLaunchSpec {
+  const appImage = input.appImage?.trim();
+  if (input.platform === "linux" && input.isPackaged && appImage) return { path: appImage, args: [] };
+  if (input.isPackaged) return { path: input.execPath, args: [] };
+  const execPath =
+    input.platform === "linux" && input.linuxDevelopmentExecPath ? input.linuxDevelopmentExecPath : input.execPath;
+  return { path: execPath, args: ["--no-sandbox", input.mainPath] };
+}
+
+function desktopExecQuote(value: string): string {
+  return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+export function linuxAutoStartContents(spec: DesktopLaunchSpec): string {
+  const exec = [spec.path, ...spec.args].map(desktopExecQuote).join(" ");
+  return `[Desktop Entry]
+Type=Application
+Name=HostSpan
+Comment=HostSpan tray companion
+Exec=${exec}
+Terminal=false
+X-GNOME-Autostart-enabled=true
+`;
+}
+
 function commonMacDevPaths(home: string): string {
   return [
     join(home, ".local", "bin"),

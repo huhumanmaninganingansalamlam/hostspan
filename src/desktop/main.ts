@@ -19,7 +19,7 @@ import { defaultConfigPath } from "../config/paths.js";
 import type { Capability } from "../config/schema.js";
 import { PtySessionManager } from "../processes/pty-session.js";
 import { protectWindowsFile, protectWindowsTree } from "../security/windows-acl.js";
-import { prepareDesktopEnvironment } from "./environment.js";
+import { desktopLaunchSpec, linuxAutoStartContents, prepareDesktopEnvironment } from "./environment.js";
 import {
   DASHBOARD_CSP,
   installDashboardNavigationGuards,
@@ -56,6 +56,7 @@ const configPath = resolve(defaultConfigPath());
 if (process.platform === "linux") app.commandLine.appendSwitch("disable-gpu");
 const cliPath = fileURLToPath(new URL("../cli/index.js", import.meta.url));
 const mainPath = fileURLToPath(new URL("./main.js", import.meta.url));
+const linuxDevelopmentElectronPath = fileURLToPath(new URL("../../../node_modules/electron/dist/electron", import.meta.url));
 const preloadPath = fileURLToPath(new URL("./preload.cjs", import.meta.url));
 const iconDir = fileURLToPath(new URL("../../../assets/icons/", import.meta.url));
 const appIconPath = join(iconDir, "app.png");
@@ -123,12 +124,14 @@ function openAttach(processId: string, readOnly: boolean): void {
 }
 
 function launchSpec(): { path: string; args: string[] } {
-  if (app.isPackaged) return { path: process.execPath, args: [] };
-  return { path: process.execPath, args: ["--no-sandbox", mainPath] };
-}
-
-function desktopExecQuote(value: string): string {
-  return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+  return desktopLaunchSpec({
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    execPath: process.execPath,
+    mainPath,
+    ...(process.env.APPIMAGE ? { appImage: process.env.APPIMAGE } : {}),
+    linuxDevelopmentExecPath: linuxDevelopmentElectronPath,
+  });
 }
 
 function linuxAutoStartPath(): string {
@@ -150,23 +153,21 @@ function setAutoStart(enabled: boolean): boolean {
       return false;
     }
     mkdirSync(join(homedir(), ".config", "autostart"), { recursive: true, mode: 0o700 });
-    const exec = [spec.path, ...spec.args].map(desktopExecQuote).join(" ");
-    writeFileSync(
-      path,
-      `[Desktop Entry]
-Type=Application
-Name=HostSpan
-Comment=HostSpan tray companion
-Exec=${exec}
-Terminal=false
-X-GNOME-Autostart-enabled=true
-`,
-      { mode: 0o600 },
-    );
+    writeFileSync(path, linuxAutoStartContents(spec), { mode: 0o600 });
     return true;
   }
   app.setLoginItemSettings({ openAtLogin: enabled, path: spec.path, args: spec.args });
   return app.getLoginItemSettings({ path: spec.path, args: spec.args }).openAtLogin;
+}
+
+function refreshLinuxAutoStart(): void {
+  if (process.platform !== "linux" || !existsSync(linuxAutoStartPath())) return;
+  try {
+    setAutoStart(true);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`HostSpan could not refresh Linux autostart: ${message}\n`);
+  }
 }
 
 function normalizedDesktopCapabilities(input: Capability[]): Capability[] {
@@ -474,6 +475,7 @@ void app.whenReady().then(async () => {
   try {
     prepareDesktopEnvironment();
     ensureDesktopConfig(configPath);
+    refreshLinuxAutoStart();
     if (process.platform === "win32") {
       const config = loadConfig(configPath);
       protectWindowsFile(configPath);

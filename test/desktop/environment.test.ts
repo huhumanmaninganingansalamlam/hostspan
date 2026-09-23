@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildSystemdServiceUnit, serviceExecutionPath, systemdServiceInstalled } from "../../src/cli/service.js";
-import { extractMarkedPath, mergePathValues } from "../../src/desktop/environment.js";
+import {
+  desktopLaunchSpec,
+  extractMarkedPath,
+  linuxAutoStartContents,
+  mergePathValues,
+} from "../../src/desktop/environment.js";
 
 describe("desktop environment", () => {
   it("merges PATH values in priority order without duplicates", () => {
@@ -16,6 +21,42 @@ describe("desktop environment", () => {
     const first = ["/first/bin", "/usr/bin"].join(delimiter);
     const final = ["/second/bin", "/usr/bin", "/bin"].join(delimiter);
     expect(extractMarkedPath(`banner\n__HOSTSPAN_PATH__=${first}\nnoise\n__HOSTSPAN_PATH__=${final}\n`)).toBe(final);
+  });
+
+  it("uses a stable direct Electron binary for Linux development autostart", () => {
+    expect(
+      desktopLaunchSpec({
+        platform: "linux",
+        isPackaged: false,
+        execPath: "/repo/node_modules/.pnpm/electron@44/node_modules/electron/dist/electron",
+        mainPath: "/repo/dist/src/desktop/main.js",
+        linuxDevelopmentExecPath: "/repo/node_modules/electron/dist/electron",
+      }),
+    ).toEqual({
+      path: "/repo/node_modules/electron/dist/electron",
+      args: ["--no-sandbox", "/repo/dist/src/desktop/main.js"],
+    });
+  });
+
+  it("uses the stable AppImage path for packaged Linux autostart", () => {
+    expect(
+      desktopLaunchSpec({
+        platform: "linux",
+        isPackaged: true,
+        execPath: "/tmp/.mount_HostSpan/hostspan-desktop",
+        mainPath: "/tmp/.mount_HostSpan/resources/app.asar/dist/src/desktop/main.js",
+        appImage: "/home/user/Applications/HostSpan.AppImage",
+      }),
+    ).toEqual({ path: "/home/user/Applications/HostSpan.AppImage", args: [] });
+  });
+
+  it("writes Linux autostart without a shell or PATH-dependent Electron shim", () => {
+    const contents = linuxAutoStartContents({
+      path: "/opt/Host Span/hostspan-desktop",
+      args: ["--no-sandbox", "/opt/Host Span/main.js"],
+    });
+    expect(contents).toContain('Exec="/opt/Host Span/hostspan-desktop" "--no-sandbox" "/opt/Host Span/main.js"');
+    expect(contents).not.toContain("node_modules/.bin/electron");
   });
 
   it("preserves the inherited PATH while prioritizing the Node runtime directory for the service", () => {
