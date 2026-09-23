@@ -224,7 +224,7 @@ export function createRuntime(
   const removedPatchJournals = cleanupTerminalPatchJournals(transactions);
   if (removedPatchJournals.length) logger.info("patch.journals_cleaned", { count: removedPatchJournals.length });
   const terminal = config.terminal
-    ? new PtySessionManager(config.server.data_dir, config.terminal, { requireOwnership: true })
+    ? new PtySessionManager(config.server.data_dir, config.terminal, { requireOwnership: true, configPath: resolvedConfigPath })
     : undefined;
   let sessionOwnershipActive = !terminal;
   let runtimeGeneration: number | null = null;

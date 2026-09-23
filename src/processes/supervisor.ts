@@ -356,7 +356,7 @@ export class ProcessSupervisor {
       backend: record.backend,
       interactive,
       ...(outputBudget ? { output_budget: outputBudget } : {}),
-      ...(interactive && record.backend_ref && this.options.terminal
+      ...(interactive && !TERMINAL_STATES.has(record.state) && record.backend_ref && this.options.terminal
         ? {
             terminal_session: record.backend_ref,
             human_attach_command: this.options.terminal.humanAttachCommand(record.backend_ref, false),
@@ -513,6 +513,15 @@ export class ProcessSupervisor {
           deadlineAt,
           maxOutputBytes: effectiveMaxOutputBytes,
         });
+        const launchState = await this.options.terminal.inspect(session);
+        if (!launchState.exists) {
+          this.finalize(processId, "unknown", null, null, "interactive_session_missing_after_launch");
+          return this.snapshot(processId, 0, 0, Math.min(input.max_output_bytes, 131_072));
+        }
+        if (launchState.dead) {
+          await this.syncInteractiveState(processId);
+          return this.snapshot(processId, 0, 0, Math.min(input.max_output_bytes, 131_072));
+        }
         if (!this.options.processes.markRunning(processId, started.pid, null)) {
           this.options.terminal.closeSync(session);
           const current = this.options.processes.get(processId);

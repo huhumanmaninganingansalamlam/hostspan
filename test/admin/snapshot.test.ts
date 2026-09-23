@@ -137,7 +137,10 @@ describe("local admin snapshot", () => {
       expect(snapshot.active_processes).toContainEqual(expect.objectContaining({ process_id: "proc_admin", target_id: "local" }));
       expect(snapshot.targets).toContainEqual(expect.objectContaining({ target_id: "local", label: "Local workspace", ready: true }));
       expect(snapshot.recent_calls).toContainEqual(expect.objectContaining({ request_id: "req_admin", event_type: "request.accepted" }));
-      expect(snapshot.terminal.sessions).toContainEqual(expect.objectContaining({ process_id: "proc_admin", state: "running", live: false }));
+      const terminalSession = snapshot.terminal.sessions.find((session) => (session as Record<string, unknown>).process_id === "proc_admin");
+      expect(terminalSession).toMatchObject({ process_id: "proc_admin", state: "running", live: false });
+      expect(terminalSession).not.toHaveProperty("attach_command");
+      expect(terminalSession).not.toHaveProperty("attach_read_only_command");
       expect(() => removeLocalWorkspace(configPath, "local")).toThrow(/process\(es\) are active/);
 
       const readonly = new Database(join(dataDir, "state.db"), { readonly: true });

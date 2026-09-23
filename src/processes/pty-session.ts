@@ -59,13 +59,15 @@ export class PtySessionManager implements InteractiveSessionManager {
   private readonly workerPath = fileURLToPath(new URL("./pty-worker.mjs", import.meta.url));
   private ownerGeneration: number | null = null;
   private readonly requireOwnership: boolean;
+  private readonly configPath: string | undefined;
 
   constructor(
     private readonly dataDir: string,
     private readonly config: TerminalConfig,
-    options: { requireOwnership?: boolean } = {},
+    options: { requireOwnership?: boolean; configPath?: string } = {},
   ) {
     this.requireOwnership = options.requireOwnership ?? false;
+    this.configPath = options.configPath;
     mkdirSync(join(dataDir, "sessions"), { recursive: true, mode: 0o700 });
   }
 
@@ -115,7 +117,8 @@ export class PtySessionManager implements InteractiveSessionManager {
   }
 
   humanAttachCommand(session: string, readOnly = false): string {
-    return `hostspan terminal attach --process ${shellQuote(session)}${readOnly ? " --read-only" : ""}`;
+    const config = this.configPath ? ` --config ${shellQuote(this.configPath)}` : "";
+    return `hostspan terminal attach --process ${shellQuote(session)}${config}${readOnly ? " --read-only" : ""}`;
   }
 
   async available(): Promise<boolean> {

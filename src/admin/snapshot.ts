@@ -220,7 +220,7 @@ export function buildAdminSnapshot(configPath: string, options: AdminSnapshotOpt
     }
   }
 
-  const terminal = config.terminal ? new PtySessionManager(config.server.data_dir, config.terminal) : undefined;
+  const terminal = config.terminal ? new PtySessionManager(config.server.data_dir, config.terminal, { configPath: resolvedConfigPath }) : undefined;
   const terminalProcessRecords = new Map<string, Record<string, unknown>>();
   for (const record of [...activeProcesses, ...recentProcesses]) {
     if (record.backend !== "pty" || typeof record.process_id !== "string") continue;
@@ -236,7 +236,7 @@ export function buildAdminSnapshot(configPath: string, options: AdminSnapshotOpt
       ...output,
       live: live?.exists ?? false,
       dead: live?.dead ?? null,
-      ...(terminal && session
+      ...(terminal && session && live?.exists && !live.dead
         ? {
             attach_command: terminal.humanAttachCommand(session, false),
             attach_read_only_command: terminal.humanAttachCommand(session, true),

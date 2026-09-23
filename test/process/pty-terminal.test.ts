@@ -115,7 +115,7 @@ function fixture(terminalCapability = true, maxConcurrentSessions = 2, requireOw
   const targets = new TargetRegistry(config);
   const terminalConfig = config.terminal;
   if (!terminalConfig) throw new Error("terminal fixture configuration is missing");
-  const terminal = new PtySessionManager(dataDir, terminalConfig, { requireOwnership });
+  const terminal = new PtySessionManager(dataDir, terminalConfig, { requireOwnership, configPath });
   const supervisor = new ProcessSupervisor({
     config,
     targets,
@@ -288,7 +288,7 @@ describe("durable interactive PTY process backend", () => {
   });
 
   it("supports interactive input, polling, resize, attach metadata, and idempotent writes", async () => {
-    const { supervisor, terminal, db } = fixture();
+    const { configPath, supervisor, terminal, db } = fixture();
     const script = [
       "const readline=require('node:readline');",
       "const rl=readline.createInterface({input:process.stdin,output:process.stdout});",
@@ -299,7 +299,9 @@ describe("durable interactive PTY process backend", () => {
     track(terminal, started);
     expect(started.interactive).toBe(true);
     expect(started.backend).toBe("pty");
-    expect(String(started.human_attach_command)).toContain("hostspan terminal attach --process");
+    expect(String(started.human_attach_command)).toContain(`hostspan terminal attach --process '${started.process_id}'`);
+    expect(String(started.human_attach_command)).toContain(`--config '${configPath}'`);
+    expect(String(started.human_attach_read_only_command)).toContain(`--config '${configPath}'`);
     expect(String(started.human_attach_read_only_command)).toContain("--read-only");
     const startedBudget = started.output_budget as Record<string, unknown>;
     expect(startedBudget.scope).toBe("process_lifetime");
@@ -344,6 +346,26 @@ describe("durable interactive PTY process backend", () => {
     expect(completedBudget.limit_bytes).toBe(1024 * 1024);
     expect(Number(completedBudget.used_bytes)).toBeGreaterThanOrEqual(Number(startedBudget.used_bytes));
     expect(completedBudget.remaining_bytes).toBe(1024 * 1024 - Number(completedBudget.used_bytes));
+    db.close();
+  });
+
+  it("does not advertise or mark an already-exited PTY launch as running", async () => {
+    const { supervisor, terminal, processes, db } = fixture();
+    const realStart = terminal.start.bind(terminal);
+    terminal.start = async (input) => {
+      const started = await realStart(input);
+      await terminal.waitForExitStatus(started.session, process.platform === "win32" ? 5_000 : 2_000);
+      return started;
+    };
+
+    const started = await supervisor.start(ttyInput("process.exit(0)", 10_000, 0), "req_pty_fast_exit");
+    const record = processes.get(String(started.process_id));
+    expect(started.state).toBe("succeeded");
+    expect(started).not.toHaveProperty("human_attach_command");
+    expect(started).not.toHaveProperty("human_attach_read_only_command");
+    expect(record?.started_at).toBeNull();
+    expect(record?.ended_at).toEqual(expect.any(String));
+    sessions.push({ terminal, session: String(started.process_id) });
     db.close();
   });
 
