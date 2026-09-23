@@ -1,5 +1,5 @@
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { createConnection, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,6 +10,7 @@ import { writeConfigAtomic } from "../../src/config/writer.js";
 import type { ProcessWriteToolInput } from "../../src/mcp/schemas.js";
 import { PolicyEvaluator } from "../../src/policy/evaluator.js";
 import { PtySessionManager } from "../../src/processes/pty-session.js";
+import { ptySocketPath } from "../../src/processes/pty-ipc.js";
 import { recoverProcesses } from "../../src/processes/recovery.js";
 import { ProcessSupervisor } from "../../src/processes/supervisor.js";
 import { claimRuntimeGeneration, openDatabase, runtimeGeneration } from "../../src/state/database.js";
@@ -19,6 +20,7 @@ import { TargetRegistry } from "../../src/targets/registry.js";
 
 const roots: string[] = [];
 const sessions: Array<{ terminal: PtySessionManager; session: string }> = [];
+const attachments: Socket[] = [];
 const databases: Array<ReturnType<typeof openDatabase>> = [];
 
 function sleep(ms: number): Promise<void> {
@@ -35,6 +37,7 @@ function pidAlive(pid: number): boolean {
 }
 
 afterEach(async () => {
+  for (const socket of attachments.splice(0)) socket.destroy();
   for (const entry of sessions.splice(0)) entry.terminal.closeSync(entry.session);
   for (const db of databases.splice(0)) {
     try {
@@ -144,6 +147,62 @@ function track(terminal: PtySessionManager, started: Record<string, unknown>): s
   const session = String(started.terminal_session);
   sessions.push({ terminal, session });
   return session;
+}
+
+async function openRawAttachment(
+  dataDir: string,
+  session: string,
+  readOnly: boolean,
+  ownerGeneration?: number,
+): Promise<{ socket: Socket; output(): string }> {
+  const status = JSON.parse(readFileSync(join(dataDir, "sessions", session, "status.json"), "utf8")) as { ipc_token?: string };
+  if (!status.ipc_token) throw new Error("PTY attachment fixture is missing ipc_token");
+  const socket = createConnection(ptySocketPath(dataDir, session));
+  attachments.push(socket);
+  const output: Buffer[] = [];
+  await new Promise<void>((resolveAttach, rejectAttach) => {
+    let header = Buffer.alloc(0);
+    const onError = (error: Error) => rejectAttach(error);
+    const onData = (chunk: Buffer) => {
+      header = Buffer.concat([header, chunk]);
+      const newline = header.indexOf(10);
+      if (newline < 0) return;
+      const response = JSON.parse(header.subarray(0, newline).toString("utf8")) as { ok?: boolean; error?: string };
+      if (!response.ok) {
+        rejectAttach(new Error(response.error ?? "raw PTY attach failed"));
+        return;
+      }
+      const rest = header.subarray(newline + 1);
+      if (rest.length) output.push(rest);
+      socket.off("error", onError);
+      socket.off("data", onData);
+      socket.on("data", (data) => output.push(Buffer.from(data)));
+      resolveAttach();
+    };
+    socket.once("error", onError);
+    socket.on("data", onData);
+    socket.once("connect", () => {
+      socket.write(`${JSON.stringify({
+        op: "attach",
+        read_only: readOnly,
+        token: status.ipc_token,
+        ...(ownerGeneration === undefined ? {} : { owner_generation: ownerGeneration }),
+      })}\n`);
+    });
+  });
+  return { socket, output: () => Buffer.concat(output).toString("utf8") };
+}
+
+async function unusedTcpPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(0, "127.0.0.1", () => resolveListen());
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("test port fixture did not return a TCP port");
+  await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+  return address.port;
 }
 
 describe("durable interactive PTY process backend", () => {
@@ -379,6 +438,29 @@ describe("durable interactive PTY process backend", () => {
     }
   });
 
+  it.runIf(process.platform !== "win32")("does not claim PTY runtime ownership when daemon control setup cannot bind", async () => {
+    const setup = fixture(true, 2, true, await unusedTcpPort());
+    expect(runtimeGeneration(setup.db)).toBe(0);
+    mkdirSync(join(setup.config.server.data_dir, "daemon-control.sock"), { recursive: true });
+    setup.db.close();
+
+    await expect(main(["serve", "--config", setup.configPath])).rejects.toBeInstanceOf(Error);
+
+    const check = openDatabase(join(setup.config.server.data_dir, "state.db"));
+    try {
+      expect(runtimeGeneration(check)).toBe(0);
+    } finally {
+      check.close();
+    }
+  });
+
+  it("increments PTY runtime generations monotonically", () => {
+    const setup = fixture(true, 2, true);
+    expect(runtimeGeneration(setup.db)).toBe(0);
+    expect([claimRuntimeGeneration(setup.db), claimRuntimeGeneration(setup.db), claimRuntimeGeneration(setup.db)]).toEqual([1, 2, 3]);
+    setup.db.close();
+  });
+
   it("fences stale PTY owners after runtime generation takeover", async () => {
     const first = fixture(true, 2, true);
     const terminalConfig = first.config.terminal;
@@ -415,6 +497,50 @@ describe("durable interactive PTY process backend", () => {
     const exited = await secondTerminal.waitForExitStatus(session, process.platform === "win32" ? 5_000 : 2_000);
     expect(exited).toMatchObject({ exists: true, dead: true });
     const stdout = readFileSync(join(first.config.server.data_dir, "spools", "processes", String(started.process_id), "stdout.bin"), "utf8");
+    expect(stdout).toContain("GOT:fresh");
+    first.db.close();
+  });
+
+  it("drops stale writable attachments while preserving read-only observation after takeover", async () => {
+    const first = fixture(true, 2, true);
+    const terminalConfig = first.config.terminal;
+    if (!terminalConfig) throw new Error("terminal fixture configuration is missing");
+    const generation1 = claimRuntimeGeneration(first.db);
+    first.terminal.activateOwnership(generation1);
+    const script = [
+      "process.stdin.setEncoding('utf8');",
+      "console.log('READY');",
+      "process.stdin.on('data',chunk=>{const value=chunk.trim();console.log('GOT:'+value);if(value==='fresh')setTimeout(()=>process.exit(0),50);});",
+    ].join("");
+    const started = await first.supervisor.start(ttyInput(script, 10_000, 300), "req_pty_attach_owner_start");
+    const session = String(started.terminal_session);
+    sessions.push({ terminal: first.terminal, session });
+    const writable = await openRawAttachment(first.config.server.data_dir, session, false, generation1);
+    const readOnly = await openRawAttachment(first.config.server.data_dir, session, true);
+
+    const secondTerminal = new PtySessionManager(first.config.server.data_dir, terminalConfig, { requireOwnership: true });
+    const generation2 = claimRuntimeGeneration(first.db);
+    expect(generation2).toBe(generation1 + 1);
+    secondTerminal.activateOwnership(generation2);
+    const tracked = sessions[sessions.length - 1];
+    if (tracked) tracked.terminal = secondTerminal;
+
+    const staleClosed = new Promise<void>((resolveClose) => writable.socket.once("close", () => resolveClose()));
+    writable.socket.write("stale\r");
+    await Promise.race([staleClosed, sleep(1_000)]);
+    expect(writable.socket.destroyed).toBe(true);
+
+    await secondTerminal.write(session, { chars: "fresh", control_keys: ["Enter"] });
+    const exited = await secondTerminal.waitForExitStatus(session, process.platform === "win32" ? 5_000 : 2_000);
+    expect(exited).toMatchObject({ exists: true, dead: true });
+    for (let attempt = 0; attempt < 20 && !readOnly.output().includes("GOT:fresh"); attempt += 1) await sleep(25);
+    expect(readOnly.output()).toContain("GOT:fresh");
+
+    const stdout = readFileSync(
+      join(first.config.server.data_dir, "spools", "processes", String(started.process_id), "stdout.bin"),
+      "utf8",
+    );
+    expect(stdout).not.toContain("GOT:stale");
     expect(stdout).toContain("GOT:fresh");
     first.db.close();
   });
