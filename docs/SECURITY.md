@@ -78,6 +78,7 @@ The recommended remote path remains outbound-only OpenAI Secure MCP Tunnel. If y
 
 - remote MCP uses authorization-code OAuth with mandatory PKCE S256;
 - the local approval credential is random 256-bit material; config stores only a salted scrypt hash and the recoverable value lives only in a mode-`0600` local admin file;
+- a successful local authorization approval atomically consumes its pending request, so replaying the same approval cannot mint another code; an incorrect approval secret leaves the request pending for a later valid retry;
 - authorization codes, access tokens, and refresh tokens are persisted only as hashes;
 - access tokens are short-lived (15 minutes by default);
 - refresh tokens rotate on every successful refresh and replay of an old refresh token fails;

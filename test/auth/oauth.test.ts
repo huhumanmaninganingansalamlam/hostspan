@@ -309,6 +309,7 @@ describe("OAuth protected MCP", () => {
       expect(callback.searchParams.has("iss")).toBe(false);
       const firstCode = callback.searchParams.get("code") ?? "";
       expect(firstCode).toMatch(/^code-[0-9a-f-]{36}$/);
+      expect(runtime.oauthRepo.getAuthorizationRequest(requestId ?? "", Math.floor(Date.now() / 1000))).toBeUndefined();
 
       const duplicateApproval = await app.inject({
         method: "POST",
@@ -316,12 +317,9 @@ describe("OAuth protected MCP", () => {
         headers: { ...host, "content-type": "application/x-www-form-urlencoded" },
         payload: form({ request_id: requestId ?? "", approval_secret: approvalSecret }),
       });
-      expect(duplicateApproval.statusCode).toBe(302);
-      const duplicateCallback = new URL(String(duplicateApproval.headers.location));
-      expect(duplicateCallback.searchParams.get("state")).toBe("state-123");
-      expect(duplicateCallback.searchParams.has("iss")).toBe(false);
-      const code = duplicateCallback.searchParams.get("code") ?? "";
-      expect(code).not.toBe(firstCode);
+      expect(duplicateApproval.statusCode).toBe(400);
+      expect(duplicateApproval.json()).toMatchObject({ error: "invalid_request" });
+      const code = firstCode;
 
       const parallelApproval = await app.inject({
         method: "POST",

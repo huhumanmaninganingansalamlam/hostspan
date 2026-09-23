@@ -118,6 +118,15 @@ export class OAuthRepo {
       .get(requestId, now) as OAuthAuthorizationRequestRecord | undefined;
   }
 
+  consumeAuthorizationRequest(requestId: string, now: number): OAuthAuthorizationRequestRecord | undefined {
+    return this.db.transaction(() => {
+      const record = this.getAuthorizationRequest(requestId, now);
+      if (!record) return undefined;
+      const deleted = this.db.prepare("DELETE FROM oauth_authorization_requests WHERE request_id=? AND expires_at>?").run(requestId, now).changes;
+      return deleted === 1 ? record : undefined;
+    })();
+  }
+
   saveAuthorizationCode(record: OAuthAuthorizationCodeRecord): void {
     this.db
       .prepare(

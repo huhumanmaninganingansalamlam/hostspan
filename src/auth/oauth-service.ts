@@ -310,20 +310,24 @@ export class OAuthService implements OAuthTokenVerifier {
         this.authorizationErrorRedirect(pending.redirect_uri, pending.state, "access_denied", "Approval secret is incorrect."),
       );
     }
+    const approved = this.repo.consumeAuthorizationRequest(requestId, now);
+    if (!approved) {
+      throw new OAuthHttpError(400, "invalid_request", "Authorization request expired, does not exist, or has already been approved.");
+    }
     const code = `code-${randomUUID()}`;
     this.repo.saveAuthorizationCode({
       code_hash: tokenHash(code),
-      client_id: pending.client_id,
-      redirect_uri: pending.redirect_uri,
-      scope: pending.scope,
-      code_challenge: pending.code_challenge,
-      resource: pending.resource,
+      client_id: approved.client_id,
+      redirect_uri: approved.redirect_uri,
+      scope: approved.scope,
+      code_challenge: approved.code_challenge,
+      resource: approved.resource,
       expires_at: now + this.config.authorization_code_ttl_seconds,
       used_at: null,
     });
-    const redirect = new URL(pending.redirect_uri);
+    const redirect = new URL(approved.redirect_uri);
     redirect.searchParams.set("code", code);
-    if (pending.state) redirect.searchParams.set("state", pending.state);
+    if (approved.state) redirect.searchParams.set("state", approved.state);
     return redirect.toString();
   }
 
