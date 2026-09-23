@@ -206,6 +206,8 @@ function collectGitOutput(
         reject(
           new HostSpanError("DEADLINE_EXCEEDED", "Git inspection exceeded HostSpan's internal command deadline.", true, {
             resource: "git_changes",
+            reason: "deadline_exceeded",
+            deadline_ms: GIT_COMMAND_TIMEOUT_MS,
             command: args[0] ?? "git",
           }),
         );
@@ -240,7 +242,13 @@ async function boundedStatus(cwd: string, args: string[], maxStatusBytes: number
       "OUTPUT_LIMIT",
       "Git change metadata exceeded HostSpan's bounded status output; narrow git_changes.paths or exclude untracked files.",
       false,
-      { resource: "git_status", max_status_bytes: maxStatusBytes },
+      {
+        resource: "git_status",
+        reason: "output_limit",
+        limit_bytes: maxStatusBytes,
+        observed_bytes: result.total_stdout_bytes,
+        max_status_bytes: maxStatusBytes,
+      },
     );
   }
   return result.stdout.toString("utf8");
@@ -257,6 +265,9 @@ async function hasConfiguredContentFilters(cwd: string): Promise<boolean> {
   if (result.total_stdout_bytes > result.stdout.length) {
     throw new HostSpanError("OUTPUT_LIMIT", "Git filter configuration inspection exceeded HostSpan's internal bound.", false, {
       resource: "git_attributes",
+      reason: "output_limit",
+      limit_bytes: MAX_GIT_ATTRIBUTE_BYTES,
+      observed_bytes: result.total_stdout_bytes,
       max_attribute_bytes: MAX_GIT_ATTRIBUTE_BYTES,
     });
   }
@@ -268,6 +279,9 @@ async function trackedPathsForAttributePreflight(cwd: string, pathArgs: string[]
   if (result.total_stdout_bytes > result.stdout.length) {
     throw new HostSpanError("OUTPUT_LIMIT", "Git tracked-path attribute preflight exceeded HostSpan's internal bound.", false, {
       resource: "git_attributes",
+      reason: "output_limit",
+      limit_bytes: MAX_GIT_ATTRIBUTE_BYTES,
+      observed_bytes: result.total_stdout_bytes,
       max_attribute_bytes: MAX_GIT_ATTRIBUTE_BYTES,
     });
   }
@@ -288,6 +302,9 @@ async function assertNoWorkingTreeFilters(cwd: string, paths: string[]): Promise
   if (result.total_stdout_bytes > result.stdout.length) {
     throw new HostSpanError("OUTPUT_LIMIT", "Git attribute inspection exceeded HostSpan's internal bound.", false, {
       resource: "git_attributes",
+      reason: "output_limit",
+      limit_bytes: MAX_GIT_ATTRIBUTE_BYTES,
+      observed_bytes: result.total_stdout_bytes,
       max_attribute_bytes: MAX_GIT_ATTRIBUTE_BYTES,
     });
   }

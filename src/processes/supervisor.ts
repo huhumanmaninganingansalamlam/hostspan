@@ -126,6 +126,7 @@ export class ProcessSupervisor {
     if (remaining < requestedBytes) {
       throw new HostSpanError("SERVER_BUSY", "Process output retention budget cannot satisfy the requested output cap; retry after retained output expires.", true, {
         resource: "process_output_spool",
+        reason: "capacity_saturated",
         retained_and_reserved_bytes: projected,
         requested_output_bytes: requestedBytes,
         remaining_output_bytes: Math.max(0, remaining),
@@ -350,6 +351,7 @@ export class ProcessSupervisor {
       exit_code: record.exit_code,
       signal: record.term_signal,
       reason: record.reason,
+      deadline_at: record.deadline_at,
       output_expires_at: record.output_expires_at,
       backend: record.backend,
       interactive,

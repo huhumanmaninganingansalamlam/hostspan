@@ -80,6 +80,7 @@ export class BoundedConcurrencyLimiter {
   private busyError(): HostSpanError {
     return new HostSpanError("SERVER_BUSY", `${this.options.label} capacity is saturated; retry after a short delay.`, true, {
       resource: this.options.resource,
+      reason: "capacity_saturated",
       active: this.active,
       queued: this.queue.length,
       max_concurrent: this.options.maxConcurrent,

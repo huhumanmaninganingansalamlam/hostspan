@@ -48,6 +48,7 @@ describe("audit error diagnostics", () => {
   it("records Git saturation as a safe resource without queue internals", () => {
     const error = new HostSpanError("SERVER_BUSY", "Git inspection capacity is saturated.", true, {
       resource: "git_changes",
+      reason: "capacity_saturated",
       active: 4,
       queued: 8,
       repository: "/private/repo",
@@ -56,6 +57,7 @@ describe("audit error diagnostics", () => {
     expect(auditErrorDiagnostics(error)).toEqual({
       error_code: "SERVER_BUSY",
       retryable: true,
+      error_reason: "capacity_saturated",
       error_resource: "git_changes",
     });
   });
@@ -71,6 +73,23 @@ describe("audit error diagnostics", () => {
       error_code: "POLICY_UNENFORCEABLE",
       retryable: false,
       error_reason: "git_content_filter_unsafe",
+    });
+  });
+
+  it("records normalized output classifications without exposing quantitative backend details", () => {
+    const error = new HostSpanError("OUTPUT_LIMIT", "bounded output", false, {
+      resource: "git_attributes",
+      reason: "output_limit",
+      limit_bytes: 4 * 1024 * 1024,
+      observed_bytes: 5 * 1024 * 1024,
+      max_attribute_bytes: 4 * 1024 * 1024,
+    });
+
+    expect(auditErrorDiagnostics(error)).toEqual({
+      error_code: "OUTPUT_LIMIT",
+      retryable: false,
+      error_reason: "output_limit",
+      error_resource: "git_attributes",
     });
   });
 });

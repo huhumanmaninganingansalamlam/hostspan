@@ -85,10 +85,18 @@ export async function fileSearch(target: TargetRuntime, input: FileSearchInput) 
     const stderr = cause.stderr ?? "";
     if (cause.code === "ENOENT") throw new HostSpanError("SEARCH_BACKEND_UNAVAILABLE", "ripgrep is required but not available.", true);
     if (String(cause.code) === "1") stdout = cause.stdout ?? "";
-    else if (cause.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw new HostSpanError("SEARCH_SCOPE_TOO_BROAD", "Search output exceeded max_bytes; narrow the scope.");
+    else if (cause.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+      throw new HostSpanError("SEARCH_SCOPE_TOO_BROAD", "Search output exceeded max_bytes; narrow the scope.", false, {
+        resource: "file_search",
+        reason: "output_limit",
+        limit_bytes: input.max_bytes,
+        backend_limit_bytes: input.max_bytes + 64 * 1024,
+      });
+    }
     else if (cause.killed) {
       throw new HostSpanError("DEADLINE_EXCEEDED", "Search exceeded its deadline.", true, {
         resource: "file_search",
+        reason: "deadline_exceeded",
         deadline_ms: input.deadline_ms,
       });
     }

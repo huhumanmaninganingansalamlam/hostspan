@@ -164,7 +164,13 @@ describe("git_changes", () => {
     }
     await expect(gitChanges(target, [], 4096, true, 128)).rejects.toMatchObject({
       code: "OUTPUT_LIMIT",
-      details: { resource: "git_status", max_status_bytes: 128 },
+      details: {
+        resource: "git_status",
+        reason: "output_limit",
+        limit_bytes: 128,
+        observed_bytes: expect.any(Number),
+        max_status_bytes: 128,
+      },
     });
   });
   it.runIf(process.platform !== "win32")("does not execute fsmonitor or textconv helpers during read-only inspection", async () => {

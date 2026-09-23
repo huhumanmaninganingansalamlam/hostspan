@@ -46,7 +46,7 @@ describe("overload stability", () => {
     await expect(limiter.run(async () => 99)).rejects.toMatchObject({
       code: "SERVER_BUSY",
       retryable: true,
-      details: { resource: "file_search", max_concurrent: 2, max_queued: 2 },
+      details: { resource: "file_search", reason: "capacity_saturated", max_concurrent: 2, max_queued: 2 },
     });
 
     holds[0]?.resolve();
@@ -79,7 +79,7 @@ describe("overload stability", () => {
     await expect(limiter.run(async () => "overflow")).rejects.toMatchObject({
       code: "SERVER_BUSY",
       retryable: true,
-      details: { resource: "git_changes", active: 1, queued: 1, max_concurrent: 1, max_queued: 1 },
+      details: { resource: "git_changes", reason: "capacity_saturated", active: 1, queued: 1, max_concurrent: 1, max_queued: 1 },
     });
 
     firstHold.resolve();

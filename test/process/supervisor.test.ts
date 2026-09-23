@@ -142,6 +142,7 @@ describe("process supervisor", () => {
       used_bytes: 2,
       remaining_bytes: 1024 * 1024 - 2,
     });
+    expect(result.deadline_at).toEqual(expect.any(String));
     expect(result.native_execution).toBe(true);
     expect(result.sandboxed).toBe(false);
   });
@@ -184,7 +185,7 @@ describe("process supervisor", () => {
     await expect(supervisor.start(startInput(), "req_spool_full")).rejects.toMatchObject({
       code: "SERVER_BUSY",
       retryable: true,
-      details: { resource: "process_output_spool", max_total_spool_bytes: 10 },
+      details: { resource: "process_output_spool", reason: "capacity_saturated", max_total_spool_bytes: 10 },
     });
   });
 
@@ -200,7 +201,7 @@ describe("process supervisor", () => {
         code: "SERVER_BUSY",
         message: "Process output retention budget cannot satisfy the requested output cap; retry after retained output expires.",
         retryable: true,
-        details: { resource: "process_output_spool", requested_output_bytes: 8, remaining_output_bytes: 0 },
+        details: { resource: "process_output_spool", reason: "capacity_saturated", requested_output_bytes: 8, remaining_output_bytes: 0 },
       });
     }
   });
@@ -222,6 +223,7 @@ describe("process supervisor", () => {
       retryable: true,
       details: {
         resource: "process_output_spool",
+        reason: "capacity_saturated",
         requested_output_bytes: 8,
         remaining_output_bytes: 2,
         max_total_spool_bytes: 10,
