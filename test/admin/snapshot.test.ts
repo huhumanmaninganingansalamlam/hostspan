@@ -11,9 +11,9 @@ import {
   startDaemonControlServer,
   stopDaemon,
   writeDaemonPid,
-} from "../../src/cli/daemon.js";
+} from "../../src/daemon/control.js";
 import { loadConfig } from "../../src/config/loader.js";
-import { runDoctor } from "../../src/cli/doctor.js";
+import { runDoctor } from "../../src/diagnostics/doctor.js";
 import type { HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
 import { AuditRepo } from "../../src/state/audit-repo.js";
@@ -128,7 +128,9 @@ describe("local admin snapshot", () => {
     writeDaemonPid(configPath, process.pid);
 
     try {
+      expect(existsSync(join(dataDir, "sessions"))).toBe(false);
       const snapshot = buildAdminSnapshot(configPath, { recent: 20 });
+      expect(existsSync(join(dataDir, "sessions"))).toBe(false);
       expect(snapshot.daemon).toMatchObject({ running: true, pid: process.pid });
       expect(snapshot.active_process_count).toBe(1);
       expect(snapshot.active_requests).toContainEqual(expect.objectContaining({ request_id: "req_admin" }));

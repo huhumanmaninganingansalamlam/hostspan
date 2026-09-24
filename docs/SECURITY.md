@@ -83,8 +83,9 @@ The recommended remote path remains outbound-only OpenAI Secure MCP Tunnel. If y
 - OAuth tokens are bound to the configured MCP `resource` URL;
 - HostSpan advertises four least-privilege scopes: `hostspan.read` for status/targets/file observation/process polling, `hostspan.write` for file patching, `hostspan.exec` for non-TTY process start/native cancellation, and `hostspan.terminal` for TTY start/input/PTY cancellation;
 - an authorization request that omits `scope` defaults to `hostspan.read`;
-- the legacy `hostspan` scope remains accepted as a full-authority compatibility alias for existing clients, but it is no longer advertised and cannot be combined with granular scopes;
-- refresh preserves or narrows authority only. A legacy `hostspan` refresh may migrate to granular scopes, but granular scopes cannot widen or refresh back to the legacy alias;
+- only the four advertised granular scopes are accepted; unsupported scopes are rejected;
+- the retired full-authority `hostspan` scope is rejected; clients with grants using it must authorize again with granular scopes;
+- refresh without a requested scope preserves the grant, while an explicit refresh scope may only narrow it;
 - OAuth scope checks and HostSpan target policy are independent boundaries: a token must authorize the tool class and the selected target must separately grant the underlying capability;
 - the stable `hostspan-v3.1` tool list/schema/hash is unchanged by scope enforcement; tool authorization is checked at invocation time;
 - HostSpan exposes the MCP-SDK-compatible root `/authorize`, `/token`, `/register`, and `/revoke` OAuth surface;

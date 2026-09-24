@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HostSpanError } from "../../src/mcp/errors.js";
+import { HostSpanError } from "../../src/errors.js";
 import { auditErrorDiagnostics } from "../../src/observability/error-diagnostics.js";
 
 describe("audit error diagnostics", () => {

@@ -10,7 +10,7 @@ import {
   FilePatchService,
   recoverPatchTransactions,
 } from "../../src/files/patch.js";
-import type { HostSpanError } from "../../src/mcp/errors.js";
+import type { HostSpanError } from "../../src/errors.js";
 import { PolicyEvaluator } from "../../src/policy/evaluator.js";
 import { openDatabase } from "../../src/state/database.js";
 import { OperationsRepo } from "../../src/state/operations-repo.js";
@@ -44,7 +44,7 @@ function fixture() {
         label: "test",
         provider: "local",
         root,
-        capabilities: ["read", "write", "git"],
+        capabilities: ["read", "write"],
         deny_globs: ["admin.yaml"],
         ignore_globs: [],
       },

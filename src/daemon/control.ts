@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { createConnection, createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { loadConfig } from "../config/loader.js";
-import { HostSpanError } from "../mcp/errors.js";
+import { HostSpanError } from "../errors.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));

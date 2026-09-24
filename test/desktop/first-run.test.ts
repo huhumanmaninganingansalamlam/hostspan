@@ -34,7 +34,7 @@ describe("desktop first-run config", () => {
       label: "Existing workspace",
       provider: "local",
       root,
-      capabilities: ["read", "write", "exec", "git"],
+      capabilities: ["read", "write", "exec"],
       exec_profile: "native-dev",
       deny_globs: [],
       ignore_globs: [],
@@ -45,6 +45,6 @@ describe("desktop first-run config", () => {
     expect(ensureDesktopConfig(configPath)).toEqual({ created: false, config_path: configPath });
     const second = HostSpanConfigSchema.parse(parseYaml(readFileSync(configPath, "utf8")));
     expect(second).toEqual(existing);
-    expect(second.targets.existing?.capabilities).toEqual(["read", "write", "exec", "git"]);
+    expect(second.targets.existing?.capabilities).toEqual(["read", "write", "exec"]);
   });
 });

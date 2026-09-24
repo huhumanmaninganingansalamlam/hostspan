@@ -1,15 +1,15 @@
 import { lstatSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { HostSpanError } from "../mcp/errors.js";
+import { HostSpanError } from "../errors.js";
 import type { PolicyEvaluator } from "../policy/evaluator.js";
 import { matchesAnyPolicyGlob } from "../policy/glob.js";
 import type { TargetRuntime } from "../targets/registry.js";
+import { resolveTargetPath } from "../targets/path.js";
 import { darwinReadDirectoryNames } from "./darwin-fs.js";
 import {
   assertDirectoryStillCurrent,
   closeOpenedDirectory,
   openDirectoryNoFollow,
-  resolveTargetPath,
 } from "./path-guard.js";
 
 export interface FileListInput {
@@ -33,14 +33,14 @@ function ignored(target: TargetRuntime, rel: string): boolean {
 }
 
 export function fileList(target: TargetRuntime, input: FileListInput, policy?: PolicyEvaluator) {
-  const root = resolveTargetPath(target, input.path, "list");
+  const root = resolveTargetPath(target, input.path);
   policy?.assertFileAllowed(target, root.relative, root.absolute, false);
   if (!root.exists) throw new HostSpanError("FILE_NOT_FOUND", `Path does not exist: ${input.path}`);
   const entries: Array<Record<string, unknown>> = [];
   const offset = cursorOffset(input.cursor);
   const collectLimit = offset + input.max_entries + 1;
   const walk = (relativeDir: string, currentDepth: number): boolean => {
-    const opened = openDirectoryNoFollow(target, relativeDir, "list");
+    const opened = openDirectoryNoFollow(target, relativeDir);
     try {
       const enumerationPath = process.platform === "linux" ? opened.stable_path : opened.path.absolute;
       const names =
@@ -50,7 +50,7 @@ export function fileList(target: TargetRuntime, input: FileListInput, policy?: P
               return darwinReadDirectoryNames(opened.fd).sort();
             })()
           : readdirSync(enumerationPath).sort();
-      assertDirectoryStillCurrent(target, relativeDir, opened, "list");
+      assertDirectoryStillCurrent(target, relativeDir, opened);
       for (const name of names) {
         if (!input.include_hidden && name.startsWith(".")) continue;
         const rel = (relativeDir === "." ? name : `${relativeDir.replaceAll("\\", "/")}/${name}`).replace(/^\.\//, "");
@@ -66,15 +66,15 @@ export function fileList(target: TargetRuntime, input: FileListInput, policy?: P
         const type = stat.isSymbolicLink() ? "symlink" : stat.isDirectory() ? "directory" : stat.isFile() ? "file" : "other";
         entries.push({ path: rel, type, size_bytes: stat.size, mtime: stat.mtime.toISOString() });
         if (entries.length >= collectLimit) {
-          assertDirectoryStillCurrent(target, relativeDir, opened, "list");
+          assertDirectoryStillCurrent(target, relativeDir, opened);
           return true;
         }
         if (type === "directory" && currentDepth < input.depth && walk(rel, currentDepth + 1)) {
-          assertDirectoryStillCurrent(target, relativeDir, opened, "list");
+          assertDirectoryStillCurrent(target, relativeDir, opened);
           return true;
         }
       }
-      assertDirectoryStillCurrent(target, relativeDir, opened, "list");
+      assertDirectoryStillCurrent(target, relativeDir, opened);
       return false;
     } finally {
       closeOpenedDirectory(opened);

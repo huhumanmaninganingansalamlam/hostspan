@@ -1,5 +1,9 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+
+export function oauthApprovalSecretPath(configPath: string): string {
+  return join(dirname(configPath), "oauth-approval-secret");
+}
 
 export function defaultConfigPath(): string {
   if (process.env.HOSTSPAN_CONFIG) return process.env.HOSTSPAN_CONFIG;

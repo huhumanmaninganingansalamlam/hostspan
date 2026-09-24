@@ -1,24 +1,13 @@
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import {
-  OAuthError,
-  OAuthErrorCode,
-  type AuthInfo,
-  type OAuthTokenVerifier,
-} from "@modelcontextprotocol/server";
-import {
   HOSTSPAN_OAUTH_SCOPES,
   HOSTSPAN_OAUTH_SCOPE_READ,
-  LEGACY_HOSTSPAN_OAUTH_SCOPE,
   isSupportedHostSpanOAuthScope,
   oauthScopeCanNarrow,
   splitOAuthScopes,
 } from "./oauth-scopes.js";
 import type { OAuthConfig } from "../config/schema.js";
-import type {
-  OAuthAuthorizationRequestRecord,
-  OAuthTokenRecord,
-} from "../state/oauth-repo.js";
-import type { OAuthRepo } from "../state/oauth-repo.js";
+import type { OAuthAuthorizationRequestRecord, OAuthStore, OAuthTokenRecord } from "./oauth-store.js";
 
 
 export class OAuthHttpError extends Error {
@@ -93,12 +82,15 @@ function normalizePublicMcpUrl(value: string): string {
 }
 
 function normalizeScope(scope: string | undefined): string {
-  const unique = scope?.trim() ? splitOAuthScopes(scope) : [HOSTSPAN_OAUTH_SCOPE_READ];
+  if (!scope?.trim()) return HOSTSPAN_OAUTH_SCOPE_READ;
+  return normalizeGrantedScope(scope);
+}
+
+function normalizeGrantedScope(scope: string): string {
+  const unique = splitOAuthScopes(scope);
+  if (unique.length === 0) throw new OAuthHttpError(400, "invalid_scope", "At least one HostSpan OAuth scope is required.");
   for (const item of unique) {
     if (!isSupportedHostSpanOAuthScope(item)) throw new OAuthHttpError(400, "invalid_scope", `Unsupported OAuth scope: ${item}`);
-  }
-  if (unique.includes(LEGACY_HOSTSPAN_OAUTH_SCOPE) && unique.length > 1) {
-    throw new OAuthHttpError(400, "invalid_scope", `The legacy ${LEGACY_HOSTSPAN_OAUTH_SCOPE} scope cannot be combined with granular scopes.`);
   }
   return unique.join(" ");
 }
@@ -164,14 +156,14 @@ export function rotateOAuthApprovalSecret(config: OAuthConfig): { config: OAuthC
   };
 }
 
-export class OAuthService implements OAuthTokenVerifier {
+export class OAuthService {
   readonly publicMcpUrl: string;
   readonly issuer: string;
   readonly resourceMetadataUrl: string;
 
   constructor(
     readonly config: OAuthConfig,
-    private readonly repo: OAuthRepo,
+    private readonly repo: OAuthStore,
   ) {
     this.publicMcpUrl = normalizePublicMcpUrl(config.public_mcp_url);
     this.issuer = new URL(`${new URL(this.publicMcpUrl).origin}/`).href;
@@ -360,18 +352,16 @@ export class OAuthService implements OAuthTokenVerifier {
     this.repo.revokeToken(tokenHash(rawToken), Math.floor(Date.now() / 1000));
   }
 
-  async verifyAccessToken(token: string): Promise<AuthInfo> {
+  verifyAccessToken(token: string) {
     const now = Math.floor(Date.now() / 1000);
     const record = this.repo.getAccessToken(tokenHash(token), now);
-    if (!record || record.resource !== this.publicMcpUrl) {
-      throw new OAuthError(OAuthErrorCode.InvalidToken, "Access token is invalid, expired, or revoked.");
-    }
+    if (!record || record.resource !== this.publicMcpUrl) return null;
     return {
       token,
       clientId: record.client_id,
       scopes: splitOAuthScopes(record.scope),
       expiresAt: record.expires_at,
-      resource: new URL(record.resource),
+      resource: record.resource,
     };
   }
 
@@ -393,6 +383,7 @@ export class OAuthService implements OAuthTokenVerifier {
     if (!record || record.client_id !== clientId || record.redirect_uri !== redirectUri) {
       throw new OAuthHttpError(400, "invalid_grant", "Authorization code is invalid or expired.");
     }
+    const scope = normalizeGrantedScope(record.scope);
     const challenge = createHash("sha256").update(verifier).digest("base64url");
     if (challenge !== record.code_challenge) {
       throw new OAuthHttpError(400, "invalid_grant", "PKCE verification failed.");
@@ -401,7 +392,7 @@ export class OAuthService implements OAuthTokenVerifier {
     if (!this.repo.markAuthorizationCodeUsed(codeHash, now)) {
       throw new OAuthHttpError(400, "invalid_grant", "Authorization code has already been used.");
     }
-    return this.issueTokenPair(record.client_id, record.scope, record.resource, now);
+    return this.issueTokenPair(record.client_id, scope, record.resource, now);
   }
 
   private exchangeRefreshToken(form: URLSearchParams): OAuthTokenResponse {
@@ -414,7 +405,7 @@ export class OAuthService implements OAuthTokenVerifier {
       throw new OAuthHttpError(400, "invalid_grant", "Refresh token is invalid or expired.");
     }
     if (form.get("resource")) normalizeResource(form.get("resource") ?? "", record.resource);
-    let scope = record.scope;
+    let scope = normalizeGrantedScope(record.scope);
     if (form.get("scope")) {
       const requested = normalizeScope(form.get("scope") ?? undefined);
       if (!oauthScopeCanNarrow(record.scope, requested)) {

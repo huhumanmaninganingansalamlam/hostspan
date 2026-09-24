@@ -65,6 +65,7 @@ export function darwinDirentLayout(arch: NodeJS.Architecture): {
       maxRecordLength: 1048,
     };
   }
+  if (arch !== "x64") throw new RangeError(`Unsupported Darwin directory-entry architecture: ${arch}`);
   return {
     recordLengthOffset: 4,
     nameLengthOffset: 7,
@@ -111,10 +112,8 @@ export function darwinReadDirectoryNames(fd: number): string[] {
         if (errno !== 0) throw new Error(`readdir failed for fd ${fd} (errno=${errno})`);
         break;
       }
-      // Darwin exposes two readdir ABIs to 64-bit processes. Intel keeps the
-      // historical symbol layout for binary compatibility, while native
-      // Apple Silicon's readdir uses the 64-bit inode layout from dirent.h.
-      // Decode only reclen/namlen/name, selecting offsets from the process ABI.
+      // Darwin's 64-bit dirent layouts differ between x64 and arm64. Decode
+      // only the required fields using offsets for the running ABI.
       const {
         recordLengthOffset,
         nameLengthOffset,

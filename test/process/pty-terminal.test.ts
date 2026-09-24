@@ -7,7 +7,7 @@ import { v7 as uuidv7 } from "uuid";
 import { main } from "../../src/cli/index.js";
 import type { HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
-import type { ProcessWriteToolInput } from "../../src/mcp/schemas.js";
+import type { ProcessWriteToolInput } from "../../src/tools/schemas.js";
 import { PolicyEvaluator } from "../../src/policy/evaluator.js";
 import { PtySessionManager } from "../../src/processes/pty-session.js";
 import { ptySocketPath } from "../../src/processes/pty-ipc.js";
@@ -251,7 +251,7 @@ describe("durable interactive PTY process backend", () => {
       { exists: true, dead: true, exit_code: 1, signal: null, reason: "cancel_requested", pid: 1, columns: 80, rows: 24 },
     ];
     let index = 0;
-    terminal.inspectSync = () => {
+    terminal.inspect = async () => {
       const snapshot = snapshots[Math.min(index++, snapshots.length - 1)];
       if (!snapshot) throw new Error("transient status fixture is empty");
       return snapshot;

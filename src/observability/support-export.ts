@@ -1,27 +1,25 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { HostSpanConfig } from "../config/schema.js";
-import type { AuditRepo } from "../state/audit-repo.js";
-import type { ProcessesRepo } from "../state/processes-repo.js";
-import type { TargetRegistry } from "../targets/registry.js";
+import type { ProcessRecord } from "../processes/store.js";
+import type { TargetRuntime } from "../targets/registry.js";
 import { SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
-import { TOOLSET_HASH } from "../mcp/registry.js";
 import { redact } from "./redactor.js";
 
 export interface SupportExportInput {
   config: HostSpanConfig;
-  targets: TargetRegistry;
-  audit: AuditRepo;
-  processes: ProcessesRepo;
+  targets: { list(): TargetRuntime[] };
+  audit: { recent(limit: number): Array<Record<string, unknown>> };
+  processes: { recent(limit: number): ProcessRecord[] };
 }
 
-export function buildSupportExport(input: SupportExportInput): Record<string, unknown> {
+export function buildSupportExport(input: SupportExportInput, toolsetHash: string): Record<string, unknown> {
   const payload = {
     schema_version: 1,
     generated_at: new Date().toISOString(),
     server_version: SERVER_VERSION,
     toolset_version: TOOLSET_VERSION,
-    toolset_hash: TOOLSET_HASH,
+    toolset_hash: toolsetHash,
     policy_epoch: input.config.policy_epoch,
     runtime: {
       node: process.version,

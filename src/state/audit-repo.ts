@@ -95,4 +95,23 @@ export class AuditRepo {
       .all(bounded) as Array<Record<string, unknown> & { metadata_json: string }>;
     return rows.map(({ metadata_json, ...row }) => ({ ...row, metadata: JSON.parse(metadata_json) }));
   }
+
+  activeRequests(since: string, limit = 100): Array<Record<string, unknown>> {
+    const rows = this.db
+      .prepare(
+        `SELECT a.request_id,a.metadata_json,a.timestamp
+         FROM audit_events a
+         WHERE a.event_type='request.accepted'
+           AND a.timestamp >= ?
+           AND a.request_id NOT IN (
+             SELECT done.request_id FROM audit_events done
+             WHERE done.event_type IN ('response.returned','request.aborted')
+               AND done.timestamp >= ?
+           )
+         ORDER BY a.timestamp DESC
+         LIMIT ?`,
+      )
+      .all(since, since, limit) as Array<{ request_id: string; metadata_json: string; timestamp: string }>;
+    return rows.map((row) => ({ request_id: row.request_id, timestamp: row.timestamp, metadata: JSON.parse(row.metadata_json) }));
+  }
 }

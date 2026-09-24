@@ -1,5 +1,5 @@
 import { v7 as uuidv7 } from "uuid";
-import { asHostSpanError } from "./errors.js";
+import { asHostSpanError } from "../errors.js";
 
 export interface ResponseContext {
   toolset_hash: string;

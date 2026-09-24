@@ -3,13 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { writeDaemonPid } from "../../src/cli/daemon.js";
-import { createRuntime, main } from "../../src/cli/index.js";
+import { writeDaemonPid } from "../../src/daemon/control.js";
+import { main } from "../../src/cli/index.js";
+import { createRuntime } from "../../src/runtime/create-runtime.js";
 import { runSmoke } from "../../src/cli/smoke.js";
 import { createInitialConfig } from "../../src/config/defaults.js";
 import { loadConfig } from "../../src/config/loader.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
-import type { HostSpanError } from "../../src/mcp/errors.js";
+import type { HostSpanError } from "../../src/errors.js";
 
 const roots: string[] = [];
 
@@ -125,38 +126,6 @@ describe("CLI target workspace defaults", () => {
     }
   });
 
-  it("loads old exec profile fields without retaining or enforcing them", async () => {
-    const configPath = configFixture();
-    const oldConfig = parseYaml(readFileSync(configPath, "utf8"));
-    Object.assign(oldConfig.exec_profiles["native-dev"], {
-      policy: "restricted",
-      allowed_programs: ["node"],
-      env_allowlist: ["CI"],
-    });
-    writeFileSync(configPath, stringifyYaml(oldConfig));
-    expect(loadConfig(configPath).exec_profiles["native-dev"]).toMatchObject({ mode: "native" });
-
-    const automaticRoot = mkdtempSync(join(tmpdir(), "hostspan-cli-target-legacy-auto-"));
-    roots.push(automaticRoot);
-    const originalWrite = process.stdout.write;
-    process.stdout.write = (() => true) as typeof process.stdout.write;
-    try {
-      expect(
-        await main([
-          "targets", "add", "--id", "legacy-auto", "--root", automaticRoot,
-          "--capabilities", "read,exec", "--config", configPath,
-        ]),
-      ).toBe(0);
-    } finally {
-      process.stdout.write = originalWrite;
-    }
-
-    const updated = loadConfig(configPath);
-    expect(updated.targets["legacy-auto"]?.exec_profile).toBe("native-dev");
-    expect(Object.keys(updated.exec_profiles)).toEqual(["native-dev"]);
-    expect(readFileSync(configPath, "utf8")).not.toMatch(/policy: restricted|allowed_programs:|env_allowlist:/);
-  });
-
   it("fails smoke when an exec target has no exec profile", async () => {
     const configPath = configFixture();
     const targetRoot = mkdtempSync(join(tmpdir(), "hostspan-cli-target-missing-profile-"));
@@ -180,5 +149,18 @@ describe("CLI target workspace defaults", () => {
     } finally {
       await runtime.close();
     }
+  });
+
+  it("rejects removed exec profile fields", () => {
+    const configPath = configFixture();
+    const config = parseYaml(readFileSync(configPath, "utf8"));
+    Object.assign(config.exec_profiles["native-dev"], {
+      policy: "restricted",
+      allowed_programs: ["node"],
+      env_allowlist: ["CI"],
+    });
+    writeFileSync(configPath, stringifyYaml(config));
+
+    expect(() => loadConfig(configPath)).toThrow();
   });
 });

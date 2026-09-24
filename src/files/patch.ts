@@ -18,18 +18,18 @@ import { basename, dirname, extname, join } from "node:path";
 import { applyPatch } from "diff";
 import { parse as parseYaml } from "yaml";
 import { v7 as uuidv7 } from "uuid";
-import type { FilePatchToolInput } from "../mcp/schemas.js";
-import { HostSpanError, asHostSpanError } from "../mcp/errors.js";
+import type { FilePatchToolInput } from "../tools/schemas.js";
+import { HostSpanError, asHostSpanError } from "../errors.js";
+import type { OperationsStore } from "../operations/store.js";
 import type { PolicyEvaluator } from "../policy/evaluator.js";
-import type { OperationsRepo } from "../state/operations-repo.js";
-import type { TransactionsRepo } from "../state/transactions-repo.js";
+import type { PatchTransactionStore } from "./patch-store.js";
 import type { TargetRegistry, TargetRuntime } from "../targets/registry.js";
+import { resolveTargetPath } from "../targets/path.js";
 import {
   assertDirectoryStillCurrent,
   closeOpenedDirectory,
   openDirectoryNoFollow,
   openReadNoFollow,
-  recheckTargetPath,
 } from "./path-guard.js";
 import { darwinOpenAt, darwinRenameAt, darwinUnlinkAtIfExists } from "./darwin-fs.js";
 import { sha256File } from "./read.js";
@@ -112,7 +112,7 @@ function removeTerminalJournal(path: string): boolean {
   }
 }
 
-export function cleanupTerminalPatchJournals(transactions: TransactionsRepo): string[] {
+export function cleanupTerminalPatchJournals(transactions: PatchTransactionStore): string[] {
   const removed: string[] = [];
   for (const { transaction_id: transactionId, journal_path: path } of transactions.terminalJournals()) {
     if (!path) continue;
@@ -188,9 +188,9 @@ function runValidators(files: PreparedFile[], validators: FilePatchToolInput["va
 }
 
 function atomicReplace(target: TargetRuntime, relativePath: string, content: Buffer, mode: number): void {
-  const before = recheckTargetPath(target, relativePath, "write");
+  const before = resolveTargetPath(target, relativePath);
   const parentRelative = dirname(before.relative);
-  const parent = openDirectoryNoFollow(target, parentRelative, "write");
+  const parent = openDirectoryNoFollow(target, parentRelative);
   const tempName = `.hostspan-${process.pid}-${uuidv7()}.tmp`;
   const destinationName = basename(before.relative);
   const temp = join(parent.stable_path, tempName);
@@ -221,9 +221,9 @@ function atomicReplace(target: TargetRuntime, relativePath: string, content: Buf
         closeSync(fd);
       }
     }
-    const rechecked = recheckTargetPath(target, relativePath, "write");
+    const rechecked = resolveTargetPath(target, relativePath);
     if (rechecked.absolute !== before.absolute) throw new HostSpanError("PATH_OUTSIDE_TARGET", "Path changed while preparing atomic replace.");
-    assertDirectoryStillCurrent(target, parentRelative, parent, "write");
+    assertDirectoryStillCurrent(target, parentRelative, parent);
     if (process.platform === "darwin") {
       if (parent.fd === null) throw new HostSpanError("POLICY_UNENFORCEABLE", "Darwin directory handle is unavailable.");
       darwinRenameAt(parent.fd, tempName, destinationName);
@@ -231,8 +231,8 @@ function atomicReplace(target: TargetRuntime, relativePath: string, content: Buf
       renameSync(temp, destination);
     }
     if (parent.fd !== null) fsyncSync(parent.fd);
-    recheckTargetPath(target, relativePath, "write");
-    assertDirectoryStillCurrent(target, parentRelative, parent, "write");
+    resolveTargetPath(target, relativePath);
+    assertDirectoryStillCurrent(target, parentRelative, parent);
   } finally {
     if (process.platform === "darwin" && parent.fd !== null) darwinUnlinkAtIfExists(parent.fd, tempName);
     else rmSync(temp, { force: true });
@@ -308,8 +308,8 @@ function resultFor(files: PreparedFile[], validators: ValidatorResult[], dryRun:
 
 export interface FilePatchServiceOptions {
   data_dir: string;
-  operations: OperationsRepo;
-  transactions: TransactionsRepo;
+  operations: OperationsStore;
+  transactions: PatchTransactionStore;
   policy: PolicyEvaluator;
 }
 
@@ -420,8 +420,9 @@ export class FilePatchService {
       if (removeTerminalJournal(journalPath)) this.options.transactions.clearJournalPath(transactionId);
       return result;
     } catch (error) {
-      const existing = this.options.operations.get(input.idempotency_key);
-      if (existing?.state === "accepted") this.options.operations.setState(input.idempotency_key, "failed", undefined, asHostSpanError(error));
+      if (this.options.operations.getState(input.idempotency_key) === "accepted") {
+        this.options.operations.setState(input.idempotency_key, "failed", undefined, asHostSpanError(error));
+      }
       throw error;
     }
   }
@@ -435,7 +436,7 @@ function parseJournal(path: string): PatchJournal {
 
 export function recoverPatchTransactions(
   targets: TargetRegistry,
-  transactions: TransactionsRepo,
+  transactions: PatchTransactionStore,
 ): Array<{ transaction_id: string; state: string }> {
   const recovered: Array<{ transaction_id: string; state: string }> = [];
   for (const transaction of transactions.active()) {

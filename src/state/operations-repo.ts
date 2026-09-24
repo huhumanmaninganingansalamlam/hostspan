@@ -1,27 +1,8 @@
 import { createHash } from "node:crypto";
+import { canonicalJson } from "../canonical-json.js";
 import type { HostSpanDatabase } from "./database.js";
-import { HostSpanError } from "../mcp/errors.js";
-
-export type OperationResolution =
-  | { kind: "new" }
-  | { kind: "replay"; state: string; result: unknown; error?: HostSpanError }
-  | { kind: "join"; state: string; result: unknown }
-  | { kind: "unknown"; state: string; result: unknown };
-
-function serializeOperationError(error: unknown): unknown {
-  if (error instanceof HostSpanError) {
-    return {
-      code: error.code,
-      message: error.message,
-      retryable: error.retryable,
-      details: error.details,
-    };
-  }
-  if (error instanceof Error) {
-    return { code: "INTERNAL_ERROR", message: error.message, retryable: false, details: {} };
-  }
-  return error;
-}
+import { HostSpanError } from "../errors.js";
+import { serializeOperationError, type OperationResolution, type OperationsStore } from "../operations/store.js";
 
 function deserializeOperationError(value: unknown): HostSpanError | undefined {
   if (!value || typeof value !== "object") return undefined;
@@ -35,22 +16,11 @@ function deserializeOperationError(value: unknown): HostSpanError | undefined {
   );
 }
 
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
 export function argumentHash(value: unknown): string {
-  return `sha256:${createHash("sha256").update(canonical(value)).digest("hex")}`;
+  return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
 }
 
-export class OperationsRepo {
+export class OperationsRepo implements OperationsStore {
   constructor(private readonly db: HostSpanDatabase) {}
 
   resolve(idempotencyKey: string, toolName: string, args: unknown, targetId?: string): OperationResolution {
@@ -87,6 +57,10 @@ export class OperationsRepo {
 
   get(idempotencyKey: string) {
     return this.db.prepare("SELECT * FROM operations WHERE idempotency_key=?").get(idempotencyKey) as Record<string, unknown> | undefined;
+  }
+
+  getState(idempotencyKey: string): string | undefined {
+    return (this.db.prepare("SELECT state FROM operations WHERE idempotency_key=?").get(idempotencyKey) as { state: string } | undefined)?.state;
   }
 
   compactResultsOlderThan(days: number, nowMs = Date.now()): number {

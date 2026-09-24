@@ -102,7 +102,7 @@ Forward these paths to the same HostSpan upstream:
 /revoke
 ```
 
-Keep `/healthz` and `/readyz` private unless you have an explicit operational reason to publish them. HostSpan advertises the refresh-capable `hostspan` scope, requires PKCE S256, and issues rotating refresh tokens so ChatGPT can maintain OAuth connectivity. The OAuth metadata and endpoint layout intentionally follow the MCP SDK shape used by known-working ChatGPT integrations.
+Keep `/healthz` and `/readyz` private unless you have an explicit operational reason to publish them. HostSpan advertises `hostspan.read`, `hostspan.write`, `hostspan.exec`, and `hostspan.terminal`; requests without a scope default to `hostspan.read`. It requires PKCE S256 and issues rotating refresh tokens so ChatGPT can maintain OAuth connectivity. The OAuth metadata and endpoint layout follow the MCP SDK shape used by known-working ChatGPT integrations.
 
 MCP `2026-07-28` is stateless at the protocol core, so ordinary reverse proxies and load balancers do not need sticky MCP sessions for modern requests. The proxy should preserve the `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`, content type, and request body headers/data.
 
@@ -158,4 +158,4 @@ If the approval credential is lost or suspected compromised, run `hostspan oauth
 
 ## Inspector validation
 
-Before ChatGPT interoperability testing, MCP Inspector can be used against the local or tunnel endpoint to verify 2026-07-28 `server/discover`, per-request `tools/list`, schemas, annotations, and tool calls independently of ChatGPT UI behavior. The repository contract test performs 100 modern per-request `tools/list` exchanges as an automated registry-stability check. HostSpan v3 targets the 2026-07-28 contract directly and does not carry an older stateless transport fallback.
+Before ChatGPT interoperability testing, MCP Inspector can be used against the local or tunnel endpoint to verify 2026-07-28 `server/discover`, per-request `tools/list`, schemas, annotations, and tool calls independently of ChatGPT UI behavior. The repository contract suite pins the approved hash for the fixed 10-tool registry, while integration coverage verifies tool calls and OAuth authorization. HostSpan v3 targets the 2026-07-28 contract directly and does not carry an older stateless transport fallback.

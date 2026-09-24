@@ -1,32 +1,8 @@
 import type { HostSpanDatabase } from "./database.js";
-import { HostSpanError } from "../mcp/errors.js";
+import { serializeOperationError } from "../operations/store.js";
+import type { PatchTransactionRecord, PatchTransactionStore } from "../files/patch-store.js";
 
-function serializeTransactionError(error: unknown): unknown {
-  if (error instanceof HostSpanError) {
-    return {
-      code: error.code,
-      message: error.message,
-      retryable: error.retryable,
-      details: error.details,
-    };
-  }
-  if (error instanceof Error) {
-    return { code: "INTERNAL_ERROR", message: error.message, retryable: false, details: {} };
-  }
-  return error;
-}
-
-export interface PatchTransactionRecord {
-  transaction_id: string;
-  idempotency_key: string;
-  target_id: string;
-  journal_path: string;
-  state: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export class TransactionsRepo {
+export class TransactionsRepo implements PatchTransactionStore {
   constructor(private readonly db: HostSpanDatabase) {}
 
   create(transactionId: string, key: string, targetId: string, journalPath: string): void {
@@ -52,7 +28,7 @@ export class TransactionsRepo {
         .run(
           operationState,
           result === undefined ? null : JSON.stringify(result),
-          error === undefined ? null : JSON.stringify(serializeTransactionError(error)),
+          error === undefined ? null : JSON.stringify(serializeOperationError(error)),
           now,
           idempotencyKey,
         );

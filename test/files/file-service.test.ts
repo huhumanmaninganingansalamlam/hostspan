@@ -7,7 +7,7 @@ import { fileList } from "../../src/files/list.js";
 import { fileRead } from "../../src/files/read.js";
 import { darwinDirentLayout } from "../../src/files/darwin-fs.js";
 import { fileSearch } from "../../src/files/search.js";
-import type { HostSpanError } from "../../src/mcp/errors.js";
+import type { HostSpanError } from "../../src/errors.js";
 import { TargetRegistry } from "../../src/targets/registry.js";
 
 const cleanup: string[] = [];

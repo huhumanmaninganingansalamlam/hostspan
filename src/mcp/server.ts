@@ -4,7 +4,10 @@ import {
   bearerAuthChallengeResponse,
   createMcpHandler,
   McpServer,
+  OAuthError,
+  OAuthErrorCode,
   verifyBearerToken,
+  type OAuthTokenVerifier,
 } from "@modelcontextprotocol/server";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { isIP } from "node:net";
@@ -32,6 +35,16 @@ export interface HostSpanHttpServerOptions {
   responseContext: ResponseContextProvider;
   status: ServerStatusProvider;
   trace?: (event: string, metadata: Record<string, unknown>) => void;
+}
+
+function mcpOAuthTokenVerifier(oauth: OAuthService): OAuthTokenVerifier {
+  return {
+    async verifyAccessToken(token) {
+      const verified = oauth.verifyAccessToken(token);
+      if (!verified) throw new OAuthError(OAuthErrorCode.InvalidToken, "Access token is invalid, expired, or revoked.");
+      return { ...verified, resource: new URL(verified.resource) };
+    },
+  };
 }
 
 function normalizeAllowedHost(host: string): string {
@@ -74,6 +87,7 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
   }
   const allowedHosts = resolveAllowedHosts(options.listen_host, options.allowed_hosts);
   const app = createMcpFastifyApp({ host: options.listen_host, allowedHosts, allowedOrigins: allowedHosts });
+  const oauthVerifier = options.oauth ? mcpOAuthTokenVerifier(options.oauth) : undefined;
   app.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string" }, (_request, body, done) => {
     done(null, body);
   });
@@ -133,10 +147,10 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
   });
   if (options.oauth) registerOAuthRoutes(app, options.oauth);
   app.all("/mcp", async (request, reply) => {
-    if (options.oauth) {
+    if (options.oauth && oauthVerifier) {
       try {
         const auth = await verifyBearerToken(request.headers.authorization, {
-          verifier: options.oauth,
+          verifier: oauthVerifier,
           resourceMetadataUrl: options.oauth.resourceMetadataUrl,
         });
         Object.assign(request.raw, { auth });
@@ -305,8 +319,4 @@ async function sendWebResponse(reply: FastifyReply, response: Response) {
     }
   }
   return reply.send(textBody);
-}
-
-export async function listenHostSpan(app: FastifyInstance, host: string, port: number): Promise<string> {
-  return app.listen({ host, port });
 }

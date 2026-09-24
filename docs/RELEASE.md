@@ -1,8 +1,16 @@
 # HostSpan release notes
 
+## 0.7.0 release
+
+- The retired full-authority OAuth `hostspan` scope is no longer accepted. Existing clients using it must authorize again with one or more granular scopes; omitting `scope` grants `hostspan.read`.
+- Refresh tokens preserve or narrow existing granular authority and cannot return to the retired scope.
+- Remove the retired `git` target capability, Git queue settings, and legacy exec-profile fields (`policy`, `allowed_programs`, `env_allowlist`) before upgrading. The 0.7.0 config loader rejects these fields and does not rewrite config files.
+- The public MCP contract remains `hostspan-v3.1` with exactly 10 tools and toolset hash `sha256:adcd8ec1b5643dd1b0d4bcaf311d23560786ae33b5515777483ce5968e247a9f`. The durable database schema is unchanged.
+
 ## 0.6.0 published release
 
-- Native `exec` no longer uses per-program or environment-variable allowlists. Existing `restricted` exec profiles continue to load; obsolete allowlist fields are ignored and removed by the next config write. Operators who relied on those fields as an execution boundary should review target and OAuth authority before upgrading.
+- Native `exec` no longer uses per-program or environment-variable allowlists. `restricted` profiles are rejected; legacy `policy`, `allowed_programs`, and `env_allowlist` fields are ignored in memory and remain in the config file. Remove them before upgrading to 0.7.0.
+- The 0.6.0 loader still accepts and ignores the retired `git` target capability and Git queue fields from 0.5.0. Remove them before upgrading to 0.7.0.
 - Target `exec` capability, OAuth authority, and process resource limits remain in effect.
 - The public MCP contract remains `hostspan-v3.1` with exactly 10 tools and the same toolset hash as 0.5.0. The database schema is unchanged.
 

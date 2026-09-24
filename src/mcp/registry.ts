@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { canonicalJson } from "../canonical-json.js";
 import type { McpServer, ServerContext, ToolAnnotations } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import {
@@ -10,7 +11,7 @@ import {
   type HostSpanOAuthScope,
 } from "../auth/oauth-scopes.js";
 import { TOOLSET_VERSION } from "../version.js";
-import { HostSpanError } from "./errors.js";
+import { HostSpanError } from "../errors.js";
 import { errorResult, requestId, successResult, type ResponseContext } from "./result.js";
 import {
   FileListInputSchema,
@@ -33,22 +34,7 @@ import {
   type ProcessWriteToolInput,
   type SystemStatusInput,
   type TargetListInput,
-} from "./schemas.js";
-
-export const TOOL_NAMES = [
-  "system_status",
-  "target_list",
-  "file_list",
-  "file_read",
-  "file_search",
-  "file_patch",
-  "process_start",
-  "process_poll",
-  "process_write",
-  "process_cancel",
-] as const;
-
-export type ToolName = (typeof TOOL_NAMES)[number];
+} from "../tools/schemas.js";
 
 const readOnlyAnnotations: ToolAnnotations = {
   readOnlyHint: true,
@@ -136,16 +122,9 @@ export const TOOL_DEFINITIONS = [
   },
 ] as const;
 
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
+export const TOOL_NAMES = TOOL_DEFINITIONS.map((tool) => tool.name);
+
+export type ToolName = (typeof TOOL_DEFINITIONS)[number]["name"];
 
 export function toolsetDocument() {
   return {
@@ -159,7 +138,7 @@ export function toolsetDocument() {
   };
 }
 
-export const TOOLSET_HASH = `sha256:${createHash("sha256").update(canonical(toolsetDocument())).digest("hex")}`;
+export const TOOLSET_HASH = `sha256:${createHash("sha256").update(canonicalJson(toolsetDocument())).digest("hex")}`;
 
 export interface HostSpanToolHandlers {
   system_status(input: SystemStatusInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;

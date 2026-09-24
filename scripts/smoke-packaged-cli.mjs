@@ -51,24 +51,23 @@ function findFiles(dir, name, results = []) {
 
 function packagedPaths(asarPath, platform) {
 	const resourcesDir = dirname(asarPath);
-	if (platform === "darwin") {
-		const contentsDir = dirname(resourcesDir);
-		return {
-			executable: join(contentsDir, "MacOS", "HostSpan"),
-			cli: join(asarPath, "dist", "src", "cli", "index.js"),
-			nativeModule: join(asarPath, "node_modules", "better-sqlite3"),
-			ptyModule: join(asarPath, "node_modules", "node-pty"),
-			ripgrepModule: join(asarPath, "dist", "src", "files", "ripgrep.js"),
-			jobModule: join(asarPath, "dist", "src", "processes", "windows-job-process.js"),
-		};
-	}
 	const appDir = dirname(resourcesDir);
+	if (platform === "darwin") {
+		return { executable: join(appDir, "MacOS", "HostSpan"), ...runtimePaths(asarPath) };
+	}
 	return {
 		executable: join(
 			appDir,
 			platform === "win32" ? "HostSpan.exe" : "hostspan-desktop",
 		),
+		...runtimePaths(asarPath),
+	};
+}
+
+function runtimePaths(asarPath) {
+	return {
 		cli: join(asarPath, "dist", "src", "cli", "index.js"),
+		runtime: join(asarPath, "dist", "src", "runtime", "create-runtime.js"),
 		nativeModule: join(asarPath, "node_modules", "better-sqlite3"),
 		ptyModule: join(asarPath, "node_modules", "node-pty"),
 		ripgrepModule: join(asarPath, "dist", "src", "files", "ripgrep.js"),
@@ -140,7 +139,7 @@ function smokeWindowsPackage(executable, asarPath, arch) {
 		throw new Error(`Packaged Windows ripgrep binary not found: ${ripgrepBinary}`);
 }
 
-function smokePackagedRuntime(executable, cli, nativeModule, ptyModule, ripgrepModule, jobModule) {
+function smokePackagedRuntime(executable, cli, runtime, nativeModule, ptyModule, ripgrepModule, jobModule) {
 	const version = run(executable, [cli, "--version"]);
 	if (version !== packageJson.version) {
 		throw new Error(
@@ -270,7 +269,7 @@ function smokePackagedRuntime(executable, cli, nativeModule, ptyModule, ripgrepM
 		const ptyWriteKey = uuidv7();
 		const hostspanPtyProbe = [
 			"const {pathToFileURL}=require('node:url');",
-			`import(pathToFileURL(${JSON.stringify(cli)}).href).then(async m=>{`,
+			`import(pathToFileURL(${JSON.stringify(runtime)}).href).then(async m=>{`,
 			`const rt=m.createRuntime(${JSON.stringify(configPath)});`,
 			"try{",
 			"const ttyArgv=process.platform==='win32'?['cmd.exe','/V:ON','/Q','/D','/C','echo READY & set /p name= & echo HELLO !name!']:['/bin/sh','-lc','printf \"READY\\n\"; IFS= read -r name; printf \"HELLO %s\\n\" \"$name\"'];",
@@ -312,6 +311,40 @@ function smokePackagedRuntime(executable, cli, nativeModule, ptyModule, ripgrepM
 	);
 }
 
+function smokeLinuxArtifact(artifactPath) {
+	const scratch = mkdtempSync(join(tmpdir(), "hostspan-linux-artifact-smoke-"));
+	try {
+		let appDir;
+		if (artifactPath.endsWith(".deb")) {
+			const debRoot = join(scratch, "deb");
+			mkdirSync(debRoot);
+			const extracted = spawnSync("dpkg-deb", ["-x", artifactPath, debRoot], { encoding: "utf8" });
+			if (extracted.status !== 0) {
+				throw new Error(`Could not extract Debian package: ${extracted.stderr || extracted.stdout}`);
+			}
+			appDir = join(debRoot, "opt", "HostSpan");
+		} else {
+			const extracted = spawnSync(artifactPath, ["--appimage-extract"], {
+				cwd: scratch,
+				encoding: "utf8",
+				maxBuffer: 8 * 1024 * 1024,
+			});
+			if (extracted.status !== 0) {
+				throw new Error(`Could not extract AppImage: ${extracted.stderr || extracted.stdout}`);
+			}
+			appDir = join(scratch, "squashfs-root");
+		}
+		const paths = packagedPaths(join(appDir, "resources", "app.asar"), "linux");
+		if (!existsSync(paths.executable)) {
+			throw new Error(`Linux package executable not found: ${paths.executable}`);
+		}
+		smokePackagedRuntime(paths.executable, paths.cli, paths.runtime, paths.nativeModule, paths.ptyModule, paths.ripgrepModule, paths.jobModule);
+		console.log(`Linux artifact smoke passed: ${artifactPath}`);
+	} finally {
+		rmSync(scratch, { recursive: true, force: true });
+	}
+}
+
 const candidates = installedDir
 	? (() => {
 			const installedRoot = resolve(root, installedDir);
@@ -334,7 +367,7 @@ if (candidates.length === 0)
 	);
 
 const asarPath = candidates[0];
-const { executable, cli, nativeModule, ptyModule, ripgrepModule, jobModule } = packagedPaths(asarPath, targetPlatform);
+const { executable, cli, runtime, nativeModule, ptyModule, ripgrepModule, jobModule } = packagedPaths(asarPath, targetPlatform);
 if (!existsSync(executable))
 	throw new Error(`Packaged executable not found: ${executable}`);
 
@@ -348,7 +381,17 @@ if (targetPlatform === "win32") {
 }
 
 if (targetPlatform === process.platform && targetArch === process.arch) {
-	smokePackagedRuntime(executable, cli, nativeModule, ptyModule, ripgrepModule, jobModule);
+	const linuxArtifacts = targetPlatform === "linux" && !installedDir
+		? readdirSync(outDir).filter((entry) => entry.endsWith(".deb") || entry.endsWith(".AppImage")).map((entry) => join(outDir, entry))
+		: [];
+	if (linuxArtifacts.length > 0) {
+		if (!linuxArtifacts.some((path) => path.endsWith(".deb")) || !linuxArtifacts.some((path) => path.endsWith(".AppImage"))) {
+			throw new Error("Linux distributable smoke requires both AppImage and Debian artifacts.");
+		}
+		for (const artifact of linuxArtifacts) smokeLinuxArtifact(artifact);
+	} else {
+		smokePackagedRuntime(executable, cli, runtime, nativeModule, ptyModule, ripgrepModule, jobModule);
+	}
 } else if (targetPlatform !== "win32") {
 	throw new Error(
 		`Executable smoke requires the target runtime (${targetPlatform}/${targetArch}); current runtime is ${process.platform}/${process.arch}.`,

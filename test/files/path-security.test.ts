@@ -4,12 +4,12 @@ import { join } from "node:path";
 import fc from "fast-check";
 import { afterEach, describe, expect, it } from "vitest";
 import type { HostSpanConfig } from "../../src/config/schema.js";
-import { HostSpanError } from "../../src/mcp/errors.js";
+import { HostSpanError } from "../../src/errors.js";
+import { resolveTargetPath } from "../../src/targets/path.js";
 import {
   closeOpenedDirectory,
   openDirectoryNoFollow,
   openReadNoFollow,
-  resolveTargetPath,
 } from "../../src/files/path-guard.js";
 import { TargetRegistry } from "../../src/targets/registry.js";
 
@@ -31,7 +31,7 @@ function targetFor(root: string) {
         label: "test",
         provider: "local",
         root,
-        capabilities: ["read", "write", "exec", "git"],
+        capabilities: ["read", "write", "exec"],
         exec_profile: "native",
         deny_globs: [],
         ignore_globs: [],
@@ -71,7 +71,7 @@ describe("canonical target path guard", () => {
     const { root } = tempRoot();
     const target = targetFor(root);
     for (const path of ["../secret", "/etc/passwd", "C:\\Windows\\system.ini", "\\\\server\\share", "a\0b"]) {
-      expect(() => resolveTargetPath(target, path, "read")).toThrowError(HostSpanError);
+      expect(() => resolveTargetPath(target, path)).toThrowError(HostSpanError);
     }
   });
 
@@ -79,7 +79,7 @@ describe("canonical target path guard", () => {
     const { root } = tempRoot();
     const target = targetFor(root);
     for (const path of ["file.txt:secret", "C:drive-relative", "NUL", "con.txt", "COM1.log", "name. ", "bad|name.txt"]) {
-      expect(() => resolveTargetPath(target, path, "read"), path).toThrowError(
+      expect(() => resolveTargetPath(target, path), path).toThrowError(
         expect.objectContaining({ code: "PATH_OUTSIDE_TARGET" }),
       );
     }
@@ -92,7 +92,7 @@ describe("canonical target path guard", () => {
     writeFileSync(join(outside, "secret.txt"), "secret");
     symlinkSync(outside, join(root, "junction-link"), "junction");
     const target = targetFor(root);
-    expect(() => resolveTargetPath(target, "junction-link/secret.txt", "read")).toThrowError(/Symlink/);
+    expect(() => resolveTargetPath(target, "junction-link/secret.txt")).toThrowError(/Symlink/);
   });
 
   it.runIf(process.platform === "win32")("pins an authorized parent directory against rename while a guarded operation is active", () => {
@@ -100,7 +100,7 @@ describe("canonical target path guard", () => {
     const parent = join(root, "parent");
     mkdirSync(parent);
     const target = targetFor(root);
-    const opened = openDirectoryNoFollow(target, "parent", "write");
+    const opened = openDirectoryNoFollow(target, "parent");
     try {
       expect(() => renameSync(parent, join(root, "moved"))).toThrow();
     } finally {
@@ -117,9 +117,9 @@ describe("canonical target path guard", () => {
     symlinkSync(join(outside, "secret.txt"), join(root, "secret-link"));
     symlinkSync(outside, join(root, "dir-link"));
     const target = targetFor(root);
-    expect(() => resolveTargetPath(target, "secret-link", "read")).toThrowError(/Symlink/);
-    expect(() => resolveTargetPath(target, "dir-link/secret.txt", "read")).toThrowError(/Symlink/);
-    expect(() => resolveTargetPath(target, "dir-link/new-file.txt", "write")).toThrowError(/Symlink/);
+    expect(() => resolveTargetPath(target, "secret-link")).toThrowError(/Symlink/);
+    expect(() => resolveTargetPath(target, "dir-link/secret.txt")).toThrowError(/Symlink/);
+    expect(() => resolveTargetPath(target, "dir-link/new-file.txt")).toThrowError(/Symlink/);
   });
 
   it("rechecks the path before returning an opened descriptor", () => {
@@ -177,7 +177,7 @@ describe("canonical target path guard", () => {
     renameSync(root, `${root}-original`);
     mkdirSync(root);
     writeFileSync(join(root, "value.txt"), "replacement");
-    expect(() => resolveTargetPath(target, "value.txt", "read")).toThrowError(
+    expect(() => resolveTargetPath(target, "value.txt")).toThrowError(
       expect.objectContaining({ code: "TARGET_NOT_READY" }),
     );
   });
@@ -188,7 +188,7 @@ describe("canonical target path guard", () => {
     fc.assert(
       fc.property(fc.array(fc.stringMatching(/^[a-z]{1,8}$/), { minLength: 0, maxLength: 8 }), (parts) => {
         const path = ["..", ...parts].join("/");
-        expect(() => resolveTargetPath(target, path, "read")).toThrow(HostSpanError);
+        expect(() => resolveTargetPath(target, path)).toThrow(HostSpanError);
       }),
       { numRuns: 250 },
     );

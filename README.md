@@ -61,7 +61,7 @@ hostspan doctor
 hostspan smoke --target local-app
 ```
 
-`hostspan init` writes the default config under `%APPDATA%\HostSpan\config.yaml` on Windows and `$XDG_CONFIG_HOME/hostspan/config.yaml` (or `~/.config/hostspan/config.yaml`) on Linux/macOS. Use `--config /path/to/config.yaml` or `HOSTSPAN_CONFIG` to select another file. Target creation/removal and policy changes are local admin operations; they are not MCP tools. Existing configs may contain the old `git` capability; it is accepted for compatibility but ignored by the runtime.
+`hostspan init` writes the default config under `%APPDATA%\HostSpan\config.yaml` on Windows and `$XDG_CONFIG_HOME/hostspan/config.yaml` (or `~/.config/hostspan/config.yaml`) on Linux/macOS. Use `--config /path/to/config.yaml` or `HOSTSPAN_CONFIG` to select another file. Target creation/removal and policy changes are local admin operations; they are not MCP tools. Workspace capabilities are `read`, `write`, `exec`, and `terminal`; configuration keys outside the current schema are rejected.
 
 The sample configuration and policy guidance are in [`examples/hostspan.example.yaml`](examples/hostspan.example.yaml) and [`examples/policy.example.yaml`](examples/policy.example.yaml).
 
@@ -157,7 +157,7 @@ pnpm desktop:make
 pnpm desktop:smoke
 ```
 
-Linux x64 produces AppImage and Debian packages, Windows x64 produces an NSIS installer and ZIP, and macOS produces separate Apple Silicon and Intel DMG/ZIP artifacts. `desktop:smoke` executes the CLI from the packaged ASAR and verifies packaged SQLite, bundled ripgrep, native PTY loading, the full local file/process workflow, and a real HostSpan `tty=true` start/write/resize/poll lifecycle. Tagging a commit as `v<package-version>` runs the cross-platform GitHub Actions release workflow, verifies that the tag matches `package.json` and points to a commit contained in `main`, builds the four desktop architecture lanes plus a portable CLI `.tgz`, generates `SHA256SUMS.txt`, refuses to overwrite an existing release, and publishes a GitHub prerelease for alpha/beta tags. Current CI artifacts are unsigned; operating-system signing and notarization credentials can be added without changing the MCP contract. See [Desktop distribution](docs/DISTRIBUTION.md).
+Linux x64 produces AppImage and Debian packages, Windows x64 produces an NSIS installer and ZIP, and macOS produces separate Apple Silicon and Intel DMG/ZIP artifacts. `desktop:smoke` verifies packaged SQLite, bundled ripgrep, native PTY loading, the full local file/process workflow, and a real HostSpan `tty=true` start/write/resize/poll lifecycle. When Linux distributables are present, it extracts both the AppImage and `.deb` to temporary directories and repeats the smoke against each package. Tagging a commit as `v<package-version>` runs the cross-platform GitHub Actions release workflow, verifies that the tag matches `package.json` and points to a commit contained in `main`, builds the four desktop architecture lanes plus a portable CLI `.tgz`, generates `SHA256SUMS.txt`, and refuses to overwrite an existing release. Tags without a suffix publish stable releases; suffix tags publish prereleases. Current CI artifacts are unsigned; operating-system signing and notarization credentials can be added without changing the MCP contract. See [Desktop distribution](docs/DISTRIBUTION.md).
 
 To listen on a specific interface:
 
@@ -276,7 +276,7 @@ hostspan doctor
 hostspan smoke --target local-app
 ```
 
-The contract suite performs 100 modern per-request `tools/list` exchanges against the fixed 10-tool `hostspan-v3.1` toolset and pins the approved toolset hash. The acceptance suite also runs the 9-turn workflow 50 times and verifies stable toolset hashing and request/response trace coverage. PTY integration tests cover interactive input, resize/output polling, descendant cleanup, output-drain ordering, explicit terminal capability enforcement, worker-crash honesty, and daemon-restart recovery. Windows additionally runs Job Object descendant-cleanup and Windows path-security tests.
+The contract suite pins the approved hash for the fixed 10-tool `hostspan-v3.1` registry. Acceptance coverage exercises the MCP request/response flow; process coverage exercises PTY input, resize, polling, cancellation, and recovery. Windows also checks Job Object process-tree control and native path security.
 
 ## Security and support
 

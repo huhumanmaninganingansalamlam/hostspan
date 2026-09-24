@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildSystemdServiceUnit, serviceExecutionPath, systemdServiceInstalled } from "../../src/cli/service.js";
+import { buildSystemdServiceUnit, serviceExecutionPath, systemdServiceInstalled } from "../../src/services/systemd.js";
 import {
   desktopLaunchSpec,
   extractMarkedPath,

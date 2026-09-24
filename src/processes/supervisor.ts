@@ -3,14 +3,14 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 import { v7 as uuidv7 } from "uuid";
 import type { HostSpanConfig } from "../config/schema.js";
-import { HostSpanError } from "../mcp/errors.js";
-import type { ProcessCancelToolInput, ProcessPollToolInput, ProcessStartToolInput, ProcessWriteToolInput } from "../mcp/schemas.js";
+import { HostSpanError } from "../errors.js";
+import type { ProcessCancelToolInput, ProcessPollToolInput, ProcessStartToolInput, ProcessWriteToolInput } from "../tools/schemas.js";
+import type { OperationsStore } from "../operations/store.js";
 import type { HostSpanLogger } from "../observability/logger.js";
 import type { PolicyEvaluator } from "../policy/evaluator.js";
-import type { OperationsRepo } from "../state/operations-repo.js";
-import type { ProcessesRepo, ProcessState } from "../state/processes-repo.js";
 import type { TargetRegistry } from "../targets/registry.js";
-import { resolveTargetPath } from "../files/path-guard.js";
+import { resolveTargetPath } from "../targets/path.js";
+import type { ProcessesStore, ProcessState } from "./store.js";
 import { OutputSpool, scanProcessSpools } from "./output-spool.js";
 import { processGroupAlive, signalProcessGroup } from "./recovery.js";
 import type { InteractiveSessionManager } from "./interactive-session.js";
@@ -79,8 +79,8 @@ export interface ProcessSupervisorOptions {
   config: HostSpanConfig;
   targets: TargetRegistry;
   policy: PolicyEvaluator;
-  operations: OperationsRepo;
-  processes: ProcessesRepo;
+  operations: OperationsStore;
+  processes: ProcessesStore;
   terminal?: InteractiveSessionManager;
   logger?: HostSpanLogger;
 }
@@ -425,7 +425,7 @@ export class ProcessSupervisor {
   async start(input: ProcessStartToolInput, requestId: string): Promise<Record<string, unknown>> {
     const interactive = input.tty ?? false;
     const target = this.options.targets.get(input.target_id, interactive ? "terminal" : "exec");
-    const cwd = resolveTargetPath(target, input.cwd, "exec");
+    const cwd = resolveTargetPath(target, input.cwd);
     if (!cwd.exists) throw new HostSpanError("FILE_NOT_FOUND", `Process cwd does not exist: ${input.cwd}`);
     const profile = interactive ? undefined : this.options.policy.validateExec(target, input.argv, input.deadline_ms, input.max_output_bytes);
     if (interactive && this.options.terminal && this.options.config.terminal) {

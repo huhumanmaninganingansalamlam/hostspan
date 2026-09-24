@@ -1,9 +1,6 @@
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
-import type { HostSpanConfig } from "../config/schema.js";
-import type { TargetRegistry } from "../targets/registry.js";
 
 export const DB_SCHEMA_VERSION = 5;
 
@@ -243,7 +240,17 @@ export function databaseResponsive(db: HostSpanDatabase): boolean {
   return row?.ok === 1;
 }
 
-export function syncTargetSnapshots(db: HostSpanDatabase, config: HostSpanConfig, targets: TargetRegistry): void {
+export function syncTargetSnapshots(
+  db: HostSpanDatabase,
+  snapshots: Array<{
+    target_id: string;
+    config_digest: string;
+    policy_epoch: number;
+    provider: string;
+    root_fingerprint: string;
+    ready: boolean;
+  }>,
+): void {
   const upsert = db.prepare(`
     INSERT OR REPLACE INTO targets_snapshot(
       target_id, config_digest, policy_epoch, provider, root_fingerprint, ready, last_checked_at
@@ -252,15 +259,13 @@ export function syncTargetSnapshots(db: HostSpanDatabase, config: HostSpanConfig
   const now = new Date().toISOString();
   db.transaction(() => {
     db.prepare("DELETE FROM targets_snapshot").run();
-    for (const target of targets.list()) {
-      const source = config.targets[target.target_id];
-      const digest = `sha256:${createHash("sha256").update(JSON.stringify(source)).digest("hex")}`;
+    for (const target of snapshots) {
       upsert.run(
         target.target_id,
-        digest,
-        config.policy_epoch,
+        target.config_digest,
+        target.policy_epoch,
         target.provider,
-        targets.fingerprint(target),
+        target.root_fingerprint,
         target.ready ? 1 : 0,
         now,
       );

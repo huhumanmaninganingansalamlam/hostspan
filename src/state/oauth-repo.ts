@@ -1,43 +1,13 @@
 import type { HostSpanDatabase } from "./database.js";
+import type {
+  OAuthAuthorizationCodeRecord,
+  OAuthAuthorizationRequestRecord,
+  OAuthClientRecord,
+  OAuthStore,
+  OAuthTokenRecord,
+} from "../auth/oauth-store.js";
 
-export interface OAuthClientRecord {
-  client_id: string;
-  metadata_json: string;
-  created_at: number;
-}
-
-export interface OAuthAuthorizationRequestRecord {
-  request_id: string;
-  client_id: string;
-  redirect_uri: string;
-  scope: string;
-  state: string | null;
-  code_challenge: string;
-  resource: string;
-  expires_at: number;
-}
-
-export interface OAuthAuthorizationCodeRecord {
-  code_hash: string;
-  client_id: string;
-  redirect_uri: string;
-  scope: string;
-  code_challenge: string;
-  resource: string;
-  expires_at: number;
-  used_at: number | null;
-}
-
-export interface OAuthTokenRecord {
-  token_hash: string;
-  client_id: string;
-  scope: string;
-  resource: string;
-  expires_at: number;
-  revoked_at: number | null;
-}
-
-export class OAuthRepo {
+export class OAuthRepo implements OAuthStore {
   constructor(private readonly db: HostSpanDatabase) {}
 
   pruneExpired(now: number): void {

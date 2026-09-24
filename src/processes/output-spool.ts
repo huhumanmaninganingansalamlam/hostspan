@@ -10,7 +10,7 @@ import {
   writeSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { HostSpanError } from "../mcp/errors.js";
+import { HostSpanError } from "../errors.js";
 
 export type OutputStream = "stdout" | "stderr";
 
@@ -73,14 +73,13 @@ function utf8SequenceLength(firstByte: number | undefined): number {
 
 export class OutputSpool {
   private totalBytes = 0;
+  private directoryReady = false;
 
   constructor(
     private readonly dataDir: string,
     readonly processId: string,
     readonly maxOutputBytes: number,
   ) {
-    const dir = join(dataDir, "spools", "processes", processId);
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
     for (const stream of ["stdout", "stderr"] as const) {
       const path = streamPath(dataDir, processId, stream);
       if (existsSync(path)) this.totalBytes += statSync(path).size;
@@ -91,8 +90,11 @@ export class OutputSpool {
     const remaining = Math.max(0, this.maxOutputBytes - this.totalBytes);
     const writtenBuffer = chunk.subarray(0, remaining);
     const path = streamPath(this.dataDir, this.processId, stream);
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     if (writtenBuffer.length > 0) {
+      if (!this.directoryReady) {
+        mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+        this.directoryReady = true;
+      }
       const fd = openSync(path, "a", 0o600);
       try {
         writeSync(fd, writtenBuffer);
@@ -211,7 +213,7 @@ export function cleanupExpiredProcessSpools(
   quotaCandidates: string[] = [],
 ): { removed: string[]; evicted: string[]; total_bytes: number; over_quota: boolean } {
   const root = join(dataDir, "spools", "processes");
-  const removed: string[] = [];
+  const removed = new Set<string>();
   const evicted: string[] = [];
   const removeArtifacts = (processId: string) => {
     const path = join(root, processId);
@@ -223,13 +225,13 @@ export function cleanupExpiredProcessSpools(
     const sessionPath = join(dataDir, "sessions", processId);
     if (!existsSync(path) && !existsSync(sessionPath)) continue;
     removeArtifacts(processId);
-    removed.push(processId);
+    removed.add(processId);
   }
   const spoolUsage = scanProcessSpools(dataDir);
   let total = spoolUsage.total;
   for (const processId of quotaCandidates) {
     if (total <= maxTotalBytes) break;
-    if (removed.includes(processId)) continue;
+    if (removed.has(processId)) continue;
     const bytes = spoolUsage.sizes.get(processId) ?? 0;
     if (bytes <= 0) continue;
     removeArtifacts(processId);
@@ -237,5 +239,5 @@ export function cleanupExpiredProcessSpools(
     total = Math.max(0, total - bytes);
     evicted.push(processId);
   }
-  return { removed, evicted, total_bytes: total, over_quota: total > maxTotalBytes };
+  return { removed: [...removed], evicted, total_bytes: total, over_quota: total > maxTotalBytes };
 }

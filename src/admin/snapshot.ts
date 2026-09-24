@@ -6,9 +6,11 @@ import type { Capability, HostSpanConfig } from "../config/schema.js";
 import { writeConfigAtomic } from "../config/writer.js";
 import { processOutputActivity } from "../processes/output-spool.js";
 import { PtySessionManager } from "../processes/pty-session.js";
-import { openReadOnlyDatabase } from "../state/database.js";
+import { AuditRepo } from "../state/audit-repo.js";
+import { DB_SCHEMA_VERSION, openReadOnlyDatabase } from "../state/database.js";
+import { ProcessesRepo } from "../state/processes-repo.js";
 import { TargetRegistry } from "../targets/registry.js";
-import { daemonStatus } from "../cli/daemon.js";
+import { daemonStatus } from "../daemon/control.js";
 import { SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
 
 export interface AdminSnapshotOptions {
@@ -47,7 +49,6 @@ export function uniqueWorkspaceTargetId(base: string, existing: Iterable<string>
 }
 
 function normalizedCapabilities(input: Capability[]): Capability[] {
-  if (input.includes("git")) throw new Error("git capability is no longer supported.");
   const capabilities = [...new Set(input)];
   if (capabilities.includes("terminal") && !capabilities.includes("exec")) capabilities.push("exec");
   return capabilities;
@@ -119,11 +120,7 @@ export function removeLocalWorkspace(configPath: string, targetId: string) {
   if (existsSync(statePath)) {
     const db = openReadOnlyDatabase(statePath);
     try {
-      const active = (
-        db
-          .prepare("SELECT count(*) AS count FROM processes WHERE target_id=? AND state IN ('accepted','launching','running')")
-          .get(targetId) as { count: number }
-      ).count;
+      const active = new ProcessesRepo(db).activeCountForTarget(targetId);
       if (active > 0) throw new Error(`cannot remove ${targetId} while ${active} process(es) are active`);
     } finally {
       db.close();
@@ -150,58 +147,19 @@ export function buildAdminSnapshot(configPath: string, options: AdminSnapshotOpt
   if (existsSync(statePath)) {
     const db = openReadOnlyDatabase(statePath);
     try {
-      const schema = db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string } | undefined;
-      schemaVersion = schema ? Number(schema.value) : null;
-      const calls = db
-        .prepare(
-          `SELECT request_id,event_type,metadata_json,timestamp
-           FROM audit_events
-           WHERE event_type IN ('request.accepted','response.returned','request.aborted')
-           ORDER BY timestamp DESC
-           LIMIT ?`,
-        )
-        .all(recent) as Array<{ request_id: string; event_type: string; metadata_json: string; timestamp: string }>;
-      recentCalls = calls.map((row) => ({
+      schemaVersion = DB_SCHEMA_VERSION;
+      const audit = new AuditRepo(db);
+      const processes = new ProcessesRepo(db);
+      recentCalls = audit.recentPerformanceEvents(recent).map((row) => ({
         request_id: row.request_id,
         event_type: row.event_type,
         timestamp: row.timestamp,
-        metadata: JSON.parse(row.metadata_json),
+        metadata: row.metadata,
       }));
       const activeCutoff = new Date(Date.now() - 5 * 60_000).toISOString();
-      const unmatched = db
-        .prepare(
-          `SELECT a.request_id,a.metadata_json,a.timestamp
-           FROM audit_events a
-           WHERE a.event_type='request.accepted'
-             AND a.timestamp >= ?
-             AND NOT EXISTS (
-               SELECT 1 FROM audit_events done
-               WHERE done.request_id=a.request_id
-                 AND done.event_type IN ('response.returned','request.aborted')
-                 AND done.timestamp >= ?
-             )
-           ORDER BY a.timestamp DESC
-           LIMIT 100`,
-        )
-        .all(activeCutoff, activeCutoff) as Array<{ request_id: string; metadata_json: string; timestamp: string }>;
-      activeRequests = unmatched.map((row) => ({ request_id: row.request_id, timestamp: row.timestamp, metadata: JSON.parse(row.metadata_json) }));
-      const processProjection = "process_id,target_id,backend,backend_ref,state,started_at,ended_at,reason";
-      recentProcesses = db
-        .prepare(
-          `SELECT ${processProjection}
-           FROM processes
-           ORDER BY COALESCE(started_at,ended_at) DESC
-           LIMIT ?`,
-        )
-        .all(recent) as Array<Record<string, unknown>>;
-      activeProcesses = db
-        .prepare(
-          `SELECT ${processProjection}
-           FROM processes
-           WHERE state IN ('accepted','launching','running')
-           ORDER BY started_at DESC`,
-        )
-        .all() as Array<Record<string, unknown>>;
+      activeRequests = audit.activeRequests(activeCutoff);
+      recentProcesses = processes.recentSummary(recent);
+      activeProcesses = processes.activeSummary();
     } finally {
       db.close();
     }
@@ -265,9 +223,7 @@ export function resolveTerminalSession(configPath: string, processId: string): {
   if (!existsSync(statePath)) return null;
   const db = openReadOnlyDatabase(statePath);
   try {
-    const row = db
-      .prepare("SELECT backend_ref,target_id,state FROM processes WHERE process_id=? AND backend='pty'")
-      .get(processId) as { backend_ref: string | null; target_id: string; state: string } | undefined;
+    const row = new ProcessesRepo(db).terminalSession(processId);
     if (!row?.backend_ref) return null;
     return { session: row.backend_ref, target_id: row.target_id, state: row.state };
   } finally {

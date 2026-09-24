@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
-import { createRuntime } from "../dist/src/cli/index.js";
+import { createRuntime } from "../dist/src/runtime/create-runtime.js";
 import { defaultConfigPath } from "../dist/src/config/paths.js";
 import { loadConfig } from "../dist/src/config/loader.js";
 import { writeConfigAtomic } from "../dist/src/config/writer.js";

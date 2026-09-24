@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { v7 as uuidv7 } from "uuid";
 import { PolicyGlobSchema, type HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
-import { createRuntime, main } from "../../src/cli/index.js";
+import { main } from "../../src/cli/index.js";
+import { createRuntime } from "../../src/runtime/create-runtime.js";
 import { HostSpanLogger } from "../../src/observability/logger.js";
 import { buildSupportExport } from "../../src/observability/support-export.js";
 import { inspectWindowsAcl, protectWindowsFile, protectWindowsTree } from "../../src/security/windows-acl.js";
@@ -205,7 +206,7 @@ describe("security and operational boundaries", () => {
     const runtime = createRuntime(configPath);
     try {
       runtime.audit.append({ request_id: "req_canary", event_type: "test", metadata: { note: canary } });
-      const exported = JSON.stringify(buildSupportExport(runtime));
+      const exported = JSON.stringify(buildSupportExport(runtime, "test-toolset-hash"));
       expect(exported).not.toContain(canary);
       expect(exported).not.toContain(runtime.targets.get("local").root_real);
       expect(exported).toContain("native_execution");

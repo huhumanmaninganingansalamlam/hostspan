@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { createOAuthSetup } from "../../src/auth/oauth-service.js";
-import { createRuntime, main } from "../../src/cli/index.js";
+import { main } from "../../src/cli/index.js";
+import { createRuntime } from "../../src/runtime/create-runtime.js";
 import type { HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
 import { TOOL_NAMES, TOOLSET_HASH } from "../../src/mcp/registry.js";
@@ -257,7 +258,7 @@ describe("OAuth protected MCP", () => {
         response_type: "code",
         client_id: client.client_id,
         redirect_uri: "https://client.example/callback",
-        scope: "hostspan",
+        scope: "hostspan.read",
         state: "state-123",
         code_challenge: challenge,
         code_challenge_method: "S256",

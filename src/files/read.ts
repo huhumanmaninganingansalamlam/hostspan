@@ -1,6 +1,6 @@
 import { closeSync, fstatSync, readSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { HostSpanError } from "../mcp/errors.js";
+import { HostSpanError } from "../errors.js";
 import type { TargetRuntime } from "../targets/registry.js";
 import { openReadNoFollow } from "./path-guard.js";
 

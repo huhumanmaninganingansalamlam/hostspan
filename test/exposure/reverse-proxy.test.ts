@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createRuntime } from "../../src/cli/index.js";
+import { createRuntime } from "../../src/runtime/create-runtime.js";
 import { HostSpanConfigSchema, type HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
 import { TOOL_NAMES, TOOLSET_HASH } from "../../src/mcp/registry.js";

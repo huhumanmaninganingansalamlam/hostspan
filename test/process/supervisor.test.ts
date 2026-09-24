@@ -60,7 +60,7 @@ function fixture(maxTotalSpoolBytes = 64 * 1024 * 1024) {
         label: "Test",
         provider: "local",
         root: targetRoot,
-        capabilities: ["read", "write", "exec", "git"],
+        capabilities: ["read", "write", "exec"],
         exec_profile: "native-test",
         deny_globs: [],
         ignore_globs: [],

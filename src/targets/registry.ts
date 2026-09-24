@@ -1,7 +1,7 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import type { Capability, HostSpanConfig, TargetConfig } from "../config/schema.js";
-import { HostSpanError } from "../mcp/errors.js";
+import { HostSpanError } from "../errors.js";
 
 export interface TargetRuntime extends TargetConfig {
   target_id: string;
@@ -21,7 +21,7 @@ export class TargetRegistry {
       const rootStat = ready ? statSync(rootReal, { bigint: true }) : undefined;
       this.targets.set(targetId, {
         ...target,
-        capabilities: target.capabilities.filter((capability) => capability !== "git"),
+        capabilities: [...target.capabilities],
         target_id: targetId,
         root_real: rootReal,
         root_dev: rootStat?.dev.toString() ?? null,

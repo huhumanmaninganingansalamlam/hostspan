@@ -5,7 +5,7 @@ import { createConnection } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TerminalConfig } from "../config/schema.js";
-import { HostSpanError } from "../mcp/errors.js";
+import { HostSpanError } from "../errors.js";
 import type {
   InteractiveOutputDrainResult,
   InteractiveSessionManager,
@@ -68,7 +68,6 @@ export class PtySessionManager implements InteractiveSessionManager {
   ) {
     this.requireOwnership = options.requireOwnership ?? false;
     this.configPath = options.configPath;
-    mkdirSync(join(dataDir, "sessions"), { recursive: true, mode: 0o700 });
   }
 
   activateOwnership(generation: number): void {
@@ -76,6 +75,7 @@ export class PtySessionManager implements InteractiveSessionManager {
     const path = this.runtimeOwnerPath();
     const current = this.readRuntimeOwnerGeneration();
     if (current !== null && current > generation) throw new Error(`cannot replace PTY runtime generation ${current} with stale generation ${generation}`);
+    mkdirSync(join(this.dataDir, "sessions"), { recursive: true, mode: 0o700 });
     const temp = `${path}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`;
     try {
       writeFileSync(temp, `${JSON.stringify({ schema_version: 1, generation })}\n`, { mode: 0o600 });
@@ -177,7 +177,7 @@ export class PtySessionManager implements InteractiveSessionManager {
     child.unref();
     const deadline = Date.now() + (process.platform === "win32" ? 10_000 : 5_000);
     while (Date.now() <= deadline) {
-      const status = this.readStatus(session);
+      const status = await this.readStatusAsync(session);
       if (status?.status === "running") return { session, pid: status.pty_pid };
       if (status?.status === "exited") return { session, pid: status.pty_pid };
       if (status?.status === "failed") {
@@ -189,23 +189,26 @@ export class PtySessionManager implements InteractiveSessionManager {
   }
 
   async inspect(session: string): Promise<InteractiveSessionSnapshot> {
-    return this.inspectSync(session);
+    const status = await this.readStatusAsync(session);
+    if (!status) return this.missingSnapshot();
+    if (status.status === "exited" || status.status === "failed") return this.statusSnapshot(status);
+    if (processAlive(status.worker_pid)) return this.statusSnapshot(status);
+
+    // Let the worker persist its terminal status without blocking the event loop.
+    const deadline = Date.now() + (process.platform === "win32" ? 500 : 100);
+    while (Date.now() <= deadline) {
+      await sleep(10);
+      const settled = this.readStatusOnce(session);
+      if (settled?.status === "exited" || settled?.status === "failed") return this.statusSnapshot(settled);
+    }
+    return this.missingSnapshot();
   }
 
   inspectSync(session: string): InteractiveSessionSnapshot {
-    let status = this.readStatus(session);
+    const status = this.readStatus(session);
     if (!status) return this.missingSnapshot();
     if (status.status === "exited" || status.status === "failed") {
-      return {
-        exists: true,
-        dead: true,
-        exit_code: status.exit_code,
-        signal: status.signal,
-        reason: status.reason,
-        pid: status.pty_pid,
-        columns: status.columns,
-        rows: status.rows,
-      };
+      return this.statusSnapshot(status);
     }
     if (!processAlive(status.worker_pid)) {
       // The worker writes its terminal status immediately before exiting.
@@ -218,45 +221,26 @@ export class PtySessionManager implements InteractiveSessionManager {
         sleepSync(10);
         const settled = this.readStatus(session);
         if (settled?.status === "exited" || settled?.status === "failed") {
-          status = settled;
-          return {
-            exists: true,
-            dead: true,
-            exit_code: status.exit_code,
-            signal: status.signal,
-            reason: status.reason,
-            pid: status.pty_pid,
-            columns: status.columns,
-            rows: status.rows,
-          };
+          return this.statusSnapshot(settled);
         }
       }
       return this.missingSnapshot();
     }
-    return {
-      exists: true,
-      dead: false,
-      exit_code: null,
-      signal: null,
-      reason: null,
-      pid: status.pty_pid,
-      columns: status.columns,
-      rows: status.rows,
-    };
+    return this.statusSnapshot(status);
   }
 
   async write(
     session: string,
     input: { chars: string; control_keys: string[]; columns?: number; rows?: number },
   ): Promise<void> {
-    const state = this.inspectSync(session);
+    const state = await this.inspect(session);
     if (!state.exists) throw new HostSpanError("PROCESS_UNKNOWN", `PTY session worker no longer exists: ${session}`);
     if (state.dead) throw new HostSpanError("TERMINAL_NOT_INTERACTIVE", "Interactive process has already exited.");
     await this.request(session, { op: "write", ...input });
   }
 
   async close(session: string, graceMs = 500): Promise<void> {
-    const state = this.inspectSync(session);
+    const state = await this.inspect(session);
     if (!state.exists || state.dead) return;
     await this.request(session, { op: "terminate", reason: "cancel_requested", grace_ms: graceMs });
     await this.waitForExitStatus(session, graceMs + 1_500);
@@ -334,27 +318,27 @@ export class PtySessionManager implements InteractiveSessionManager {
 
   async waitForExitStatus(session: string, waitMs = 1_500): Promise<InteractiveSessionSnapshot> {
     const deadline = Date.now() + Math.max(0, waitMs);
-    let state = this.inspectSync(session);
+    let state = await this.inspect(session);
     while (Date.now() <= deadline) {
       if (state.exists && state.dead) return state;
       await sleep(25);
-      state = this.inspectSync(session);
+      state = await this.inspect(session);
     }
     return state;
   }
 
   async waitForActivity(session: string, processId: string, previousBytes: number, waitMs: number): Promise<InteractiveSessionSnapshot> {
     const deadline = Date.now() + Math.max(0, waitMs);
-    let state = this.inspectSync(session);
+    let state = await this.inspect(session);
     while (waitMs > 0 && state.exists && !state.dead && this.outputBytes(processId) === previousBytes && Date.now() < deadline) {
       await sleep(25);
-      state = this.inspectSync(session);
+      state = await this.inspect(session);
     }
     return state;
   }
 
   async attach(session: string, readOnly = false): Promise<void> {
-    const state = this.inspectSync(session);
+    const state = await this.inspect(session);
     if (!state.exists) throw new Error(`PTY session is no longer available: ${session}`);
     if (state.dead) throw new Error(`PTY session has already exited: ${session}`);
     const ownerGeneration = readOnly ? undefined : this.mutationGeneration();
@@ -380,13 +364,18 @@ export class PtySessionManager implements InteractiveSessionManager {
         }, ownerGeneration).catch(() => undefined);
       };
       socket.once("connect", () => {
-        const status = this.readStatus(session);
-        if (!status?.ipc_token) {
+        void this.readStatusAsync(session).then((status) => {
+          if (socket.destroyed) return;
+          if (!status?.ipc_token) {
+            socket.destroy();
+            reject(new Error("PTY session authentication state is unavailable"));
+            return;
+          }
+          socket.write(`${JSON.stringify({ op: "attach", read_only: readOnly, token: status.ipc_token, ...(ownerGeneration === undefined ? {} : { owner_generation: ownerGeneration }) })}\n`);
+        }, (error: unknown) => {
           socket.destroy();
-          reject(new Error("PTY session authentication state is unavailable"));
-          return;
-        }
-        socket.write(`${JSON.stringify({ op: "attach", read_only: readOnly, token: status.ipc_token, ...(ownerGeneration === undefined ? {} : { owner_generation: ownerGeneration }) })}\n`);
+          reject(error);
+        });
       });
       socket.on("data", (chunk) => {
         if (!acknowledged) {
@@ -435,13 +424,10 @@ export class PtySessionManager implements InteractiveSessionManager {
     });
   }
 
-  private request(session: string, payload: Record<string, unknown>, ownerGeneration = this.mutationGeneration()): Promise<void> {
+  private async request(session: string, payload: Record<string, unknown>, ownerGeneration = this.mutationGeneration()): Promise<void> {
+    const status = await this.readStatusAsync(session);
+    if (!status?.ipc_token) throw new Error("PTY session authentication state is unavailable");
     return new Promise((resolve, reject) => {
-      const status = this.readStatus(session);
-      if (!status?.ipc_token) {
-        reject(new Error("PTY session authentication state is unavailable"));
-        return;
-      }
       const socket = createConnection(this.socketPath(session));
       let buffer = "";
       const timer = setTimeout(() => {
@@ -473,19 +459,33 @@ export class PtySessionManager implements InteractiveSessionManager {
   }
 
   private readStatus(session: string): WorkerStatus | undefined {
-    const path = this.statusPath(session);
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      if (existsSync(path)) {
-        try {
-          return JSON.parse(readFileSync(path, "utf8")) as WorkerStatus;
-        } catch {
-          // An atomic replacement can be briefly unavailable to a concurrent
-          // Windows reader. Recheck before declaring the durable session lost.
-        }
-      }
+      const status = this.readStatusOnce(session);
+      if (status) return status;
       if (attempt < 4) sleepSync(5);
     }
     return undefined;
+  }
+
+  private async readStatusAsync(session: string): Promise<WorkerStatus | undefined> {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const status = this.readStatusOnce(session);
+      if (status) return status;
+      if (attempt < 4) await sleep(5);
+    }
+    return undefined;
+  }
+
+  private readStatusOnce(session: string): WorkerStatus | undefined {
+    const path = this.statusPath(session);
+    if (!existsSync(path)) return undefined;
+    try {
+      return JSON.parse(readFileSync(path, "utf8")) as WorkerStatus;
+    } catch {
+      // An atomic replacement can be briefly unavailable to a concurrent
+      // Windows reader. Recheck before declaring the durable session lost.
+      return undefined;
+    }
   }
 
   private readRuntimeOwnerGeneration(): number | null {
@@ -511,6 +511,20 @@ export class PtySessionManager implements InteractiveSessionManager {
 
   private missingSnapshot(): InteractiveSessionSnapshot {
     return { exists: false, dead: false, exit_code: null, signal: null, reason: null, pid: null, columns: null, rows: null };
+  }
+
+  private statusSnapshot(status: WorkerStatus): InteractiveSessionSnapshot {
+    const dead = status.status === "exited" || status.status === "failed";
+    return {
+      exists: true,
+      dead,
+      exit_code: dead ? status.exit_code : null,
+      signal: dead ? status.signal : null,
+      reason: dead ? status.reason : null,
+      pid: status.pty_pid,
+      columns: status.columns,
+      rows: status.rows,
+    };
   }
 
   private sessionDir(session: string): string {

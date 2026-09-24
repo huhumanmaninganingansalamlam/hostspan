@@ -6,7 +6,7 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 import { v7 as uuidv7 } from "uuid";
 import { createOAuthSetup, type OAuthService, type OAuthTokenResponse } from "../../src/auth/oauth-service.js";
-import { createRuntime, type HostSpanRuntime } from "../../src/cli/index.js";
+import { createRuntime, type HostSpanRuntime } from "../../src/runtime/create-runtime.js";
 import type { HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
 import { TOOL_NAMES, TOOLSET_HASH, type HostSpanToolHandlers } from "../../src/mcp/registry.js";
@@ -252,14 +252,53 @@ describe("OAuth scope split", () => {
       const narrowed = refreshToken(oauth, combined.clientId, combined.token.refresh_token, "hostspan.read");
       expect(narrowed.scope).toBe("hostspan.read");
 
-      const legacy = issueToken(oauth, approvalSecret, "hostspan");
-      const migrated = refreshToken(oauth, legacy.clientId, legacy.token.refresh_token, "hostspan.read");
-      expect(migrated.scope).toBe("hostspan.read");
+      expect(() => issueToken(oauth, approvalSecret, "hostspan")).toThrowError(
+        expect.objectContaining({ redirect: expect.stringContaining("error=invalid_scope") }),
+      );
 
       const granular = issueToken(oauth, approvalSecret, "hostspan.read");
       expect(() => refreshToken(oauth, granular.clientId, granular.token.refresh_token, "hostspan")).toThrowError(
         expect.objectContaining({ code: "invalid_scope" }),
       );
+
+      const oldRefresh = "hs_refresh_legacy_scope";
+      const now = Math.floor(Date.now() / 1000);
+      runtime.oauthRepo.saveRefreshToken({
+        token_hash: createHash("sha256").update(oldRefresh).digest("hex"),
+        client_id: granular.clientId,
+        scope: "hostspan",
+        resource: RESOURCE,
+        expires_at: now + 3600,
+        revoked_at: null,
+      });
+      expect(() => refreshToken(oauth, granular.clientId, oldRefresh)).toThrowError(
+        expect.objectContaining({ code: "invalid_scope" }),
+      );
+
+      const oldCode = "hs_code_legacy_scope";
+      const verifier = "legacy-code-verifier";
+      runtime.oauthRepo.saveAuthorizationCode({
+        code_hash: createHash("sha256").update(oldCode).digest("hex"),
+        client_id: granular.clientId,
+        redirect_uri: REDIRECT,
+        scope: "hostspan",
+        code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+        resource: RESOURCE,
+        expires_at: now + 300,
+        used_at: null,
+      });
+      expect(() =>
+        oauth.exchangeToken(
+          new URLSearchParams({
+            grant_type: "authorization_code",
+            code: oldCode,
+            client_id: granular.clientId,
+            redirect_uri: REDIRECT,
+            code_verifier: verifier,
+            resource: RESOURCE,
+          }),
+        ),
+      ).toThrowError(expect.objectContaining({ code: "invalid_scope" }));
     } finally {
       await runtime.close();
     }
@@ -272,9 +311,9 @@ describe("OAuth scope split", () => {
     const calls: string[] = [];
     const app = testApp(runtime, calls);
     try {
-      const read = issueToken(oauth, approvalSecret, "hostspan.read").token;
+      const readGrant = issueToken(oauth, approvalSecret, "hostspan.read");
+      const read = readGrant.token;
       const write = issueToken(oauth, approvalSecret, "hostspan.write").token;
-      const legacy = issueToken(oauth, approvalSecret, "hostspan").token;
 
       const listed = await app.inject({
         method: "POST",
@@ -302,11 +341,17 @@ describe("OAuth scope split", () => {
         "hostspan.read",
       );
 
-      expectAllowed(await callTool(app, legacy.access_token, "file_patch", patchArgs()), "file_patch");
-      expectAllowed(
-        await callTool(app, legacy.access_token, "file_read", { target_id: "test", path: "x.txt" }),
-        "file_read",
-      );
+      const oldAccess = "hs_access_legacy_scope";
+      runtime.oauthRepo.saveAccessToken({
+        token_hash: createHash("sha256").update(oldAccess).digest("hex"),
+        client_id: readGrant.clientId,
+        scope: "hostspan",
+        resource: RESOURCE,
+        expires_at: Math.floor(Date.now() / 1000) + 300,
+        revoked_at: null,
+      });
+      expectScopeDenied(await callTool(app, oldAccess, "system_status", {}), "hostspan.read");
+      expectScopeDenied(await callTool(app, oldAccess, "file_patch", patchArgs()), "hostspan.write");
     } finally {
       await app.close();
       await runtime.close();

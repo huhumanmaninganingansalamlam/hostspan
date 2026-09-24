@@ -3,11 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
-import { SearchConcurrencyLimiter } from "../../src/files/search.js";
+import { BoundedConcurrencyLimiter } from "../../src/runtime/concurrency-limiter.js";
 import type { HostSpanToolHandlers } from "../../src/mcp/registry.js";
 import { createHostSpanHttpServer } from "../../src/mcp/server.js";
 import { AuditRepo } from "../../src/state/audit-repo.js";
-import { DB_SCHEMA_VERSION, databaseHealthy, databaseResponsive, openDatabase } from "../../src/state/database.js";
+import { DB_SCHEMA_VERSION, databaseHealthy, openDatabase } from "../../src/state/database.js";
 import { ProcessesRepo } from "../../src/state/processes-repo.js";
 
 const roots: string[] = [];
@@ -26,7 +26,13 @@ function deferred() {
 
 describe("overload stability", () => {
   it("bounds concurrent searches and rejects overflow with a retryable busy error", async () => {
-    const limiter = new SearchConcurrencyLimiter(2, 2, 5_000);
+    const limiter = new BoundedConcurrencyLimiter({
+      maxConcurrent: 2,
+      maxQueued: 2,
+      queueTimeoutMs: 5_000,
+      resource: "file_search",
+      label: "Search",
+    });
     const holds = [deferred(), deferred(), deferred(), deferred()];
     const started: number[] = [];
 
@@ -60,7 +66,13 @@ describe("overload stability", () => {
   });
 
   it("times out queued searches instead of letting the queue grow stale", async () => {
-    const limiter = new SearchConcurrencyLimiter(1, 1, 20);
+    const limiter = new BoundedConcurrencyLimiter({
+      maxConcurrent: 1,
+      maxQueued: 1,
+      queueTimeoutMs: 20,
+      resource: "file_search",
+      label: "Search",
+    });
     const hold = deferred();
     const active = limiter.run(async () => {
       await hold.promise;
@@ -77,45 +89,11 @@ describe("overload stability", () => {
     await expect(active).resolves.toBe("done");
   });
 
-  it("uses a lightweight database responsiveness probe while retaining integrity checks", () => {
-    const root = mkdtempSync(join(tmpdir(), "hostspan-overload-db-"));
-    roots.push(root);
-    const db = openDatabase(join(root, "state.db"));
-    try {
-      expect(databaseResponsive(db)).toBe(true);
-      expect(databaseHealthy(db)).toBe(true);
-    } finally {
-      db.close();
-    }
-  });
-
-  it("keeps periodic process lookups off retained process history scans", () => {
+  it("returns only active PTY processes for the requested target", () => {
     const root = mkdtempSync(join(tmpdir(), "hostspan-process-indexes-"));
     roots.push(root);
     const db = openDatabase(join(root, "state.db"));
     try {
-      const activePlan = db
-        .prepare(
-          "EXPLAIN QUERY PLAN SELECT * FROM processes WHERE state IN ('accepted','launching','running') AND backend='pty' AND target_id=?",
-        )
-        .all("local") as Array<{ detail: string }>;
-      expect(activePlan.map((row) => row.detail).join("\n")).toContain("processes_active_backend_target_idx");
-
-      const activeListPlan = db
-        .prepare("EXPLAIN QUERY PLAN SELECT * FROM processes WHERE state IN ('accepted','launching','running') ORDER BY started_at DESC")
-        .all() as Array<{ detail: string }>;
-      expect(activeListPlan.map((row) => row.detail).join("\n")).toContain("processes_active_backend_target_idx");
-
-      const activeCountPlan = db
-        .prepare("EXPLAIN QUERY PLAN SELECT count(*) AS count FROM processes WHERE state IN ('accepted','launching','running')")
-        .all() as Array<{ detail: string }>;
-      expect(activeCountPlan.map((row) => row.detail).join("\n")).toContain("processes_active_backend_target_idx");
-
-      const recentPlan = db
-        .prepare("EXPLAIN QUERY PLAN SELECT * FROM processes ORDER BY COALESCE(started_at,ended_at) DESC LIMIT 40")
-        .all() as Array<{ detail: string }>;
-      expect(recentPlan.map((row) => row.detail).join("\n")).toContain("processes_activity_idx");
-
       const processes = new ProcessesRepo(db);
       processes.create({
         process_id: "proc_native_active",

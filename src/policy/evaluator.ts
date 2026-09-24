@@ -1,7 +1,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import type { ExecProfile, HostSpanConfig } from "../config/schema.js";
-import { HostSpanError } from "../mcp/errors.js";
+import { HostSpanError } from "../errors.js";
 import type { TargetRuntime } from "../targets/registry.js";
 import { matchesAnyPolicyGlob } from "./glob.js";
 

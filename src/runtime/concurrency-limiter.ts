@@ -1,4 +1,4 @@
-import { HostSpanError } from "../mcp/errors.js";
+import { HostSpanError } from "../errors.js";
 
 interface ConcurrencyWaiter {
   resolve: () => void;

@@ -2,26 +2,13 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { relative, resolve } from "node:path";
 import { statSync } from "node:fs";
-import { HostSpanError } from "../mcp/errors.js";
-import { BoundedConcurrencyLimiter } from "../runtime/concurrency-limiter.js";
+import { HostSpanError } from "../errors.js";
 import type { TargetRuntime } from "../targets/registry.js";
-import { resolveTargetPath } from "./path-guard.js";
+import { resolveTargetPath } from "../targets/path.js";
 import { ripgrepExecutable } from "./ripgrep.js";
 import { matchesAnyPolicyGlob } from "../policy/glob.js";
 
 const execFileAsync = promisify(execFile);
-
-export class SearchConcurrencyLimiter extends BoundedConcurrencyLimiter {
-  constructor(maxConcurrent: number, maxQueued: number, queueTimeoutMs: number) {
-    super({
-      maxConcurrent,
-      maxQueued,
-      queueTimeoutMs,
-      resource: "file_search",
-      label: "Search",
-    });
-  }
-}
 
 export interface FileSearchInput {
   query: string;
@@ -50,7 +37,7 @@ function tooBroad(query: string): boolean {
 
 export async function fileSearch(target: TargetRuntime, input: FileSearchInput) {
   if (tooBroad(input.query)) throw new HostSpanError("SEARCH_SCOPE_TOO_BROAD", "Search query is empty or effectively match-all.");
-  const guardedSearchPaths = (input.paths.length ? input.paths : ["."]).map((path) => resolveTargetPath(target, path, "search"));
+  const guardedSearchPaths = (input.paths.length ? input.paths : ["."]).map((path) => resolveTargetPath(target, path));
   const missingPath = guardedSearchPaths.find((path) => !path.exists);
   if (missingPath) {
     throw new HostSpanError("FILE_NOT_FOUND", `Search path does not exist: ${missingPath.relative}`);
@@ -126,7 +113,7 @@ export async function fileSearch(target: TargetRuntime, input: FileSearchInput) 
     const pathText = event.data.path?.text as string | undefined;
     if (!pathText) continue;
     const absolute = resolve(target.root_real, pathText);
-    const guarded = resolveTargetPath(target, relative(target.root_real, absolute), "search");
+    const guarded = resolveTargetPath(target, relative(target.root_real, absolute));
     const normalizedPath = guarded.relative.replaceAll("\\", "/");
     if (matchesAnyPolicyGlob(normalizedPath, target.deny_globs) || matchesAnyPolicyGlob(normalizedPath, target.ignore_globs)) {
       continue;

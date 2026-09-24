@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { v7 as uuidv7 } from "uuid";
-import { HostSpanError } from "../mcp/errors.js";
+import { HostSpanError } from "../errors.js";
 import { TOOL_NAMES, TOOLSET_HASH, type HostSpanToolHandlers } from "../mcp/registry.js";
 import type { TargetRegistry } from "../targets/registry.js";
 

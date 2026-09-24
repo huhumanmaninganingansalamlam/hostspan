@@ -1,31 +1,10 @@
 import type { HostSpanDatabase } from "./database.js";
+import type { ProcessRecord, ProcessesStore, ProcessState } from "../processes/store.js";
 
-export type ProcessState = "accepted" | "launching" | "running" | "succeeded" | "failed" | "timed_out" | "cancelled" | "orphaned" | "unknown";
+type ProcessSummary = Pick<ProcessRecord, "process_id" | "target_id" | "backend" | "backend_ref" | "state" | "started_at" | "ended_at" | "reason">;
+const PROCESS_SUMMARY_COLUMNS = "process_id,target_id,backend,backend_ref,state,started_at,ended_at,reason";
 
-export interface ProcessRecord {
-  process_id: string;
-  idempotency_key: string;
-  target_id: string;
-  argv_digest: string;
-  cwd_relative: string;
-  backend: "native" | "pty";
-  backend_ref: string | null;
-  pid: number | null;
-  pgid: number | null;
-  deadline_at: string | null;
-  max_output_bytes: number | null;
-  state: ProcessState;
-  exit_code: number | null;
-  term_signal: string | null;
-  reason: string | null;
-  started_at: string | null;
-  ended_at: string | null;
-  stdout_bytes: number;
-  stderr_bytes: number;
-  output_expires_at: string | null;
-}
-
-export class ProcessesRepo {
+export class ProcessesRepo implements ProcessesStore {
   constructor(private readonly db: HostSpanDatabase) {}
 
   create(
@@ -107,6 +86,12 @@ export class ProcessesRepo {
     ).count;
   }
 
+  terminalSession(processId: string): Pick<ProcessRecord, "backend_ref" | "target_id" | "state"> | undefined {
+    return this.db
+      .prepare("SELECT backend_ref,target_id,state FROM processes WHERE process_id=? AND backend='pty'")
+      .get(processId) as Pick<ProcessRecord, "backend_ref" | "target_id" | "state"> | undefined;
+  }
+
   activeCountForTargetBackend(targetId: string, backend: ProcessRecord["backend"]): number {
     return (
       this.db
@@ -159,5 +144,27 @@ export class ProcessesRepo {
 
   recent(limit = 200): ProcessRecord[] {
     return this.db.prepare("SELECT * FROM processes ORDER BY COALESCE(started_at, ended_at) DESC LIMIT ?").all(limit) as ProcessRecord[];
+  }
+
+  activeSummary(): ProcessSummary[] {
+    return this.db
+      .prepare(
+        `SELECT ${PROCESS_SUMMARY_COLUMNS}
+         FROM processes
+         WHERE state IN ('accepted','launching','running')
+         ORDER BY started_at DESC`,
+      )
+      .all() as ProcessSummary[];
+  }
+
+  recentSummary(limit = 200): ProcessSummary[] {
+    return this.db
+      .prepare(
+        `SELECT ${PROCESS_SUMMARY_COLUMNS}
+         FROM processes
+         ORDER BY COALESCE(started_at,ended_at) DESC
+         LIMIT ?`,
+      )
+      .all(limit) as ProcessSummary[];
   }
 }

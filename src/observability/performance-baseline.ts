@@ -1,5 +1,3 @@
-import type { AuditRepo } from "../state/audit-repo.js";
-
 export interface PerformanceAuditEvent {
   request_id: string;
   event_type: string;
@@ -173,7 +171,7 @@ export function summarizeAuditPerformance(events: PerformanceAuditEvent[], maxGa
 }
 
 export function buildPerformanceBaseline(
-  audit: AuditRepo,
+  audit: { recentPerformanceEvents(limit: number): Array<Record<string, unknown>> },
   recent = PERFORMANCE_BASELINE_DEFAULT_EVENTS,
   maxGapMs = 300_000,
 ) {

@@ -1,4 +1,4 @@
-import type { HostSpanError } from "../mcp/errors.js";
+import type { HostSpanError } from "../errors.js";
 
 const SAFE_ERROR_REASONS = new Set([
   "admin_config_mutation_denied",

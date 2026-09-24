@@ -10,6 +10,7 @@ import { TargetRegistry } from "../targets/registry.js";
 import { TOOL_NAMES, TOOLSET_HASH } from "../mcp/registry.js";
 import { processGroupAlive, signalProcessGroup } from "../processes/recovery.js";
 import { windowsJobObjectProbe } from "../processes/windows-job-process.js";
+import { isQualifiedCorePlatform } from "../platform.js";
 import { ripgrepExecutable } from "../files/ripgrep.js";
 import { inspectWindowsAcl, protectWindowsDirectory } from "../security/windows-acl.js";
 import { PROTOCOL_VERSION, SERVER_VERSION } from "../version.js";
@@ -102,11 +103,7 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
   });
   checks.push({
     name: "platform",
-    status:
-      ((process.platform === "linux" || process.platform === "win32") && process.arch === "x64") ||
-      (process.platform === "darwin" && (process.arch === "x64" || process.arch === "arm64"))
-        ? "pass"
-        : "fail",
+    status: isQualifiedCorePlatform() ? "pass" : "fail",
     details: "Qualified core targets are Linux x64, native Windows x64, and macOS x64/arm64; WSL2 is treated as Linux.",
   });
   checks.push(commandCheck(ripgrepExecutable(), ["--version"], "rg"));

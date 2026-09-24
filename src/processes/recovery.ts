@@ -1,6 +1,6 @@
-import type { OperationsRepo } from "../state/operations-repo.js";
-import type { ProcessesRepo } from "../state/processes-repo.js";
 import type { InteractiveSessionManager } from "./interactive-session.js";
+import type { OperationsStore } from "../operations/store.js";
+import type { ProcessesStore } from "./store.js";
 
 export function processGroupAlive(pgid: number | null): boolean {
   if (!pgid || pgid <= 0) return false;
@@ -57,8 +57,8 @@ export function signalProcessGroup(pgid: number | null, signal: NodeJS.Signals):
 }
 
 export function recoverProcesses(
-  processes: ProcessesRepo,
-  operations: OperationsRepo,
+  processes: ProcessesStore,
+  operations: OperationsStore,
   terminal?: InteractiveSessionManager,
   outputTtlMinutes = 60,
 ): Array<{ process_id: string; state: "running" | "succeeded" | "failed" | "timed_out" | "cancelled" | "orphaned" | "unknown" }> {
