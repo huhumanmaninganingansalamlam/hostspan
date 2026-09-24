@@ -1,9 +1,10 @@
 # HostSpan release notes
 
-## Unreleased changes on dev
+## 0.6.0 release
 
-- Native `exec` no longer uses per-program or environment-variable allowlists. Old exec-profile fields are ignored on load and removed by the next config write.
-- Target `exec` capability, OAuth authority, and process resource limits remain in effect. These changes are not in the published `v0.5.0` packages.
+- Native `exec` no longer uses per-program or environment-variable allowlists. Existing `restricted` exec profiles continue to load; obsolete allowlist fields are ignored and removed by the next config write. Operators who relied on those fields as an execution boundary should review target and OAuth authority before upgrading.
+- Target `exec` capability, OAuth authority, and process resource limits remain in effect.
+- The public MCP contract remains `hostspan-v3.1` with exactly 10 tools and the same toolset hash as 0.5.0. The database schema is unchanged.
 
 ## 0.5.0 published release
 
