@@ -386,27 +386,27 @@ export async function gitChanges(
     return true;
   });
 
-  const stagedPaths = [
-    ...new Set(
-      statusEntries
-        .filter((entry) => entry.status !== "??" && entry.status[0] !== " ")
-        .flatMap((entry) => [entry.path, ...(entry.original_path ? [entry.original_path] : [])]),
-    ),
-  ];
-  const unstagedPaths = [
-    ...new Set(statusEntries.filter((entry) => entry.status !== "??" && entry.status[1] !== " ").map((entry) => entry.path)),
-  ];
+  const stagedPaths = new Set<string>();
+  const unstagedPaths = new Set<string>();
+  for (const entry of statusEntries) {
+    if (entry.status === "??") continue;
+    if (entry.status[0] !== " ") {
+      stagedPaths.add(entry.path);
+      if (entry.original_path) stagedPaths.add(entry.original_path);
+    }
+    if (entry.status[1] !== " ") unstagedPaths.add(entry.path);
+  }
 
   const emptyDiff = { text: "", truncated: false };
   const [staged, unstaged] = await Promise.all([
-    stagedPaths.length
+    stagedPaths.size
       ? boundedDiff(
           repositoryRoot,
           ["diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-color", "--binary", "-M", "-l1000", "--", ...stagedPaths],
           maxDiffBytes,
         )
       : Promise.resolve(emptyDiff),
-    unstagedPaths.length
+    unstagedPaths.size
       ? boundedDiff(
           repositoryRoot,
           ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--binary", "--", ...unstagedPaths],

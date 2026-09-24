@@ -148,11 +148,14 @@ export async function requestDaemonShutdown(configPath: string): Promise<{ ok: t
   });
 }
 
-export function readDaemonPid(configPath: string): number | null {
-  const path = daemonPidPath(configPath);
+function readPidFile(path: string): number | null {
   if (!existsSync(path)) return null;
   const value = Number(readFileSync(path, "utf8").trim());
   return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+export function readDaemonPid(configPath: string): number | null {
+  return readPidFile(daemonPidPath(configPath));
 }
 
 export function pidAlive(pid: number | null): boolean {
@@ -175,15 +178,16 @@ export function writeDaemonPid(configPath: string, pid = process.pid): string {
 export function removeDaemonPid(configPath: string, pid = process.pid): void {
   const path = daemonPidPath(configPath);
   if (!existsSync(path)) return;
-  const current = readDaemonPid(configPath);
+  const current = readPidFile(path);
   if (current === pid || !pidAlive(current)) rmSync(path, { force: true });
 }
 
 export function daemonStatus(configPath: string): { running: boolean; pid: number | null; pid_file: string } {
-  const pid = readDaemonPid(configPath);
+  const pid_file = daemonPidPath(configPath);
+  const pid = readPidFile(pid_file);
   const running = pidAlive(pid);
-  if (pid && !running) rmSync(daemonPidPath(configPath), { force: true });
-  return { running, pid: running ? pid : null, pid_file: daemonPidPath(configPath) };
+  if (pid && !running) rmSync(pid_file, { force: true });
+  return { running, pid: running ? pid : null, pid_file };
 }
 
 export async function startDaemon(

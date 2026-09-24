@@ -258,72 +258,39 @@ export function registerHostSpanTools(
   context: ResponseContextProvider,
   authorization?: HostSpanToolAuthorization,
 ): void {
-  server.registerTool(
-    "system_status",
-    { description: TOOL_DEFINITIONS[0].description, inputSchema: SystemStatusInputSchema, annotations: TOOL_DEFINITIONS[0].annotations },
-    (input, requestContext) =>
-      invoke(input, handlers.system_status.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
+  server.registerTool(TOOL_DEFINITIONS[0].name, TOOL_DEFINITIONS[0], (input, requestContext) =>
+    invoke(input, handlers.system_status.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
   );
-  server.registerTool(
-    "target_list",
-    { description: TOOL_DEFINITIONS[1].description, inputSchema: TargetListInputSchema, annotations: TOOL_DEFINITIONS[1].annotations },
-    (input, requestContext) =>
-      invoke(input, handlers.target_list.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
+  server.registerTool(TOOL_DEFINITIONS[1].name, TOOL_DEFINITIONS[1], (input, requestContext) =>
+    invoke(input, handlers.target_list.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
   );
-  server.registerTool(
-    "file_list",
-    { description: TOOL_DEFINITIONS[2].description, inputSchema: FileListInputSchema, annotations: TOOL_DEFINITIONS[2].annotations },
-    (input, requestContext) =>
-      invoke(input, handlers.file_list.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
+  server.registerTool(TOOL_DEFINITIONS[2].name, TOOL_DEFINITIONS[2], (input, requestContext) =>
+    invoke(input, handlers.file_list.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
   );
-  server.registerTool(
-    "file_read",
-    { description: TOOL_DEFINITIONS[3].description, inputSchema: FileReadInputSchema, annotations: TOOL_DEFINITIONS[3].annotations },
-    (input, requestContext) =>
-      invoke(input, handlers.file_read.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
+  server.registerTool(TOOL_DEFINITIONS[3].name, TOOL_DEFINITIONS[3], (input, requestContext) =>
+    invoke(input, handlers.file_read.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
   );
-  server.registerTool(
-    "file_search",
-    { description: TOOL_DEFINITIONS[4].description, inputSchema: FileSearchInputSchema, annotations: TOOL_DEFINITIONS[4].annotations },
-    (input, requestContext) =>
-      invoke(input, handlers.file_search.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
+  server.registerTool(TOOL_DEFINITIONS[4].name, TOOL_DEFINITIONS[4], (input, requestContext) =>
+    invoke(input, handlers.file_search.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
   );
-  server.registerTool(
-    "file_patch",
-    { description: TOOL_DEFINITIONS[5].description, inputSchema: FilePatchInputSchema, annotations: TOOL_DEFINITIONS[5].annotations },
-    (input, requestContext) =>
-      invoke(input, handlers.file_patch.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_WRITE)),
+  server.registerTool(TOOL_DEFINITIONS[5].name, TOOL_DEFINITIONS[5], (input, requestContext) =>
+    invoke(input, handlers.file_patch.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_WRITE)),
   );
-  server.registerTool(
-    "git_changes",
-    { description: TOOL_DEFINITIONS[6].description, inputSchema: GitChangesInputSchema, annotations: TOOL_DEFINITIONS[6].annotations },
-    (input, requestContext) =>
-      invoke(input, handlers.git_changes.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
+  server.registerTool(TOOL_DEFINITIONS[6].name, TOOL_DEFINITIONS[6], (input, requestContext) =>
+    invoke(input, handlers.git_changes.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
   );
-  server.registerTool(
-    "process_start",
-    { description: TOOL_DEFINITIONS[7].description, inputSchema: ProcessStartInputSchema, annotations: TOOL_DEFINITIONS[7].annotations },
-    (input, requestContext) =>
-      invoke(input, handlers.process_start.bind(handlers), context, (parsed) =>
-        requireOAuthScope(requestContext, parsed.tty ? HOSTSPAN_OAUTH_SCOPE_TERMINAL : HOSTSPAN_OAUTH_SCOPE_EXEC),
-      ),
+  server.registerTool(TOOL_DEFINITIONS[7].name, TOOL_DEFINITIONS[7], (input, requestContext) =>
+    invoke(input, handlers.process_start.bind(handlers), context, (parsed) =>
+      requireOAuthScope(requestContext, parsed.tty ? HOSTSPAN_OAUTH_SCOPE_TERMINAL : HOSTSPAN_OAUTH_SCOPE_EXEC),
+    ),
   );
-  server.registerTool(
-    "process_poll",
-    { description: TOOL_DEFINITIONS[8].description, inputSchema: ProcessPollInputSchema, annotations: TOOL_DEFINITIONS[8].annotations },
-    (input, requestContext) =>
-      invoke(input, handlers.process_poll.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
+  server.registerTool(TOOL_DEFINITIONS[8].name, TOOL_DEFINITIONS[8], (input, requestContext) =>
+    invoke(input, handlers.process_poll.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
   );
-  server.registerTool(
-    "process_write",
-    { description: TOOL_DEFINITIONS[9].description, inputSchema: ProcessWriteInputSchema, annotations: TOOL_DEFINITIONS[9].annotations },
-    (input, requestContext) =>
-      invoke(input, handlers.process_write.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_TERMINAL)),
+  server.registerTool(TOOL_DEFINITIONS[9].name, TOOL_DEFINITIONS[9], (input, requestContext) =>
+    invoke(input, handlers.process_write.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_TERMINAL)),
   );
-  server.registerTool(
-    "process_cancel",
-    { description: TOOL_DEFINITIONS[10].description, inputSchema: ProcessCancelInputSchema, annotations: TOOL_DEFINITIONS[10].annotations },
-    (input, requestContext) =>
-      invoke(input, handlers.process_cancel.bind(handlers), context, (parsed) => authorizeProcessCancel(requestContext, parsed, authorization)),
+  server.registerTool(TOOL_DEFINITIONS[10].name, TOOL_DEFINITIONS[10], (input, requestContext) =>
+    invoke(input, handlers.process_cancel.bind(handlers), context, (parsed) => authorizeProcessCancel(requestContext, parsed, authorization)),
   );
 }

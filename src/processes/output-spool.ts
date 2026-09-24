@@ -164,19 +164,23 @@ export function removeProcessSpool(dataDir: string, processId: string): void {
   rmSync(join(dataDir, "spools", "processes", processId), { recursive: true, force: true });
 }
 
-export function processSpoolBytes(dataDir: string): number {
+export function scanProcessSpools(dataDir: string): { total: number; sizes: Map<string, number> } {
   const root = join(dataDir, "spools", "processes");
-  if (!existsSync(root)) return 0;
+  const sizes = new Map<string, number>();
+  if (!existsSync(root)) return { total: 0, sizes };
   let total = 0;
   for (const processId of readdirSync(root)) {
     const dir = join(root, processId);
     if (!statSync(dir).isDirectory()) continue;
+    let bytes = 0;
     for (const stream of ["stdout.bin", "stderr.bin"]) {
       const path = join(dir, stream);
-      if (existsSync(path)) total += statSync(path).size;
+      if (existsSync(path)) bytes += statSync(path).size;
     }
+    total += bytes;
+    sizes.set(processId, bytes);
   }
-  return total;
+  return { total, sizes };
 }
 
 export function processOutputActivity(
@@ -200,10 +204,6 @@ export function processOutputActivity(
   };
 }
 
-export function processOutputBytes(dataDir: string, processId: string): number {
-  return processOutputActivity(dataDir, processId).output_bytes;
-}
-
 export function cleanupExpiredProcessSpools(
   dataDir: string,
   expiredProcessIds: string[],
@@ -225,23 +225,15 @@ export function cleanupExpiredProcessSpools(
     removeArtifacts(processId);
     removed.push(processId);
   }
-  const spoolBytes = (processId: string): number => {
-    const dir = join(root, processId);
-    if (!existsSync(dir) || !statSync(dir).isDirectory()) return 0;
-    let bytes = 0;
-    for (const stream of ["stdout.bin", "stderr.bin"]) {
-      const path = join(dir, stream);
-      if (existsSync(path)) bytes += statSync(path).size;
-    }
-    return bytes;
-  };
-  let total = processSpoolBytes(dataDir);
+  const spoolUsage = scanProcessSpools(dataDir);
+  let total = spoolUsage.total;
   for (const processId of quotaCandidates) {
     if (total <= maxTotalBytes) break;
     if (removed.includes(processId)) continue;
-    const bytes = spoolBytes(processId);
+    const bytes = spoolUsage.sizes.get(processId) ?? 0;
     if (bytes <= 0) continue;
     removeArtifacts(processId);
+    spoolUsage.sizes.delete(processId);
     total = Math.max(0, total - bytes);
     evicted.push(processId);
   }

@@ -11,7 +11,7 @@ import type { OperationsRepo } from "../state/operations-repo.js";
 import type { ProcessesRepo, ProcessState } from "../state/processes-repo.js";
 import type { TargetRegistry } from "../targets/registry.js";
 import { resolveTargetPath } from "../files/path-guard.js";
-import { OutputSpool, processOutputBytes, processSpoolBytes } from "./output-spool.js";
+import { OutputSpool, scanProcessSpools } from "./output-spool.js";
 import { processGroupAlive, signalProcessGroup } from "./recovery.js";
 import type { InteractiveSessionManager } from "./interactive-session.js";
 import { spawnWindowsJobProcess, type WindowsJobReceipt } from "./windows-job-process.js";
@@ -111,10 +111,10 @@ export class ProcessSupervisor {
   }
 
   private projectedSpoolBytes(): number {
-    const dataDir = this.options.config.server.data_dir;
-    let projected = processSpoolBytes(dataDir);
+    const spoolUsage = scanProcessSpools(this.options.config.server.data_dir);
+    let projected = spoolUsage.total;
     for (const [processId, reserved] of this.spoolReservations) {
-      projected += Math.max(0, reserved - processOutputBytes(dataDir, processId));
+      projected += Math.max(0, reserved - (spoolUsage.sizes.get(processId) ?? 0));
     }
     return projected;
   }

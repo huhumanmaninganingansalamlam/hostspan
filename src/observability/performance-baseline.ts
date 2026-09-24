@@ -63,37 +63,31 @@ function timestampMs(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function firstGreater(values: number[], threshold: number): number | null {
-  let low = 0;
-  let high = values.length;
-  while (low < high) {
-    const mid = Math.floor((low + high) / 2);
-    if ((values[mid] ?? Number.POSITIVE_INFINITY) <= threshold) low = mid + 1;
-    else high = mid;
-  }
-  return values[low] ?? null;
-}
-
 function isTerminalEvent(event: PerformanceAuditEvent): boolean {
   return event.event_type === "response.returned" || event.event_type === "request.aborted";
 }
 
 function summarizeTerminalEvents(events: PerformanceAuditEvent[]) {
-  const terminal = events.filter(isTerminalEvent);
-  const completed = terminal.filter((event) => event.event_type === "response.returned");
-  const aborted = terminal.filter((event) => event.event_type === "request.aborted");
-  const latency = terminal
-    .map((event) => finiteNumber(event.metadata.total_ms))
-    .filter((value): value is number => value !== null);
+  let calls = 0;
+  let completed = 0;
+  let aborted = 0;
+  const latency: number[] = [];
   let retryable = 0;
   let retryableKnown = 0;
   let busy = 0;
-  const outputLimited = terminal.filter(
-    (event) =>
-      event.metadata.output_limited === true || event.metadata.error_code === "OUTPUT_LIMIT" || event.metadata.error_reason === "output_limit_exceeds_profile",
-  ).length;
+  let outputLimited = 0;
   const errorsByCode: Record<string, number> = {};
-  for (const event of aborted) {
+  for (const event of events) {
+    if (!isTerminalEvent(event)) continue;
+    calls += 1;
+    if (event.event_type === "response.returned") completed += 1;
+    else aborted += 1;
+    const duration = finiteNumber(event.metadata.total_ms);
+    if (duration !== null) latency.push(duration);
+    if (event.metadata.output_limited === true || event.metadata.error_code === "OUTPUT_LIMIT" || event.metadata.error_reason === "output_limit_exceeds_profile") {
+      outputLimited += 1;
+    }
+    if (event.event_type !== "request.aborted") continue;
     const code = typeof event.metadata.error_code === "string" ? event.metadata.error_code : "<unknown>";
     errorsByCode[code] = (errorsByCode[code] ?? 0) + 1;
     if (typeof event.metadata.retryable === "boolean") {
@@ -103,21 +97,21 @@ function summarizeTerminalEvents(events: PerformanceAuditEvent[]) {
     if (code === "SERVER_BUSY") busy += 1;
   }
   return {
-    calls: terminal.length,
-    completed: completed.length,
-    aborted: aborted.length,
-    abort_rate: rate(aborted.length, terminal.length),
+    calls,
+    completed,
+    aborted,
+    abort_rate: rate(aborted, calls),
     latency_ms: distribution(latency),
-    busy: { count: busy, rate: rate(busy, terminal.length) },
+    busy: { count: busy, rate: rate(busy, calls) },
     retryable_errors: {
       count: retryable,
       known_aborts: retryableKnown,
-      unknown_aborts: aborted.length - retryableKnown,
-      rate: rate(retryable, terminal.length),
+      unknown_aborts: aborted - retryableKnown,
+      rate: rate(retryable, calls),
     },
     output_limited: {
       count: outputLimited,
-      rate: rate(outputLimited, terminal.length),
+      rate: rate(outputLimited, calls),
       coverage_note: "historical audit exposes explicit output-limit markers only; terminal completions did not always persist an output-limit reason",
     },
     errors_by_code: Object.fromEntries(Object.entries(errorsByCode).sort(([left], [right]) => left.localeCompare(right))),
@@ -137,11 +131,13 @@ export function summarizeAuditPerformance(events: PerformanceAuditEvent[], maxGa
   const terminal = chronological.filter(isTerminalEvent);
   const acceptedTimes = accepted.map((event) => timestampMs(event.timestamp)).filter((value): value is number => value !== null);
   const gaps: number[] = [];
+  let nextAcceptedIndex = 0;
   for (const event of terminal) {
     const completedAt = timestampMs(event.timestamp);
     if (completedAt === null) continue;
-    const nextAccepted = firstGreater(acceptedTimes, completedAt);
-    if (nextAccepted === null) continue;
+    while ((acceptedTimes[nextAcceptedIndex] ?? Number.POSITIVE_INFINITY) <= completedAt) nextAcceptedIndex += 1;
+    const nextAccepted = acceptedTimes[nextAcceptedIndex];
+    if (nextAccepted === undefined) continue;
     const gap = nextAccepted - completedAt;
     if (gap >= 0 && gap <= maxGapMs) gaps.push(gap);
   }

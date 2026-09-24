@@ -44,7 +44,7 @@ describe("performance baseline", () => {
       }),
     ];
 
-    const report = summarizeAuditPerformance(events);
+    const report = summarizeAuditPerformance([...events].reverse());
     expect(report.sample).toMatchObject({ event_count: 8, accepted_count: 4, terminal_call_count: 4 });
     expect(report.overall.latency_ms).toEqual({ count: 4, p50: 10, p95: 70, max: 70 });
     expect(report.tools.file_read?.latency_ms).toEqual({ count: 3, p50: 30, p95: 70, max: 70 });

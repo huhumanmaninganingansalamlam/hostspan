@@ -155,7 +155,6 @@ export function buildAdminSnapshot(configPath: string, options: AdminSnapshotOpt
   let activeRequests: Array<Record<string, unknown>> = [];
   let activeProcesses: Array<Record<string, unknown>> = [];
   let schemaVersion: number | null = null;
-  let activeProcessCount = 0;
 
   if (existsSync(statePath)) {
     const db = openReadOnlyDatabase(statePath);
@@ -212,9 +211,6 @@ export function buildAdminSnapshot(configPath: string, options: AdminSnapshotOpt
            ORDER BY started_at DESC`,
         )
         .all() as Array<Record<string, unknown>>;
-      activeProcessCount = (
-        db.prepare("SELECT count(*) AS count FROM processes WHERE state IN ('accepted','launching','running')").get() as { count: number }
-      ).count;
     } finally {
       db.close();
     }
@@ -265,7 +261,7 @@ export function buildAdminSnapshot(configPath: string, options: AdminSnapshotOpt
       sessions: terminalSessions,
     },
     state: { database_path: statePath, schema_version: schemaVersion },
-    active_process_count: activeProcessCount,
+    active_process_count: activeProcesses.length,
     active_requests: activeRequests,
     active_processes: activeProcesses,
     recent_calls: recentCalls,

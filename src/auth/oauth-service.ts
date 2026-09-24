@@ -369,7 +369,7 @@ export class OAuthService implements OAuthTokenVerifier {
     return {
       token,
       clientId: record.client_id,
-      scopes: record.scope.split(/\s+/).filter(Boolean),
+      scopes: splitOAuthScopes(record.scope),
       expiresAt: record.expires_at,
       resource: new URL(record.resource),
     };

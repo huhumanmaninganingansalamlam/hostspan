@@ -16,7 +16,6 @@ import { runDoctor, type DoctorReport } from "../cli/doctor.js";
 import { runServiceCommand, systemdServiceInstalled } from "../cli/service.js";
 import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath } from "../config/paths.js";
-import type { Capability } from "../config/schema.js";
 import { PtySessionManager } from "../processes/pty-session.js";
 import { protectWindowsFile, protectWindowsTree } from "../security/windows-acl.js";
 import { desktopLaunchSpec, linuxAutoStartContents, prepareDesktopEnvironment } from "./environment.js";
@@ -170,12 +169,6 @@ function refreshLinuxAutoStart(): void {
   }
 }
 
-function normalizedDesktopCapabilities(input: Capability[]): Capability[] {
-  const capabilities = [...new Set(input)];
-  if (capabilities.includes("terminal") && !capabilities.includes("exec")) capabilities.push("exec");
-  return capabilities;
-}
-
 type AdminSnapshot = ReturnType<typeof buildAdminSnapshot>;
 type DesktopSnapshot = AdminSnapshot & { auto_start: boolean };
 
@@ -236,15 +229,6 @@ async function restartDaemonWithConfirmation() {
 
 async function doctorReport(): Promise<DoctorReport> {
   return runDoctor(configPath);
-}
-
-function addWorkspace(input: AddWorkspaceInput) {
-  const capabilities = normalizedDesktopCapabilities(input.capabilities);
-  return addLocalWorkspace(configPath, { ...input, capabilities });
-}
-
-function removeWorkspace(targetId: string) {
-  return removeLocalWorkspace(configPath, targetId);
 }
 
 function html(): string {
@@ -431,13 +415,13 @@ ipcMain.handle("hostspan:choose-workspace", async (event) => {
 });
 ipcMain.handle("hostspan:add-workspace", async (event, rawInput: unknown) => {
   assertDashboardSender(event);
-  const result = addWorkspace(requireWorkspaceInput(rawInput));
+  const result = addLocalWorkspace(configPath, requireWorkspaceInput(rawInput));
   await refreshUi();
   return result;
 });
 ipcMain.handle("hostspan:remove-workspace", async (event, rawTargetId: unknown) => {
   assertDashboardSender(event);
-  const result = removeWorkspace(requireString(rawTargetId, "target_id", 64));
+  const result = removeLocalWorkspace(configPath, requireString(rawTargetId, "target_id", 64));
   await refreshUi();
   return result;
 });
