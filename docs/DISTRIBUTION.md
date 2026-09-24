@@ -78,20 +78,20 @@ The `--platform`, `--arch`, and `--out-dir` overrides are for static package val
 7. packs the npm/CLI payload as `hostspan-<version>.tgz`;
 8. refuses to overwrite an existing GitHub Release, then uploads the user-facing packages only after those installed-artifact gates pass;
 9. generates `SHA256SUMS.txt`;
-10. marks tags containing `-` (for example, `v0.3.0-alpha.6`) as prereleases.
+10. marks tags containing `-` as prereleases; `v0.4.0` is published as a stable release.
 
 Create a release after the intended commit is on `main`:
 
 ```bash
-git tag v0.3.0-alpha.6
-git push origin v0.3.0-alpha.6
+git tag v0.4.0
+git push origin v0.4.0
 ```
 
 Do not move or reuse a published tag. The workflow also refuses to replace assets on an already-published release. Increment `package.json`, `src/version.ts`, and `docs/RELEASE.md` together before creating the next tag.
 
 ## Signing status
 
-The current alpha workflow intentionally produces **unsigned** artifacts. Users may see Windows SmartScreen or macOS Gatekeeper warnings. Production signing requires repository secrets and external certificates:
+The current release workflow intentionally produces **unsigned** artifacts. Users may see Windows SmartScreen or macOS Gatekeeper warnings. Signing requires repository secrets and external certificates:
 
 - Windows Authenticode certificate/token;
 - Apple Developer ID Application certificate;
@@ -105,10 +105,10 @@ Packaging and native-core support are separate claims:
 
 | Environment | Current core status |
 | --- | --- |
-| Linux x64 / Ubuntu 24.04 | release-qualified Alpha core; Unix PTY + process groups |
+| Linux x64 / Ubuntu 24.04 | release-qualified core; Unix PTY + process groups |
 | WSL2 | uses the Linux core; not native Windows qualification |
-| Windows x64 | native Alpha core; ConPTY + Job Objects + private HostSpan DACL/state-path guard; full test/build, NSIS install, installed doctor/full smoke, packaged PTY lifecycle |
-| macOS x64 | native Alpha core; full test/build, installed CLI doctor/full smoke, packaged PTY lifecycle, DMG/app runtime smoke |
-| macOS arm64 | native Alpha core qualified on the matching GitHub macOS arm64 runner with the same core/package/runtime gate |
+| Windows x64 | native core; ConPTY + Job Objects + private HostSpan DACL/state-path guard; full test/build, NSIS install, installed doctor/full smoke, packaged PTY lifecycle |
+| macOS x64 | native core; full test/build, installed CLI doctor/full smoke, packaged PTY lifecycle, DMG/app runtime smoke |
+| macOS arm64 | native core qualified on the matching GitHub macOS arm64 runner with the same core/package/runtime gate |
 
 Packaging success must not be described as native-core security or process-recovery qualification.

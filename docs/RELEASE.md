@@ -1,8 +1,8 @@
-# HostSpan Alpha release notes
+# HostSpan 0.4.0 release notes
 
 ## Release contract
 
-- Version: `0.3.0-alpha.6`
+- Version: `0.4.0`
 - Toolset: `hostspan-v3`
 - MCP protocol target: `2026-07-28`
 - Qualified core platforms: Linux x64 (Ubuntu 24.04 LTS / WSL2), native Windows x64, and native macOS x64
@@ -52,16 +52,18 @@
 
 Multi-host routing, GUI/browser computer-use, LSP/CodeGraph, MCP aggregation, scheduler, and an OS sandbox. The small tray/dashboard is a local management surface, not computer-use automation.
 
-## Known post-Alpha work
+## Known distribution and operations work
 
 - configure Windows Authenticode and Apple Developer ID/notarization secrets for signed public downloads;
 - extend soak duration beyond the current functional/concurrency/recovery evidence for production-style multi-day steady-state measurement.
 
-These items are distribution/operational maturity work rather than missing Alpha core behavior. The v3 Alpha qualifies Linux x64, native Windows x64, native macOS x64, and native macOS arm64 on their matching CI/release runners.
+These items affect signed distribution and long-running operations. The core and packaged-runtime gates cover Linux x64, native Windows x64, native macOS x64, and native macOS arm64 on their matching CI/release runners.
 
 ## Contract and state policy
 
 `hostspan-v3` exposes the fixed 11-tool durable PTY lifecycle. Its approved public toolset hash is pinned in the contract test, so a schema/description/annotation change cannot silently retain the v3 contract. Refresh the ChatGPT app after upgrading server versions.
+
+`0.4.0` includes bounded Git inspection and process-output admission, stricter desktop IPC and terminal authority, granular OAuth scopes, durable approval requests, and PTY runtime ownership fencing with reliable human attach. The public `hostspan-v3` toolset and database schema remain unchanged. A maintenance pass also removes duplicate workspace capability logic, repeated spool/config reads, redundant admin queries, and repeated audit/Git scans.
 
 `0.3.0-alpha.6` is the post-alpha.4 hardening baseline. It closes the audited late-line read (with a bounded 64 MiB line-scan ceiling), natural PTY slot reclamation, output-drain/termination recovery, runtime-reference cleanup, patch DB/journal crash-window, retention/quota, Windows ACL/path pinning, staged/rename Git summary, worker command-resolution, read-only diagnostic, and release-immutability gaps without changing the `hostspan-v3` MCP contract. Alpha.6 also fixes Darwin directory enumeration on native Apple Silicon by decoding the 64-bit `dirent` ABI rather than Intel's compatibility layout; the immutable alpha.5 tag exposed that failure in the hosted arm64 core gate and was not repointed.
 
@@ -71,7 +73,7 @@ Operation-result retention compacts large result/error payloads while preserving
 
 ## Release gates
 
-Before publishing an Alpha build:
+Before publishing this release:
 
 ```bash
 pnpm install --frozen-lockfile
