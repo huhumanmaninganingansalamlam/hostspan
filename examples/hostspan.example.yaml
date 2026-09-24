@@ -35,7 +35,7 @@ targets:
     label: Main application
     provider: local
     root: /home/alice/projects/app
-    capabilities: [read, write, exec, git, terminal]
+    capabilities: [read, write, exec, terminal]
     exec_profile: native-dev
     deny_globs: ["**/.env*", "**/*.pem", "**/*.key", ".git/objects/**"]
     ignore_globs: ["**/node_modules/**", "**/dist/**", "**/.cache/**"]

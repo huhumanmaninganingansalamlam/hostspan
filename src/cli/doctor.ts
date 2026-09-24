@@ -130,12 +130,6 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
   }
 
   const targets = new TargetRegistry(config);
-  const gitCheck = commandCheck("git", ["--version"]);
-  if (gitCheck.status === "fail" && !targets.list().some((target) => target.capabilities.includes("git"))) {
-    gitCheck.status = "warn";
-    gitCheck.details = `Git is not available, but no configured target grants the git capability: ${gitCheck.details}`;
-  }
-  checks.push(gitCheck);
   const nonLoopback = !["127.0.0.1", "localhost", "::1"].includes(config.server.listen_host.toLowerCase());
   checks.push({
     name: "network_bind",
@@ -265,7 +259,7 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
   checks.push(await processGroupCheck());
   checks.push({
     name: "toolset",
-    status: TOOL_NAMES.length === 11 ? "pass" : "fail",
+    status: TOOL_NAMES.length === 10 ? "pass" : "fail",
     details: `${TOOL_NAMES.length} tools; ${TOOLSET_HASH}`,
   });
   const tunnel = spawnSync("tunnel-client", ["--version"], { encoding: "utf8", timeout: 2_000, windowsHide: true });

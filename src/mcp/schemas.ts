@@ -70,15 +70,6 @@ export const FilePatchInputSchema = z
   })
   .strict();
 
-export const GitChangesInputSchema = z
-  .object({
-    target_id: z.string().min(1),
-    paths: z.array(RelativePathSchema).max(128).default([]),
-    max_diff_bytes: z.number().int().min(1).max(8 * 1024 * 1024).default(262_144),
-    include_untracked: z.boolean().default(true),
-  })
-  .strict();
-
 export const ProcessStartInputSchema = z
   .object({
     idempotency_key: UuidV7Schema,
@@ -133,7 +124,6 @@ export type FileListToolInput = z.infer<typeof FileListInputSchema>;
 export type FileReadToolInput = z.infer<typeof FileReadInputSchema>;
 export type FileSearchToolInput = z.infer<typeof FileSearchInputSchema>;
 export type FilePatchToolInput = z.infer<typeof FilePatchInputSchema>;
-export type GitChangesToolInput = z.infer<typeof GitChangesInputSchema>;
 export type ProcessStartToolInput = z.infer<typeof ProcessStartInputSchema>;
 export type ProcessPollToolInput = z.infer<typeof ProcessPollInputSchema>;
 export type ProcessCancelToolInput = z.infer<typeof ProcessCancelInputSchema>;

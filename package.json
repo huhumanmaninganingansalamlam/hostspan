@@ -1,6 +1,6 @@
 {
   "name": "hostspan",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "productName": "HostSpan",
   "desktopName": "HostSpan",
   "description": "Terminal-first MCP execution gateway for approved local targets",

@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,7 +26,6 @@ function fixture() {
   const configPath = join(root, "config.yaml");
   mkdirSync(targetRoot, { recursive: true });
   writeFileSync(join(targetRoot, "fixture.txt"), "alpha\nbeta\n", { mode: 0o600 });
-  execFileSync("git", ["init", "-b", "main"], { cwd: targetRoot });
   const config: HostSpanConfig = {
     schema_version: 1,
     policy_epoch: 7,
@@ -43,16 +41,16 @@ function fixture() {
         label: "Acceptance target",
         provider: "local",
         root: targetRoot,
-        capabilities: ["read", "write", "exec", "git"],
+        capabilities: ["read", "write", "exec"],
         exec_profile: "native-test",
-        deny_globs: ["**/.env*", "**/*.pem", "**/*.key", ".git/objects/**"],
+        deny_globs: ["**/.env*", "**/*.pem", "**/*.key"],
         ignore_globs: ["**/node_modules/**", "**/dist/**"],
       },
     },
     exec_profiles: {
       "native-test": {
         mode: "native",
-        allowed_programs: ["node", "git"],
+        allowed_programs: ["node"],
         env_allowlist: ["CI", "LANG"],
         default_deadline_ms: 30_000,
         max_deadline_ms: 60_000,
@@ -67,9 +65,9 @@ function fixture() {
 }
 
 describe("HostSpan Alpha acceptance", () => {
-  it("keeps the exact static 11-tool contract and rejects unknown input fields", () => {
-    expect(TOOL_NAMES).toHaveLength(11);
-    expect(new Set(TOOL_NAMES).size).toBe(11);
+  it("keeps the exact static 10-tool contract and rejects unknown input fields", () => {
+    expect(TOOL_NAMES).toHaveLength(10);
+    expect(new Set(TOOL_NAMES).size).toBe(10);
     expect(TOOLSET_HASH).toMatch(/^sha256:[0-9a-f]{64}$/);
     const parsed = FileReadInputSchema.safeParse({
       target_id: "local",
@@ -155,7 +153,7 @@ describe("HostSpan Alpha acceptance", () => {
       const listed = await post(address, "tools-1", "tools/list");
       const result = listed.result as { tools?: Array<{ name?: string }> } | undefined;
       expect(result?.tools?.map((tool) => tool.name)).toEqual(TOOL_NAMES);
-      expect(result?.tools).toHaveLength(11);
+      expect(result?.tools).toHaveLength(10);
     } finally {
       await app.close();
       await runtime.close();
@@ -256,7 +254,7 @@ describe("HostSpan Alpha acceptance", () => {
     }
   });
 
-  it("runs a 10-turn workflow 50 times without toolset drift and records every handled call", async () => {
+  it("runs a 9-turn workflow 50 times without toolset drift and records every handled call", async () => {
     const { configPath } = fixture();
     const runtime = createRuntime(configPath);
     const beforeHash = TOOLSET_HASH;
@@ -284,7 +282,6 @@ describe("HostSpan Alpha acceptance", () => {
           },
           `${prefix}_4`,
         );
-        await runtime.handlers.git_changes({ target_id: "local", paths: ["fixture.txt"], max_diff_bytes: 8192, include_untracked: true }, `${prefix}_5`);
         await runtime.handlers.file_patch(
           {
             idempotency_key: uuidv7(),
@@ -312,8 +309,8 @@ describe("HostSpan Alpha acceptance", () => {
       expect(TOOLSET_HASH).toBe(beforeHash);
       const events = runtime.audit.recent(2_000);
       const soakEvents = events.filter((event) => String(event.request_id).startsWith("soak_"));
-      expect(soakEvents.filter((event) => event.event_type === "request.accepted")).toHaveLength(500);
-      expect(soakEvents.filter((event) => event.event_type === "response.returned")).toHaveLength(500);
+      expect(soakEvents.filter((event) => event.event_type === "request.accepted")).toHaveLength(450);
+      expect(soakEvents.filter((event) => event.event_type === "response.returned")).toHaveLength(450);
     } finally {
       await runtime.close();
     }

@@ -134,7 +134,6 @@ function fakeHandlers(calls: string[]): HostSpanToolHandlers {
     file_read: () => result("file_read"),
     file_search: () => result("file_search"),
     file_patch: () => result("file_patch"),
-    git_changes: () => result("git_changes"),
     process_start: () => result("process_start"),
     process_poll: () => result("process_poll"),
     process_write: () => result("process_write"),

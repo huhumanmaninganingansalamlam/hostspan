@@ -8,7 +8,7 @@
 [![Desktop release](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/release.yml/badge.svg)](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/release.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
-HostSpan is a terminal-first MCP execution gateway for ChatGPT Web Developer Mode. It exposes a fixed `hostspan-v3` toolset for approved local targets and keeps file/process side effects verifiable and recoverable across reconnects.
+HostSpan is a terminal-first MCP execution gateway for ChatGPT Web Developer Mode. It exposes a fixed `hostspan-v3.1` toolset for approved local targets and keeps file/process side effects verifiable and recoverable across reconnects.
 
 The HostSpan mark represents an MCP gateway spanning two local endpoints through a central protocol-routing hub. The tray uses a separate simplified bridge/hub glyph so it stays legible at 16–32 px instead of shrinking the full application artwork.
 
@@ -16,17 +16,17 @@ HostSpan Alpha has native Linux x64, Windows x64, and macOS x64 core paths. **Na
 
 ## Alpha scope
 
-The MCP tool registry is immutable for `hostspan-v3`:
+The MCP tool registry is immutable for `hostspan-v3.1`:
 
-`system_status`, `target_list`, `file_list`, `file_read`, `file_search`, `file_patch`, `git_changes`, `process_start`, `process_poll`, `process_write`, `process_cancel`.
+`system_status`, `target_list`, `file_list`, `file_read`, `file_search`, `file_patch`, `process_start`, `process_poll`, `process_write`, `process_cancel`.
 
-Every file/Git/process request names a persistent `target_id`; no ChatGPT session ID or temporary workspace handle is product state. File mutation uses expected SHA-256 values, dry-run/staging, per-file atomic replacement, a durable transaction journal, and postcondition hashes. Non-interactive commands use the durable native process supervisor. Interactive commands use the same `process_id` lifecycle through a HostSpan-owned, daemon-independent PTY session worker: start with `tty=true`, read through `process_poll`, write/resize through `process_write`, and close through `process_cancel`.
+Every file/process request names a persistent `target_id`; no ChatGPT session ID or temporary workspace handle is product state. File mutation uses expected SHA-256 values, dry-run/staging, per-file atomic replacement, a durable transaction journal, and postcondition hashes. Non-interactive commands use the durable native process supervisor. Interactive commands use the same `process_id` lifecycle through a HostSpan-owned, daemon-independent PTY session worker: start with `tty=true`, read through `process_poll`, write/resize through `process_write`, and close through `process_cancel`.
 
 Linux x64 and macOS x64 use Unix PTYs and POSIX process groups. Native Windows x64 uses ConPTY plus a Job Object-backed process-tree controller. WSL2 remains a Linux runtime and is not counted as Windows qualification. Linux x64, native Windows x64, and native macOS x64 have passed the full Alpha core gate, installed CLI smoke, and packaged-runtime verification. macOS arm64 remains release-runner qualified rather than locally hardware-qualified. GUI/browser computer-use, multi-host routing, LSP/CodeGraph, and claims of sandboxed execution remain out of scope.
 
 ## Requirements
 
-For the packaged desktop app, HostSpan bundles its Node/Electron runtime and ripgrep. Install Git only if you use `git_changes`.
+For the packaged desktop app, HostSpan bundles its Node/Electron runtime and ripgrep. HostSpan does not require Git; explicitly authorized process commands can still run it if installed.
 
 For the portable CLI package, use Node.js 22 or newer. Source development additionally uses Corepack + pnpm 12.4.2. Linux systemd is optional and is only needed for `hostspan service ...`.
 
@@ -54,18 +54,18 @@ hostspan targets add \
   --id local-app \
   --label "Main application" \
   --root /absolute/path/to/project \
-  --capabilities read,write,exec,git,terminal \
+  --capabilities read,write,exec,terminal \
   --exec-profile native-dev
 hostspan policy validate
 hostspan doctor
 hostspan smoke --target local-app
 ```
 
-`hostspan init` writes the default config under `%APPDATA%\HostSpan\config.yaml` on Windows and `$XDG_CONFIG_HOME/hostspan/config.yaml` (or `~/.config/hostspan/config.yaml`) on Linux/macOS. Use `--config /path/to/config.yaml` or `HOSTSPAN_CONFIG` to select another file. Target creation/removal and policy changes are local admin operations; they are not MCP tools.
+`hostspan init` writes the default config under `%APPDATA%\HostSpan\config.yaml` on Windows and `$XDG_CONFIG_HOME/hostspan/config.yaml` (or `~/.config/hostspan/config.yaml`) on Linux/macOS. Use `--config /path/to/config.yaml` or `HOSTSPAN_CONFIG` to select another file. Target creation/removal and policy changes are local admin operations; they are not MCP tools. Existing configs may contain the old `git` capability; it is accepted for compatibility but ignored by the runtime.
 
 The sample configuration and policy guidance are in [`examples/hostspan.example.yaml`](examples/hostspan.example.yaml) and [`examples/policy.example.yaml`](examples/policy.example.yaml).
 
-Target `deny_globs` / `ignore_globs` use a deliberately portable policy syntax: forward-slash paths with literal characters plus `*`, `**`, and `?`. HostSpan rejects leading `!`, backslashes, bracket classes, and brace expansion so file tools, ripgrep, and Git cannot interpret the same policy differently.
+Target `deny_globs` / `ignore_globs` use a deliberately portable policy syntax: forward-slash paths with literal characters plus `*`, `**`, and `?`. HostSpan rejects leading `!`, backslashes, bracket classes, and brace expansion so file tools and ripgrep interpret the same policy consistently.
 
 `file_read` may scan forward to a requested late line independently of the response `max_bytes`, but each call has a fixed 64 MiB line-scan ceiling. Requests beyond that bound fail explicitly with `reason=file_read_scan_limit`; use `file_search` to narrow the location first rather than turning one read into an unbounded filesystem scan.
 
@@ -85,7 +85,7 @@ Readiness http://127.0.0.1:39393/readyz
 
 The default bind is loopback-only, but `server.listen_host` is configurable for LAN/container/reverse-proxy deployments. Host header validation remains enabled for every bind. **Any non-loopback HostSpan server additionally requires built-in OAuth and fails closed when OAuth is missing.** `readyz` represents server/database readiness; missing ripgrep is reported as degraded so non-search tools stay usable, while `file_search` returns `SEARCH_BACKEND_UNAVAILABLE`.
 
-HostSpan also applies local overload and retention boundaries so several agents cannot amplify one burst into unbounded host work. Defaults are 128 in-flight MCP requests, 8 concurrent ripgrep searches with 16 queued, and 4 concurrent Git inspections with 8 queued; both queues time out after 1 second. Search or Git inspection overflow returns retryable `SERVER_BUSY`; process execution is independently bounded by each exec profile's `max_concurrent_processes`. Durable audit history is bounded by both `audit_days` and `max_audit_events` (500,000 by default). Completed process output expires after 60 minutes by default, the retained spool budget defaults to 1 GiB, and old operation response payloads are compacted after 14 days without deleting their idempotency-key tombstones. Once those payloads and retained output are gone, redundant completed process/patch detail rows are also pruned while the operation tombstone remains.
+HostSpan also applies local overload and retention boundaries so several agents cannot amplify one burst into unbounded host work. Defaults are 128 in-flight MCP requests and 8 concurrent ripgrep searches with 16 queued; the search queue times out after 1 second. Search overflow returns retryable `SERVER_BUSY`; process execution is independently bounded by each exec profile's `max_concurrent_processes`. Durable audit history is bounded by both `audit_days` and `max_audit_events` (500,000 by default). Completed process output expires after 60 minutes by default, the retained spool budget defaults to 1 GiB, and old operation response payloads are compacted after 14 days without deleting their idempotency-key tombstones. Once those payloads and retained output are gone, redundant completed process/patch detail rows are also pruned while the operation tombstone remains.
 
 ```yaml
 server:
@@ -93,9 +93,6 @@ server:
   max_concurrent_searches: 8
   max_queued_searches: 16
   search_queue_timeout_ms: 1000
-  max_concurrent_git_changes: 4
-  max_queued_git_changes: 8
-  git_queue_timeout_ms: 1000
 
 retention:
   completed_process_output_ttl_minutes: 60
@@ -145,7 +142,7 @@ On Linux you may still prefer the existing systemd user service commands.
 
 ### Tray companion
 
-The optional tray companion is intentionally small: server start/stop/restart, version/PID, Doctor health checks, current activity, targets/workspaces, recent calls, login autostart, and interactive terminal attach. Workspaces can be added with explicit capabilities or removed when no process is active. For the trusted-local DevSpace-replacement workflow, Add Workspace selects `read`, `write`, `exec`, and `git` by default. Interactive `terminal` authority is deliberately opt-in because it grants the stronger native PTY boundary as the HostSpan OS user. Target and policy configuration is intentionally snapshotted when the daemon starts, so workspace/capability changes require a daemon restart before MCP uses them. The tray explains this boundary and warns that ordinary native processes are stopped by restart while durable PTY sessions remain alive and reconnect. It does not expose a new HTTP admin API and is not GUI computer-use.
+The optional tray companion is intentionally small: server start/stop/restart, version/PID, Doctor health checks, current activity, targets/workspaces, recent calls, login autostart, and interactive terminal attach. Workspaces can be added with explicit capabilities or removed when no process is active. For the trusted-local DevSpace-replacement workflow, Add Workspace selects `read` by default. Interactive `terminal` authority is deliberately opt-in because it grants the stronger native PTY boundary as the HostSpan OS user. Target and policy configuration is intentionally snapshotted when the daemon starts, so workspace/capability changes require a daemon restart before MCP uses them. The tray explains this boundary and warns that ordinary native processes are stopped by restart while durable PTY sessions remain alive and reconnect. It does not expose a new HTTP admin API and is not GUI computer-use.
 
 ```bash
 pnpm desktop
@@ -279,7 +276,7 @@ hostspan doctor
 hostspan smoke --target local-app
 ```
 
-The contract suite performs 100 modern per-request `tools/list` exchanges against the fixed 11-tool `hostspan-v3` toolset and pins the approved toolset hash. The Alpha acceptance suite also runs the 10-turn workflow 50 times and verifies stable toolset hashing and request/response trace coverage. PTY integration tests cover interactive input, resize/output polling, descendant cleanup, output-drain ordering, explicit terminal capability enforcement, worker-crash honesty, and daemon-restart recovery. Windows additionally runs Job Object descendant-cleanup and Windows path-security tests.
+The contract suite performs 100 modern per-request `tools/list` exchanges against the fixed 10-tool `hostspan-v3.1` toolset and pins the approved toolset hash. The Alpha acceptance suite also runs the 9-turn workflow 50 times and verifies stable toolset hashing and request/response trace coverage. PTY integration tests cover interactive input, resize/output polling, descendant cleanup, output-drain ordering, explicit terminal capability enforcement, worker-crash honesty, and daemon-restart recovery. Windows additionally runs Job Object descendant-cleanup and Windows path-security tests.
 
 ## Security and support
 

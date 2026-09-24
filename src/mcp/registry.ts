@@ -17,7 +17,6 @@ import {
   FilePatchInputSchema,
   FileReadInputSchema,
   FileSearchInputSchema,
-  GitChangesInputSchema,
   ProcessCancelInputSchema,
   ProcessPollInputSchema,
   ProcessStartInputSchema,
@@ -28,7 +27,6 @@ import {
   type FilePatchToolInput,
   type FileReadToolInput,
   type FileSearchToolInput,
-  type GitChangesToolInput,
   type ProcessCancelToolInput,
   type ProcessPollToolInput,
   type ProcessStartToolInput,
@@ -44,7 +42,6 @@ export const TOOL_NAMES = [
   "file_read",
   "file_search",
   "file_patch",
-  "git_changes",
   "process_start",
   "process_poll",
   "process_write",
@@ -112,12 +109,6 @@ export const TOOL_DEFINITIONS = [
     annotations: mutationAnnotations,
   },
   {
-    name: "git_changes" as const,
-    description: "Return deterministic bounded Git status, diff, and untracked summaries for one target.",
-    inputSchema: GitChangesInputSchema,
-    annotations: readOnlyAnnotations,
-  },
-  {
     name: "process_start" as const,
     description:
       "Start one durable process through HostSpan and optionally wait briefly; set tty=true for a durable interactive terminal on targets with terminal capability.",
@@ -177,7 +168,6 @@ export interface HostSpanToolHandlers {
   file_read(input: FileReadToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
   file_search(input: FileSearchToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
   file_patch(input: FilePatchToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
-  git_changes(input: GitChangesToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
   process_start(input: ProcessStartToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
   process_poll(input: ProcessPollToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
   process_write(input: ProcessWriteToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
@@ -277,20 +267,17 @@ export function registerHostSpanTools(
     invoke(input, handlers.file_patch.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_WRITE)),
   );
   server.registerTool(TOOL_DEFINITIONS[6].name, TOOL_DEFINITIONS[6], (input, requestContext) =>
-    invoke(input, handlers.git_changes.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
-  );
-  server.registerTool(TOOL_DEFINITIONS[7].name, TOOL_DEFINITIONS[7], (input, requestContext) =>
     invoke(input, handlers.process_start.bind(handlers), context, (parsed) =>
       requireOAuthScope(requestContext, parsed.tty ? HOSTSPAN_OAUTH_SCOPE_TERMINAL : HOSTSPAN_OAUTH_SCOPE_EXEC),
     ),
   );
-  server.registerTool(TOOL_DEFINITIONS[8].name, TOOL_DEFINITIONS[8], (input, requestContext) =>
+  server.registerTool(TOOL_DEFINITIONS[7].name, TOOL_DEFINITIONS[7], (input, requestContext) =>
     invoke(input, handlers.process_poll.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
   );
-  server.registerTool(TOOL_DEFINITIONS[9].name, TOOL_DEFINITIONS[9], (input, requestContext) =>
+  server.registerTool(TOOL_DEFINITIONS[8].name, TOOL_DEFINITIONS[8], (input, requestContext) =>
     invoke(input, handlers.process_write.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_TERMINAL)),
   );
-  server.registerTool(TOOL_DEFINITIONS[10].name, TOOL_DEFINITIONS[10], (input, requestContext) =>
+  server.registerTool(TOOL_DEFINITIONS[9].name, TOOL_DEFINITIONS[9], (input, requestContext) =>
     invoke(input, handlers.process_cancel.bind(handlers), context, (parsed) => authorizeProcessCancel(requestContext, parsed, authorization)),
   );
 }

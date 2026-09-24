@@ -25,11 +25,6 @@ describe("desktop first-run config", () => {
     expect(ensureDesktopConfig(configPath)).toEqual({ created: true, config_path: configPath });
     const first = HostSpanConfigSchema.parse(parseYaml(readFileSync(configPath, "utf8")));
     expect(first.terminal).toMatchObject({ backend: "pty", max_concurrent_sessions: 16 });
-    expect(first.server).toMatchObject({
-      max_concurrent_git_changes: 4,
-      max_queued_git_changes: 8,
-      git_queue_timeout_ms: 1_000,
-    });
     expect(first.targets).toEqual({});
     expect(first.exec_profiles["native-dev"]).toMatchObject({
       mode: "native",

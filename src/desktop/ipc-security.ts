@@ -1,7 +1,7 @@
 import type { AddWorkspaceInput } from "../admin/snapshot.js";
 import type { Capability } from "../config/schema.js";
 
-const CAPABILITIES = new Set<Capability>(["read", "write", "exec", "git", "terminal"]);
+const CAPABILITIES = new Set<Capability>(["read", "write", "exec", "terminal"]);
 
 export const DASHBOARD_CSP =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'";

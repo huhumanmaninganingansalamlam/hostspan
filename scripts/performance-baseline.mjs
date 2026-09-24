@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -92,8 +91,8 @@ function fixtureConfig(dataDir, targetRoot) {
         label: "Performance fixture",
         provider: "local",
         root: targetRoot,
-        capabilities: ["read", "git"],
-        deny_globs: [".git/objects/**"],
+        capabilities: ["read"],
+        deny_globs: [],
         ignore_globs: [],
       },
     },
@@ -118,7 +117,6 @@ async function runWireBaseline(samplesPerScenario) {
   mkdirSync(join(targetRoot, "nested"), { recursive: true });
   writeFileSync(join(targetRoot, "fixture.txt"), fixtureText(), { mode: 0o600 });
   writeFileSync(join(targetRoot, "nested", "small.txt"), "small fixture\n", { mode: 0o600 });
-  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: targetRoot });
   writeConfigAtomic(configPath, fixtureConfig(dataDir, targetRoot));
 
   const runtime = createRuntime(configPath);
@@ -182,11 +180,6 @@ async function runWireBaseline(samplesPerScenario) {
         max_bytes: 64 * 1024,
         deadline_ms: 5_000,
       },
-    },
-    {
-      scenario: "git_changes",
-      tool: "git_changes",
-      arguments: { target_id: "local", include_untracked: true, max_diff_bytes: 64 * 1024 },
     },
   ];
   let sequence = 0;

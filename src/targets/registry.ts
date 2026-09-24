@@ -9,7 +9,6 @@ export interface TargetRuntime extends TargetConfig {
   root_dev: string | null;
   root_ino: string | null;
   ready: boolean;
-  git_repository: boolean;
 }
 
 export class TargetRegistry {
@@ -22,12 +21,12 @@ export class TargetRegistry {
       const rootStat = ready ? statSync(rootReal, { bigint: true }) : undefined;
       this.targets.set(targetId, {
         ...target,
+        capabilities: target.capabilities.filter((capability) => capability !== "git"),
         target_id: targetId,
         root_real: rootReal,
         root_dev: rootStat?.dev.toString() ?? null,
         root_ino: rootStat?.ino.toString() ?? null,
         ready,
-        git_repository: ready && existsSync(`${rootReal}/.git`),
       });
     }
   }

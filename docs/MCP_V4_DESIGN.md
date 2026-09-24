@@ -1,12 +1,12 @@
 # HostSpan MCP v4 contract design
 
-Status: design target for the next breaking MCP contract. This document does not change the active `hostspan-v3` contract.
+Status: design target for the next breaking MCP contract. This document does not change the active `hostspan-v3.1` contract.
 
 ## Goals
 
 The v4 contract should make tool selection and result handling easier for models without expanding HostSpan's authority surface. It should add explicit output schemas, clearer titles and selection-oriented descriptions, a stable error vocabulary, and names that match the behavior they describe.
 
-The active v3 contract remains immutable while v4 is implemented behind a new toolset version. Existing v3 names, input schemas, annotations, and toolset hash must not be edited in place.
+The active v3.1 contract remains immutable while v4 is implemented behind a new toolset version. Existing v3.1 names, input schemas, annotations, and toolset hash must not be edited in place.
 
 ## Contract versioning and hash
 
@@ -25,7 +25,7 @@ Every successful structured result continues to include `request_id`, `toolset_h
 
 ## Public tool surface
 
-v4 should retain the current 11 public tool names. The breaking change is the richer contract, not gratuitous renaming.
+v4 should retain the current 10 public tool names. The breaking change is the richer contract, not gratuitous renaming.
 
 | Tool | Title | OAuth scope | Selection rule |
 | --- | --- | --- | --- |
@@ -35,17 +35,10 @@ v4 should retain the current 11 public tool names. The breaking change is the ri
 | `file_read` | Read file content | `hostspan.read` | Use when the file path is known. Request the smallest useful line range; do not search by repeatedly reading whole files. |
 | `file_search` | Search file content | `hostspan.read` | Use for unknown locations or cross-file content lookup. Narrow paths/globs instead of issuing broad repeated searches. |
 | `file_patch` | Apply guarded file patch | `hostspan.write` | Use only for requested file mutations. Reuse the same idempotency key only for the same logical mutation. |
-| `git_changes` | Inspect Git changes | `hostspan.read` | Use for bounded status/diff review without command execution. Do not start a shell process just to run status/diff. |
 | `process_start` | Start process | `hostspan.exec` or `hostspan.terminal` | Use for an actual command. Set `tty=true` only when interactive terminal semantics are required. |
 | `process_poll` | Read process output | `hostspan.read` | Use only for a process id already returned by HostSpan. Continue from returned cursors instead of rereading from zero. |
 | `process_write` | Write to terminal | `hostspan.terminal` | Use only for a live interactive process. Do not use it for non-TTY stdin or as a polling substitute. |
 | `process_cancel` | Stop process | `hostspan.exec` or `hostspan.terminal` | Use only when the caller intends to stop a process. Required scope follows the durable process backend. |
-
-### Why `git_changes` stays separate
-
-Keep the dedicated Git read surface in v4. It provides deterministic, bounded, policy-filtered status and diff data without granting arbitrary process execution. Folding it into `process_start` would force a read-only review workflow to request `hostspan.exec`, widen target capability requirements, and make output bounds and secret filtering command-dependent.
-
-Do not add general `git_*` mutation tools in v4. Git mutation remains available only through explicitly authorized process execution when the target grants that capability. The public count therefore stays at 11.
 
 ## Tool descriptions
 
@@ -61,7 +54,6 @@ Recommended descriptions:
 | `file_read` | Read a bounded range from one known target-relative file with metadata and optional SHA-256. |
 | `file_search` | Search content across bounded target-relative paths. Use this instead of repeatedly reading files when the match location is unknown. |
 | `file_patch` | Dry-run or apply an idempotent SHA-256-guarded multi-file unified diff, then run requested validators. |
-| `git_changes` | Inspect bounded, policy-filtered Git status and diff without granting command execution. |
 | `process_start` | Start one durable command. Use tty=true only for interactive terminal semantics; non-TTY and TTY starts require different OAuth authority. |
 | `process_poll` | Read new output and state for a HostSpan process from supplied cursors. Reuse returned cursors for incremental reads. |
 | `process_write` | Send characters, control keys, or resize updates to a live interactive HostSpan process and return new output. |
@@ -108,9 +100,8 @@ targets: array of {
   target_id: string
   label: string
   provider: string
-  capabilities: unique array of "read" | "write" | "exec" | "git" | "terminal"
+  capabilities: unique array of "read" | "write" | "exec" | "terminal"
   exec_mode: "native" | null
-  git_repository: boolean
   ready: boolean
 }
 ```
@@ -199,23 +190,6 @@ applied: boolean
 
 A validator failure is an error result, not a successful response with an ambiguous status.
 
-### `git_changes`
-
-```text
-repository: { root_relative: string }
-status: array of {
-  path: string
-  index_status: string
-  worktree_status: string
-  old_path?: string
-}
-diff: string
-diff_truncated: boolean
-untracked: array of { path: string, size_bytes: non-negative integer }
-```
-
-Keep the diff byte-bounded and UTF-8 safe. Status/untracked collections remain independently bounded and fail closed if their internal safety bounds are exceeded.
-
 ### Process result family
 
 `process_start`, `process_poll`, and `process_write` should share one `ProcessSnapshotOutputSchema`. `process_cancel` should return the same state core after cancellation so callers do not need a second poll just to learn the resulting durable state.
@@ -296,7 +270,7 @@ Maintain one test table that asserts the expected `code`, `retryable`, and safe 
 
 ## Annotations and authority
 
-Keep read-only annotations on `system_status`, `target_list`, `file_list`, `file_read`, `file_search`, `git_changes`, and `process_poll`.
+Keep read-only annotations on `system_status`, `target_list`, `file_list`, `file_read`, `file_search`, and `process_poll`.
 
 Keep mutation annotations on `file_patch`. Keep process mutation annotations on `process_start`, `process_write`, and `process_cancel`.
 
@@ -311,7 +285,6 @@ The v4 implementation is not complete until deterministic model-facing scenarios
 | Known file path, asked to inspect content | Call `file_read` directly; no `target_list`, `system_status`, or `file_search` preflight. |
 | Unknown source location, asked to find symbol | Call `file_search` before targeted reads; do not walk/read the whole tree. |
 | Asked for directory structure | Use `file_list`, not `file_search` or a shell `find`. |
-| Asked what changed in Git | Use `git_changes`, not `process_start ["git", ...]`. |
 | Start a non-interactive test command | Use `process_start tty=false`; do not request terminal authority. |
 | Start an interactive REPL | Use `process_start tty=true`, then `process_write`; do not start duplicate sessions. |
 | Continue reading a running process | Use `process_poll` with the returned cursors; do not restart the command or poll from zero. |
@@ -330,12 +303,12 @@ A future v4 implementation should be one deliberate breaking-contract change:
 1. Add typed output schemas and infer handler result types from them.
 2. Add titles and selection-oriented descriptions.
 3. Introduce the v4 metadata renames and common error serialization.
-4. Keep the 11-tool surface and dedicated bounded `git_changes`.
+4. Keep the 10-tool surface.
 5. Add contract tests that pin names, titles, descriptions, input/output schemas, annotations, and the new toolset hash.
 6. Add model-facing tool-selection regression fixtures.
 7. Run the complete existing safety/recovery/idempotency suite plus the new v4 contract suite before switching any default client guidance.
 
-Do not silently migrate an existing `hostspan-v3` endpoint to these schemas. A release that serves v4 must identify the new contract explicitly and document the compatibility boundary.
+Do not silently migrate an existing `hostspan-v3.1` endpoint to these schemas. A release that serves v4 must identify the new contract explicitly and document the compatibility boundary.
 
 ## Acceptance criteria
 
@@ -347,6 +320,6 @@ The design is implemented only when all of the following are true:
 - Process results no longer expose the ambiguous `native_execution` / `sandboxed` pair.
 - Successful binary `file_read` results no longer masquerade as errors through `error_code`.
 - Errors have stable code/retryability/safe-reason semantics with no unreviewed detail leakage.
-- The public tool count remains 11 and `git_changes` remains bounded/read-only.
+- The public tool count remains 10.
 - Model-facing regressions catch unnecessary calls, duplicate side effects, and authority-escalation attempts.
-- The active v3 contract and hash remain unchanged until a separately reviewed v4 implementation is intentionally selected.
+- The active v3.1 contract and hash remain unchanged until a separately reviewed v4 implementation is intentionally selected.

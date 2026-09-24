@@ -38,12 +38,12 @@ describe("desktop IPC security", () => {
     expect(
       requireWorkspaceInput({
         root: "/tmp/project",
-        capabilities: ["read", "write", "exec", "git"],
+        capabilities: ["read", "write", "exec"],
         target_id: "project",
       }),
     ).toMatchObject({
       root: "/tmp/project",
-      capabilities: ["read", "write", "exec", "git"],
+      capabilities: ["read", "write", "exec"],
       target_id: "project",
     });
     expect(() => requireWorkspaceInput({ root: "/tmp/project", capabilities: ["read", "shell"] })).toThrow(

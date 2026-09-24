@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { v7 as uuidv7 } from "uuid";
@@ -38,7 +37,7 @@ export async function runSmoke(context: SmokeContext, targetId: string): Promise
   };
 
   await record("toolset", () => {
-    if (TOOL_NAMES.length !== 11) throw new Error(`expected 11 tools, got ${TOOL_NAMES.length}`);
+    if (TOOL_NAMES.length !== 10) throw new Error(`expected 10 tools, got ${TOOL_NAMES.length}`);
   });
   await record("target_list", async () => {
     const result = await context.handlers.target_list({}, "smoke_target_list");
@@ -121,13 +120,6 @@ export async function runSmoke(context: SmokeContext, targetId: string): Promise
       }
       if (!rejected) throw new Error("path escape was not rejected");
     });
-
-    if (target.capabilities.includes("git")) {
-      await record("git_changes", async () => {
-        execFileSync("git", ["init", "-q"], { cwd: absoluteDir, stdio: "ignore" });
-        await context.handlers.git_changes({ target_id: targetId, paths: [smokeDir], max_diff_bytes: 16_384, include_untracked: true }, "smoke_git");
-      });
-    }
 
     if (target.capabilities.includes("exec") && target.exec_profile) {
       const profile = context.config.exec_profiles[target.exec_profile];

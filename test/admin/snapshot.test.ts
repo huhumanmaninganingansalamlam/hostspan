@@ -345,12 +345,12 @@ describe("local admin snapshot", () => {
 
     const addedFirst = addLocalWorkspace(configPath, {
       root: first,
-      capabilities: ["read", "write", "exec", "git", "terminal"],
+      capabilities: ["read", "write", "exec", "terminal"],
     });
     expect(addedFirst).toMatchObject({ target_id: "my-project" });
     expect(loadConfig(configPath).targets["my-project"]).toMatchObject({
       label: "My Project",
-      capabilities: ["read", "write", "exec", "git", "terminal"],
+      capabilities: ["read", "write", "exec", "terminal"],
     });
 
     const addedSecond = addLocalWorkspace(configPath, {

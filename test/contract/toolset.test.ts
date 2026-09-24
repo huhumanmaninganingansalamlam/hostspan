@@ -18,7 +18,7 @@ const modernMeta = {
   "io.modelcontextprotocol/clientCapabilities": {},
 };
 
-const HOSTSPAN_V3_APPROVED_TOOLSET_HASH = "sha256:272a6e4f3f2bc71922b674905e5a4ba031a1344c6c5933f9ebbf392c782ce9b9";
+const HOSTSPAN_V3_1_APPROVED_TOOLSET_HASH = "sha256:adcd8ec1b5643dd1b0d4bcaf311d23560786ae33b5515777483ce5968e247a9f";
 
 async function toolsListOnce(handler: ReturnType<typeof createMcpHandler>, id: number): Promise<Array<Record<string, unknown>>> {
   const response = await handler.fetch(
@@ -40,12 +40,12 @@ async function toolsListOnce(handler: ReturnType<typeof createMcpHandler>, id: n
   return tools;
 }
 
-describe("hostspan-v3 tool contract", () => {
-  it("contains exactly the fixed 11 tools with a stable digest", () => {
+describe("hostspan-v3.1 tool contract", () => {
+  it("contains exactly the fixed 10 tools with a stable digest", () => {
     const first = JSON.stringify(toolsetDocument());
     expect(toolsetDocument().tools.map((tool) => tool.name)).toEqual(TOOL_NAMES);
-    expect(toolsetDocument().tools).toHaveLength(11);
-    expect(TOOLSET_HASH).toBe(HOSTSPAN_V3_APPROVED_TOOLSET_HASH);
+    expect(toolsetDocument().tools).toHaveLength(10);
+    expect(TOOLSET_HASH).toBe(HOSTSPAN_V3_1_APPROVED_TOOLSET_HASH);
     for (let index = 0; index < 100; index += 1) expect(JSON.stringify(toolsetDocument())).toBe(first);
   });
 
@@ -56,7 +56,7 @@ describe("hostspan-v3 tool contract", () => {
       for (let index = 0; index < 100; index += 1) {
         const tools = await toolsListOnce(handler, index + 1);
         expect(tools.map((tool) => tool.name)).toEqual(TOOL_NAMES);
-        expect(tools).toHaveLength(11);
+        expect(tools).toHaveLength(10);
         const digestable = JSON.stringify(tools);
         first ??= digestable;
         expect(digestable).toBe(first);

@@ -10,7 +10,6 @@ describe("desktop workspace capability defaults", () => {
     expect(defaultWorkspaceCapability("read")).toBe(true);
     expect(defaultWorkspaceCapability("write")).toBe(false);
     expect(defaultWorkspaceCapability("exec")).toBe(false);
-    expect(defaultWorkspaceCapability("git")).toBe(false);
     expect(defaultWorkspaceCapability("terminal")).toBe(false);
   });
 });

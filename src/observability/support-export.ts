@@ -41,7 +41,6 @@ export function buildSupportExport(input: SupportExportInput): Record<string, un
       capabilities: target.capabilities,
       exec_mode: target.exec_profile ? "native" : null,
       ready: target.ready,
-      git_repository: target.git_repository,
     })),
     processes: input.processes.recent(200).map((record) => ({
       process_id: record.process_id,

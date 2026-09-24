@@ -110,8 +110,8 @@ MCP `2026-07-28` is stateless at the protocol core, so ordinary reverse proxies 
 
 In ChatGPT Developer Mode, add the MCP endpoint issued by Secure MCP Tunnel or the OAuth-protected HTTPS reverse proxy endpoint you operate. For the latter, choose OAuth. ChatGPT should open the HostSpan authorization page; enter the credential from the local `approval_secret_file` created by `hostspan oauth init`. After authorization/tool scan, invoke `system_status` and verify:
 
-- `toolset_version` is `hostspan-v3`
-- the toolset has exactly 11 tools
+- `toolset_version` is `hostspan-v3.1`
+- the toolset has exactly 10 tools
 - `toolset_hash` matches `hostspan print-toolset`
 - `policy_epoch` matches the local config
 
@@ -119,9 +119,9 @@ OpenAI Developer Mode reference: <https://developers.openai.com/api/docs/guides/
 
 ## Refresh after metadata changes
 
-ChatGPT may cache tool names/descriptions/schemas. `hostspan-v3` intentionally keeps its 11 tool names and input schemas fixed. If a HostSpan release changes tool metadata, compare `server_version` and `toolset_hash`, then use the ChatGPT app Refresh action before diagnosing a cached schema as a HostSpan runtime failure.
+ChatGPT may cache tool names/descriptions/schemas. `hostspan-v3.1` keeps its 10 tool names and input schemas fixed. If a HostSpan release changes tool metadata, compare `server_version` and `toolset_hash`, then use the ChatGPT app Refresh action before diagnosing a cached schema as a HostSpan runtime failure.
 
-A breaking contract must use a new toolset version rather than silently changing `hostspan-v3`.
+A breaking contract must use a new toolset version rather than silently changing `hostspan-v3.1`.
 
 ## Interactive terminal use
 

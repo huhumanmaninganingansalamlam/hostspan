@@ -97,7 +97,7 @@ describe("CLI target workspace defaults", () => {
           "--root",
           explicitRoot,
           "--capabilities",
-          "read,write,exec,git",
+          "read,write,exec",
           "--config",
           configPath,
         ]),
@@ -109,7 +109,7 @@ describe("CLI target workspace defaults", () => {
     const config = loadConfig(configPath);
     expect(config.targets["default-read"]?.capabilities).toEqual(["read"]);
     expect(config.targets["default-read"]?.exec_profile).toBeUndefined();
-    expect(config.targets["explicit-dev"]?.capabilities).toEqual(["read", "write", "exec", "git"]);
+    expect(config.targets["explicit-dev"]?.capabilities).toEqual(["read", "write", "exec"]);
     expect(config.targets["explicit-dev"]?.exec_profile).toBe("native-dev");
     expect(config.exec_profiles["native-dev"]).toMatchObject({
       policy: "trusted",

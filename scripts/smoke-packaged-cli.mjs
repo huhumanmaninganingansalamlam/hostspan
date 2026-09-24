@@ -241,7 +241,7 @@ function smokePackagedRuntime(executable, cli, nativeModule, ptyModule, ripgrepM
 				"--root",
 				targetRoot,
 				"--capabilities",
-				"read,write,exec,git,terminal",
+				"read,write,exec,terminal",
 				"--exec-profile",
 				"native-dev",
 			],

@@ -28,9 +28,6 @@ export function createInitialConfig(): HostSpanConfig {
       max_concurrent_searches: 8,
       max_queued_searches: 16,
       search_queue_timeout_ms: 1_000,
-      max_concurrent_git_changes: 4,
-      max_queued_git_changes: 8,
-      git_queue_timeout_ms: 1_000,
     },
     retention: {
       completed_process_output_ttl_minutes: 60,

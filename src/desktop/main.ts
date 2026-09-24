@@ -258,7 +258,6 @@ function html(): string {
       <label><input type="checkbox" data-cap="read"${defaultWorkspaceCapability("read") ? " checked" : ""}> Read</label>
       <label><input type="checkbox" data-cap="write"${defaultWorkspaceCapability("write") ? " checked" : ""}> Write</label>
       <label><input type="checkbox" data-cap="exec"${defaultWorkspaceCapability("exec") ? " checked" : ""}> Exec</label>
-      <label><input type="checkbox" data-cap="git"${defaultWorkspaceCapability("git") ? " checked" : ""}> Git</label>
       <label><input type="checkbox" data-cap="terminal"${defaultWorkspaceCapability("terminal") ? " checked" : ""}> Interactive terminal</label>
     </div><div class="muted" style="margin-top:6px">Interactive terminal grants full native terminal authority as your OS user.</div></div>
     <div class="row" style="justify-content:flex-end"><button id="cancelWorkspace" type="button" class="secondary">Cancel</button><button id="saveWorkspace" type="button">Save</button></div>

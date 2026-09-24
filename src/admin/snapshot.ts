@@ -47,6 +47,7 @@ export function uniqueWorkspaceTargetId(base: string, existing: Iterable<string>
 }
 
 function normalizedCapabilities(input: Capability[]): Capability[] {
+  if (input.includes("git")) throw new Error("git capability is no longer supported.");
   const capabilities = [...new Set(input)];
   if (capabilities.includes("terminal") && !capabilities.includes("exec")) capabilities.push("exec");
   return capabilities;
@@ -253,7 +254,6 @@ export function buildAdminSnapshot(configPath: string, options: AdminSnapshotOpt
       root: target.root_real,
       capabilities: target.capabilities,
       ready: target.ready,
-      git_repository: target.git_repository,
     })),
     terminal: {
       configured: Boolean(config.terminal),

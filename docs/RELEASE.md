@@ -1,4 +1,15 @@
-# HostSpan 0.4.0 release notes
+# HostSpan release notes
+
+## 0.5.0 candidate
+
+- Public MCP contract: `hostspan-v3.1`, exactly 10 tools, with `git_changes` removed.
+- Toolset hash: `sha256:adcd8ec1b5643dd1b0d4bcaf311d23560786ae33b5515777483ce5968e247a9f`.
+- The dedicated Git inspection runtime, queue, status output, and new-workspace Git capability selection are removed. Existing config files containing the old `git` capability or Git queue fields still load; that capability is ignored at runtime.
+- `file_patch` still supports the optional `git_diff_check` validator. Explicit process execution can still run Git when the target's exec authority permits it.
+- The database schema, process lifecycle, OAuth scopes, and remaining tool input schemas are unchanged. Refresh MCP clients after upgrading because the public tool list and hash changed.
+- The published `v0.4.0` release and tag remain unchanged. Publish this candidate only after the exact candidate SHA passes the local and GitHub native package gates.
+
+## 0.4.0 published release
 
 ## Release contract
 

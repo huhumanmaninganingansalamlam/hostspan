@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
-import { GitConcurrencyLimiter } from "../../src/files/git-changes.js";
 import { SearchConcurrencyLimiter } from "../../src/files/search.js";
 import type { HostSpanToolHandlers } from "../../src/mcp/registry.js";
 import { createHostSpanHttpServer } from "../../src/mcp/server.js";
@@ -57,37 +56,6 @@ describe("overload stability", () => {
 
     for (const hold of holds.slice(1)) hold.resolve();
     await expect(Promise.all(runs)).resolves.toEqual([0, 1, 2, 3]);
-    expect(limiter.snapshot()).toMatchObject({ active: 0, queued: 0 });
-  });
-
-  it("bounds concurrent Git inspections with a separate retryable queue", async () => {
-    const limiter = new GitConcurrencyLimiter(1, 1, 5_000);
-    const firstHold = deferred();
-    const secondHold = deferred();
-    const first = limiter.run(async () => {
-      await firstHold.promise;
-      return "first";
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const second = limiter.run(async () => {
-      await secondHold.promise;
-      return "second";
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(limiter.snapshot()).toMatchObject({ active: 1, queued: 1, max_concurrent: 1, max_queued: 1 });
-    await expect(limiter.run(async () => "overflow")).rejects.toMatchObject({
-      code: "SERVER_BUSY",
-      retryable: true,
-      details: { resource: "git_changes", reason: "capacity_saturated", active: 1, queued: 1, max_concurrent: 1, max_queued: 1 },
-    });
-
-    firstHold.resolve();
-    await expect(first).resolves.toBe("first");
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(limiter.snapshot()).toMatchObject({ active: 1, queued: 0 });
-    secondHold.resolve();
-    await expect(second).resolves.toBe("second");
     expect(limiter.snapshot()).toMatchObject({ active: 0, queued: 0 });
   });
 
@@ -271,7 +239,6 @@ describe("overload stability", () => {
       file_read: () => ({ text: "" }),
       file_search: () => ({ matches: [] }),
       file_patch: () => ({ state: "succeeded" }),
-      git_changes: () => ({ status: [] }),
       process_start: () => ({ state: "succeeded" }),
       process_poll: () => ({ state: "succeeded" }),
       process_write: () => ({ state: "succeeded" }),

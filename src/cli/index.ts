@@ -11,7 +11,6 @@ import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath } from "../config/paths.js";
 import { createInitialConfig } from "../config/defaults.js";
 import { writeConfigAtomic } from "../config/writer.js";
-import { GitConcurrencyLimiter, gitChanges } from "../files/git-changes.js";
 import { fileList } from "../files/list.js";
 import { cleanupTerminalPatchJournals, FilePatchService, recoverPatchTransactions } from "../files/patch.js";
 import { resolveTargetPath } from "../files/path-guard.js";
@@ -26,7 +25,6 @@ import type {
   FilePatchToolInput,
   FileReadToolInput,
   FileSearchToolInput,
-  GitChangesToolInput,
   ProcessCancelToolInput,
   ProcessPollToolInput,
   ProcessStartToolInput,
@@ -79,7 +77,6 @@ export interface HostSpanRuntime {
   supervisor: ProcessSupervisor;
   terminal?: InteractiveSessionManager;
   searchLimiter: SearchConcurrencyLimiter;
-  gitLimiter: GitConcurrencyLimiter;
   searchBackendReady(): boolean;
   terminalBackendReady(): boolean;
   oauthRepo: OAuthRepo;
@@ -320,11 +317,6 @@ export function createRuntime(
     config.server.max_queued_searches ?? 16,
     config.server.search_queue_timeout_ms ?? 1_000,
   );
-  const gitLimiter = new GitConcurrencyLimiter(
-    config.server.max_concurrent_git_changes ?? 4,
-    config.server.max_queued_git_changes ?? 8,
-    config.server.git_queue_timeout_ms ?? 1_000,
-  );
   const searchBackendReady = cachedExecutableProbe(ripgrepExecutable());
   const terminalBackendReady = cachedNodeModuleProbe("node-pty");
   const oauth = config.oauth ? new OAuthService(config.oauth, oauthRepo) : undefined;
@@ -390,7 +382,6 @@ export function createRuntime(
             },
             terminal: { name: "hostspan_pty", ready: terminalReady, configured: Boolean(config.terminal) },
             search_concurrency: searchLimiter.snapshot(),
-            git_concurrency: gitLimiter.snapshot(),
           },
           active_process_count: processes.activeCount(),
           degraded: !searchReady || !terminalReady,
@@ -409,7 +400,6 @@ export function createRuntime(
           provider: target.provider,
           capabilities: target.capabilities,
           exec_mode: target.exec_profile ? "native" : null,
-          git_repository: target.git_repository,
           ready: target.ready,
         })),
       })),
@@ -438,17 +428,6 @@ export function createRuntime(
       ),
     file_patch: (input: FilePatchToolInput, requestId: string) =>
       traced("file_patch", input, requestId, () => patchService.apply(targets.get(input.target_id, "write"), input)),
-    git_changes: (input: GitChangesToolInput, requestId: string) =>
-      traced("git_changes", input, requestId, () =>
-        gitLimiter.run(async () => {
-          const target = targets.get(input.target_id, "git");
-          for (const path of input.paths) {
-            const guarded = resolveTargetPath(target, path, "read");
-            policy.assertFileAllowed(target, guarded.relative, guarded.absolute, false);
-          }
-          return gitChanges(target, input.paths, input.max_diff_bytes, input.include_untracked);
-        }),
-      ),
     process_start: (input: ProcessStartToolInput, requestId: string) =>
       traced("process_start", input, requestId, () => supervisor.start(input, requestId)),
     process_poll: (input: ProcessPollToolInput, requestId: string) =>
@@ -480,7 +459,6 @@ export function createRuntime(
     supervisor,
     ...(terminal ? { terminal } : {}),
     searchLimiter,
-    gitLimiter,
     searchBackendReady,
     terminalBackendReady,
     oauthRepo,

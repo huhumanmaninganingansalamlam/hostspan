@@ -28,16 +28,15 @@ Do not describe Alpha as secure sandboxed execution. A future sandbox provider m
 - MCP paths must be target-relative; absolute paths, NULs, and leading traversal are rejected.
 - Existing path components are canonicalized and symlink components are rejected.
 - Reads use no-follow opening and recheck containment before returning the descriptor.
-- Target deny globs are enforced by typed file tools and excluded from Git summaries/search scope.
-- Target deny/ignore globs intentionally use one portable subset across HostSpan, ripgrep, and Git: forward-slash paths with literal characters plus `*`, `**`, and `?`. Leading `!`, backslashes, bracket classes, and brace expansion are rejected at config validation instead of receiving tool-specific meanings.
-- `git_changes` is a dedicated bounded Git inspection path, not general process authority. It ignores inherited Git environment/config and user/system attributes, disables fsmonitor, optional locks, external diff, and text conversion, and preflights repo-local content filters before any working-tree comparison. A configured clean/process filter affecting the requested tracked scope fails closed without executing the helper.
+- Target deny globs are enforced by typed file tools and excluded from search scope.
+- Target deny/ignore globs intentionally use one portable subset across HostSpan and ripgrep: forward-slash paths with literal characters plus `*`, `**`, and `?`. Leading `!`, backslashes, bracket classes, and brace expansion are rejected at config validation instead of receiving tool-specific meanings.
 - The active HostSpan config and its backup are protected from `file_patch` self-mutation.
 - Patch apply requires an `expected_sha256`, stages all requested files before commit, validates before writes, performs per-file atomic replacement, verifies after hashes, and records a durable transaction journal.
 - Multi-file patching is not advertised as a single filesystem transaction. Crash recovery reports `verified`, `rolled_back`, or `unknown` based on observed hashes.
 
 ## Process and terminal boundary
 
-- `process_start` is the only general-purpose process spawn path. The separate `git_changes` implementation may spawn only its fixed, bounded read-only Git inspection commands under the restrictions above.
+- `process_start` is the only general-purpose process spawn path.
 - Non-interactive commands are argv arrays with `shell=false`. On `exec`-only targets they remain subject to the target exec profile's `allowed_programs` and env allowlist in addition to deadline, output, and concurrency limits.
 - `tty=true` is a separate authority path: the target must explicitly grant the `terminal` capability and HostSpan launches a daemon-independent PTY session worker.
 - `process_write` is valid only for PTY-backed interactive processes. It can send text, selected control keys, and terminal resize updates. Every write requires its own UUIDv7 idempotency key; duplicate retries join/replay the original write, while an unprovable crash-boundary outcome becomes `PROCESS_UNKNOWN` and is never automatically retyped.
@@ -88,7 +87,7 @@ The recommended remote path remains outbound-only OpenAI Secure MCP Tunnel. If y
 - the legacy `hostspan` scope remains accepted as a full-authority compatibility alias for existing clients, but it is no longer advertised and cannot be combined with granular scopes;
 - refresh preserves or narrows authority only. A legacy `hostspan` refresh may migrate to granular scopes, but granular scopes cannot widen or refresh back to the legacy alias;
 - OAuth scope checks and HostSpan target policy are independent boundaries: a token must authorize the tool class and the selected target must separately grant the underlying capability;
-- the stable `hostspan-v3` tool list/schema/hash is unchanged by scope enforcement; tool authorization is checked at invocation time;
+- the stable `hostspan-v3.1` tool list/schema/hash is unchanged by scope enforcement; tool authorization is checked at invocation time;
 - HostSpan exposes the MCP-SDK-compatible root `/authorize`, `/token`, `/register`, and `/revoke` OAuth surface;
 - refresh tokens are issued and rotated for reconnects without requiring a separate `offline_access` scope;
 - rotating the approval secret revokes all outstanding access/refresh tokens;
@@ -111,7 +110,7 @@ Reverse proxy transport does not make native execution safer. Any authenticated 
 
 The local Electron tray/dashboard does not open an additional network admin API. It reads the local config/SQLite state and invokes local daemon/terminal commands on the same native host. Treat the desktop login/session as the trust boundary for that management UI. The renderer runs with context isolation, no Node integration, and Chromium sandboxing; renderer-created navigation and windows are denied, privileged IPC is accepted only from the dashboard's main frame, and IPC payloads are validated at runtime before daemon/config/terminal actions. The inline local dashboard also carries a restrictive CSP that denies network connections, frames, objects, and form navigation.
 
-Target and policy configuration is immutable for one daemon lifetime. The tray writes workspace additions/removals atomically, but the running MCP server continues enforcing the policy snapshot it started with until an explicit restart. This is intentional: HostSpan does not partially hot-reload authorization state while requests or processes are active. Restart confirmation reports the impact before proceeding—ordinary native processes are stopped during shutdown, while durable PTY sessions survive and are reconciled after startup. Add Workspace selects `read`, `write`, `exec`, and `git` by default for the trusted-local convenience profile, while the stronger `terminal` authority is opt-in. Reduce the selection further for lower-trust folders.
+Target and policy configuration is immutable for one daemon lifetime. The tray writes workspace additions/removals atomically, but the running MCP server continues enforcing the policy snapshot it started with until an explicit restart. This is intentional: HostSpan does not partially hot-reload authorization state while requests or processes are active. Restart confirmation reports the impact before proceeding—ordinary native processes are stopped during shutdown, while durable PTY sessions survive and are reconciled after startup. Add Workspace selects `read` by default, while the stronger `terminal` authority is opt-in. Reduce the selection further for lower-trust folders.
 
 ## Overload boundary
 
@@ -119,7 +118,6 @@ HostSpan fails bounded rather than spawning unbounded work under request bursts:
 
 - `/mcp` admits at most `server.max_inflight_mcp_requests` requests at once (128 by default); excess HTTP requests receive `503` plus `Retry-After: 1`.
 - `file_search` admits at most `server.max_concurrent_searches` ripgrep children (8 by default), queues at most `server.max_queued_searches` (16), and returns retryable `SERVER_BUSY` when the queue is full or waits longer than `server.search_queue_timeout_ms` (1 second).
-- `git_changes` admits at most `server.max_concurrent_git_changes` inspections (4 by default), queues at most `server.max_queued_git_changes` (8), and returns retryable `SERVER_BUSY` when the queue is full or waits longer than `server.git_queue_timeout_ms` (1 second). Each admitted inspection may run a small bounded set of read-only Git plumbing commands, so this separate limit prevents Git child-process amplification under multi-agent bursts.
 - `process_start` remains separately bounded per target by the selected exec profile's `max_concurrent_processes`.
 - PTY-backed interactive sessions are separately bounded by `terminal.max_concurrent_sessions` (16 by default) per target.
 - `system_status` and readiness use lightweight SQLite responsiveness checks; full `PRAGMA integrity_check` remains in `hostspan doctor` rather than running on every status request.
