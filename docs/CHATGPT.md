@@ -127,7 +127,7 @@ A breaking contract must use a new toolset version rather than silently changing
 
 Targets with the explicit `terminal` capability may start `process_start` with `tty=true`. ChatGPT then uses the same durable `process_id` with `process_poll`, `process_write`, and `process_cancel`. `process_write` can send text, control keys such as `C-c`, and resize updates, and every write carries its own UUIDv7 idempotency key. The HostSpan PTY session worker survives daemon restart; an ambiguous write that crosses a crash boundary is reported as unknown rather than replayed automatically.
 
-This is intentionally separate from ordinary bounded exec policy. A writable interactive PTY can host a shell/REPL/TUI and therefore has native user authority beyond an `allowed_programs` list. On an `exec`-only target the program/env allowlists remain enforced. On a target that also grants `terminal`, non-interactive `process_start` accepts the same class of programs and explicit environment that the stronger terminal authority already permits; deadline/output/concurrency/idempotency controls remain enforced. Enable `terminal` only on targets where that authority is acceptable.
+An `exec` target can run native non-interactive programs. A target with `terminal` can also host a writable shell, REPL, or TUI. Both paths run as the HostSpan OS user; deadline, output, concurrency, and idempotency controls remain enforced. Enable these capabilities only on targets where that authority is acceptable.
 
 ## Distinguish client-side blocking from server failures
 

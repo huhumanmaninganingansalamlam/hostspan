@@ -36,7 +36,7 @@
 - Windows guarded file read/replace parent pinning through native directory handles plus private DACLs for HostSpan config/state
 - process-group/job deadline/cancel, UTF-8-safe process-output byte cursors, bounded UTF-8/UTF-16 file reads, idempotent submission
 - SQLite WAL operation/process/transaction/audit state
-- native exec policy with bounded exec-only allowlists, terminal-authority parity, and output/deadline/concurrency limits
+- native exec with target capability checks and output/deadline/concurrency limits
 - bounded JSONL rotation, redaction, short output retention, spool quota eviction, idempotency-result compaction, support export
 - doctor/smoke/status/admin/service commands
 - ChatGPT Refresh/tunnel/troubleshooting documentation

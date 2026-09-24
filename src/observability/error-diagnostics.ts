@@ -7,7 +7,6 @@ const SAFE_ERROR_REASONS = new Set([
   "daemon_running",
   "deadline_exceeded",
   "deadline_exceeds_profile",
-  "environment_not_allowed",
   "exec_profile_mode_unsupported",
   "exec_profile_not_configured",
   "file_read_scan_limit",
@@ -22,7 +21,6 @@ const SAFE_ERROR_REASONS = new Set([
   "output_limit",
   "output_limit_exceeds_profile",
   "path_denied_by_policy",
-  "program_not_allowed",
   "target_missing_exec_profile",
   "unknown_command",
 ]);

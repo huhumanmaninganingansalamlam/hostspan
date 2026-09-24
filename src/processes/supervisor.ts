@@ -427,7 +427,7 @@ export class ProcessSupervisor {
     const target = this.options.targets.get(input.target_id, interactive ? "terminal" : "exec");
     const cwd = resolveTargetPath(target, input.cwd, "exec");
     if (!cwd.exists) throw new HostSpanError("FILE_NOT_FOUND", `Process cwd does not exist: ${input.cwd}`);
-    const profile = interactive ? undefined : this.options.policy.validateExec(target, input.argv, input.env, input.deadline_ms, input.max_output_bytes);
+    const profile = interactive ? undefined : this.options.policy.validateExec(target, input.argv, input.deadline_ms, input.max_output_bytes);
     if (interactive && this.options.terminal && this.options.config.terminal) {
       await this.reconcileInteractiveProcesses(input.target_id);
     }

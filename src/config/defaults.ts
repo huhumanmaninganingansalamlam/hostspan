@@ -1,12 +1,9 @@
 import type { HostSpanConfig } from "./schema.js";
 import { defaultDataDir } from "./paths.js";
 
-export function createTrustedExecProfile(): HostSpanConfig["exec_profiles"][string] {
+export function createNativeExecProfile(): HostSpanConfig["exec_profiles"][string] {
   return {
     mode: "native",
-    policy: "trusted",
-    allowed_programs: [],
-    env_allowlist: [],
     default_deadline_ms: 30_000,
     max_deadline_ms: 600_000,
     default_output_bytes: 4_194_304,
@@ -44,7 +41,7 @@ export function createInitialConfig(): HostSpanConfig {
     },
     targets: {},
     exec_profiles: {
-      "native-dev": createTrustedExecProfile(),
+      "native-dev": createNativeExecProfile(),
     },
   };
 }

@@ -12,5 +12,4 @@ target_defaults:
 
 exec_profile_defaults:
   mode: native
-  env_allowlist: [LANG, LC_ALL, CI, NODE_ENV]
   max_concurrent_processes: 4

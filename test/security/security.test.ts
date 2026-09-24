@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { v7 as uuidv7 } from "uuid";
-import { ExecProfileSchema, PolicyGlobSchema, type HostSpanConfig } from "../../src/config/schema.js";
+import { PolicyGlobSchema, type HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
 import { createRuntime, main } from "../../src/cli/index.js";
 import { HostSpanLogger } from "../../src/observability/logger.js";
@@ -19,7 +19,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(options: { terminal?: boolean; trusted?: boolean } = {}): { root: string; configPath: string } {
+function fixture(options: { terminal?: boolean } = {}): { root: string; configPath: string } {
   const root = mkdtempSync(join(tmpdir(), "hostspan-security-"));
   roots.push(root);
   const targetRoot = join(root, "target");
@@ -50,9 +50,6 @@ function fixture(options: { terminal?: boolean; trusted?: boolean } = {}): { roo
     exec_profiles: {
       native: {
         mode: "native",
-        ...(options.trusted ? { policy: "trusted" as const } : {}),
-        allowed_programs: options.trusted ? [] : ["node"],
-        env_allowlist: options.trusted ? [] : ["CI"],
         default_deadline_ms: 30_000,
         max_deadline_ms: 60_000,
         default_output_bytes: 1024 * 1024,
@@ -73,16 +70,6 @@ describe("security and operational boundaries", () => {
     for (const glob of ["!secret/**", "src/[ab].ts", "src/{a,b}.ts", "src\\secret\\**", "bad\nname"]) {
       expect(PolicyGlobSchema.safeParse(glob).success).toBe(false);
     }
-  });
-
-  it("keeps legacy exec profiles restricted while trusted profiles need no command allowlist", () => {
-    const legacy = ExecProfileSchema.parse({ mode: "native", allowed_programs: ["node"] });
-    expect(legacy.policy).toBeUndefined();
-    expect(legacy.allowed_programs).toEqual(["node"]);
-    expect(ExecProfileSchema.safeParse({ mode: "native" }).success).toBe(false);
-    const trusted = ExecProfileSchema.parse({ mode: "native", policy: "trusted" });
-    expect(trusted.allowed_programs).toEqual([]);
-    expect(trusted.env_allowlist).toEqual([]);
   });
 
   it.runIf(process.platform === "win32")("applies private Windows ACLs to config and durable state", async () => {
@@ -277,86 +264,10 @@ describe("security and operational boundaries", () => {
     }
   });
 
-  it("rejects environment variables outside the native exec profile allowlist", async () => {
-    const { configPath } = fixture();
-    const runtime = createRuntime(configPath);
-    try {
-      await expect(
-        runtime.handlers.process_start(
-          {
-            idempotency_key: uuidv7(),
-            target_id: "local",
-            argv: ["node", "-e", "process.stdout.write('x')"],
-            cwd: ".",
-            env: { SECRET_TOKEN: "should-not-pass" },
-            wait_ms: 100,
-            deadline_ms: 5_000,
-            max_output_bytes: 4096,
-          },
-          "req_env",
-        ),
-      ).rejects.toMatchObject({ code: "SCOPE_DENIED", details: { reason: "environment_not_allowed" } });
-    } finally {
-      await runtime.close();
-    }
-  });
-
-  it("keeps the program allowlist for exec-only targets", async () => {
-    const { configPath } = fixture();
-    const runtime = createRuntime(configPath);
-    try {
-      await expect(
-        runtime.handlers.process_start(
-          {
-            idempotency_key: uuidv7(),
-            target_id: "local",
-            argv: ["bash", "-lc", "printf should-not-run"],
-            cwd: ".",
-            env: {},
-            wait_ms: 100,
-            deadline_ms: 5_000,
-            max_output_bytes: 4096,
-          },
-          "req_exec_allowlist",
-        ),
-      ).rejects.toMatchObject({ code: "SCOPE_DENIED", details: { reason: "program_not_allowed" } });
-      await expect(
-        runtime.handlers.process_start(
-          {
-            idempotency_key: uuidv7(),
-            target_id: "local",
-            argv: [process.execPath, "-e", "process.stdout.write('should-not-run')"],
-            cwd: ".",
-            env: {},
-            wait_ms: 100,
-            deadline_ms: 5_000,
-            max_output_bytes: 4096,
-          },
-          "req_exec_explicit_path",
-        ),
-      ).rejects.toMatchObject({ code: "SCOPE_DENIED", details: { reason: "program_not_allowed" } });
-
-      const aborted = runtime.audit.recent().find(
-        (event) => event.request_id === "req_exec_allowlist" && event.event_type === "request.aborted",
-      );
-      expect(aborted?.metadata).toMatchObject({
-        tool: "process_start",
-        stage: "handler",
-        error_code: "SCOPE_DENIED",
-        error_reason: "program_not_allowed",
-        retryable: false,
-      });
-      expect(JSON.stringify(aborted?.metadata)).not.toContain("bash");
-      expect(JSON.stringify(aborted?.metadata)).not.toContain("should-not-run");
-    } finally {
-      await runtime.close();
-    }
-  });
-
   it.each([
-    { authority: "trusted exec profile", options: { trusted: true } },
+    { authority: "exec-only target", options: {} },
     { authority: "terminal-capable target", options: { terminal: true } },
-  ])("allows arbitrary native programs and env overrides with $authority", async ({ options }) => {
+  ])("allows native programs and env overrides with $authority", async ({ options }) => {
     const { configPath } = fixture(options);
     const runtime = createRuntime(configPath);
     try {

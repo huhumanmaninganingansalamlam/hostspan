@@ -40,8 +40,6 @@ function targetFor(root: string) {
     exec_profiles: {
       native: {
         mode: "native",
-        allowed_programs: ["node"],
-        env_allowlist: [],
         default_deadline_ms: 30_000,
         max_deadline_ms: 60_000,
         default_output_bytes: 1024 * 1024,

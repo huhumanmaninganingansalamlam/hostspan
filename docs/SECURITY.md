@@ -4,13 +4,13 @@
 
 HostSpan treats model output and repository content as untrusted input. The local HostSpan configuration and policy are administrator-controlled authority. OpenAI Secure MCP Tunnel or a user-managed reverse proxy is transport only; neither replaces HostSpan target/file/exec authorization.
 
-Every tool call is revalidated against the configured `target_id`, target capability, canonical target-relative path, file policy, exec profile, program/environment limits, deadlines/output limits, and idempotency ledger.
+Every tool call is revalidated against the configured `target_id`, target capability, canonical target-relative path, file policy, exec profile, deadlines/output limits, and idempotency ledger.
 
 Tool annotations remain truthful: file/process mutation tools are not relabeled as read-only to bypass a client's action controls. A client may filter which advertised tools it injects into a conversation, but weakening annotations or wrapping writes in a deceptively generic tool would only hide risk from the user; it would not create a dependable server-side workaround.
 
 ## Native execution is not sandboxed execution
 
-Alpha supports `mode: native` only. A native child process runs as the same OS user as HostSpan and may be able to read files outside the target or use the network. `allowed_programs` and the environment allowlist reduce accidental or model-selected behavior; they are **not** a kernel/container/VM security boundary.
+Alpha supports `mode: native` only. A native child process runs as the same OS user as HostSpan and may be able to read files outside the target or use the network. Target capabilities and OAuth scopes control who can request execution; native execution is not a kernel/container/VM security boundary.
 
 HostSpan therefore reports process results with:
 
@@ -37,11 +37,10 @@ Do not describe Alpha as secure sandboxed execution. A future sandbox provider m
 ## Process and terminal boundary
 
 - `process_start` is the only general-purpose process spawn path.
-- Non-interactive commands are argv arrays with `shell=false`. On `exec`-only targets they remain subject to the target exec profile's `allowed_programs` and env allowlist in addition to deadline, output, and concurrency limits.
+- Non-interactive commands are argv arrays with `shell=false`. The target must grant `exec`; deadline, output, and concurrency limits apply.
 - `tty=true` is a separate authority path: the target must explicitly grant the `terminal` capability and HostSpan launches a daemon-independent PTY session worker.
 - `process_write` is valid only for PTY-backed interactive processes. It can send text, selected control keys, and terminal resize updates. Every write requires its own UUIDv7 idempotency key; duplicate retries join/replay the original write, while an unprovable crash-boundary outcome becomes `PROCESS_UNKNOWN` and is never automatically retyped.
-- A writable PTY is stronger than bounded exec. A shell, REPL, debugger, SSH client, or interpreter inside the PTY can execute operations that are not constrained by the native exec profile's `allowed_programs`. The `terminal` capability therefore grants native interactive terminal authority as the HostSpan OS user.
-- When a target grants both `exec` and `terminal`, HostSpan treats that stronger terminal grant consistently: non-interactive `process_start` no longer rejects a program or explicit environment variable merely because it is absent from the exec profile allowlists. Resource/lifecycle controls still apply. This avoids a misleading policy where `bash` is forbidden in bounded exec while the same target can already start `bash` inside a writable PTY.
+- A writable PTY can host a shell, REPL, debugger, SSH client, or interpreter. The `terminal` capability grants native interactive terminal authority as the HostSpan OS user.
 - `target_id` still determines the initial working directory and the authorization decision, but once interactive terminal authority is granted it is not a filesystem sandbox. A shell can change directories or access anything available to the HostSpan OS user.
 - Side-effect submissions require a UUIDv7 idempotency key and are deduplicated in SQLite by argument hash.
 - A duplicate key with different arguments is rejected with `IDEMPOTENCY_CONFLICT`.

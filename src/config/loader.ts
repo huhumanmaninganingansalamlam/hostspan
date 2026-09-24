@@ -9,7 +9,16 @@ export function expandHome(path: string): string {
 }
 
 export function loadConfig(path: string): HostSpanConfig {
-  const raw = parseYaml(readFileSync(path, "utf8"));
+  const raw: unknown = parseYaml(readFileSync(path, "utf8"));
+  if (raw && typeof raw === "object" && "exec_profiles" in raw && raw.exec_profiles && typeof raw.exec_profiles === "object") {
+    for (const profile of Object.values(raw.exec_profiles)) {
+      if (!profile || typeof profile !== "object") continue;
+      const legacy = profile as Record<string, unknown>;
+      delete legacy.policy;
+      delete legacy.allowed_programs;
+      delete legacy.env_allowlist;
+    }
+  }
   const config = HostSpanConfigSchema.parse(raw);
   const targets = Object.fromEntries(
     Object.entries(config.targets).map(([targetId, target]) => {

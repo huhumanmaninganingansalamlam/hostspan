@@ -28,9 +28,6 @@ describe("desktop first-run config", () => {
     expect(first.targets).toEqual({});
     expect(first.exec_profiles["native-dev"]).toMatchObject({
       mode: "native",
-      policy: "trusted",
-      allowed_programs: [],
-      env_allowlist: [],
     });
 
     first.targets.existing = {

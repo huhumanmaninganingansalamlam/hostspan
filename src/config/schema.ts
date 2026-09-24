@@ -70,25 +70,13 @@ export const TerminalConfigSchema = z
 export const ExecProfileSchema = z
   .object({
     mode: z.literal("native"),
-    policy: z.enum(["trusted", "restricted"]).optional(),
-    allowed_programs: z.array(z.string().min(1)).default([]),
-    env_allowlist: z.array(z.string().min(1)).default([]),
     default_deadline_ms: z.number().int().positive().default(30_000),
     max_deadline_ms: z.number().int().positive().default(600_000),
     default_output_bytes: z.number().int().positive().default(4_194_304),
     max_output_bytes: z.number().int().positive().default(67_108_864),
     max_concurrent_processes: z.number().int().positive().max(64).default(4),
   })
-  .strict()
-  .superRefine((profile, context) => {
-    if ((profile.policy ?? "restricted") === "restricted" && !(profile.allowed_programs?.length)) {
-      context.addIssue({
-        code: "custom",
-        path: ["allowed_programs"],
-        message: "restricted exec profiles require at least one allowed_programs entry",
-      });
-    }
-  });
+  .strict();
 
 export const TargetConfigSchema = z
   .object({

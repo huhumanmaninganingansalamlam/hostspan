@@ -32,17 +32,4 @@ describe("audit error diagnostics", () => {
     expect(JSON.stringify(metadata)).not.toContain(canary);
   });
 
-  it("recognizes policy reason codes without exposing rejected input", () => {
-    const error = new HostSpanError("SCOPE_DENIED", "Program is not allowed: private-tool", false, {
-      reason: "program_not_allowed",
-      program: "private-tool",
-    });
-
-    expect(auditErrorDiagnostics(error)).toEqual({
-      error_code: "SCOPE_DENIED",
-      retryable: false,
-      error_reason: "program_not_allowed",
-    });
-  });
-
 });

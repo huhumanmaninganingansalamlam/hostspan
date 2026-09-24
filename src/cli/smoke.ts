@@ -2,13 +2,11 @@ import { createHash } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { v7 as uuidv7 } from "uuid";
-import type { HostSpanConfig } from "../config/schema.js";
 import { HostSpanError } from "../mcp/errors.js";
 import { TOOL_NAMES, TOOLSET_HASH, type HostSpanToolHandlers } from "../mcp/registry.js";
 import type { TargetRegistry } from "../targets/registry.js";
 
 export interface SmokeContext {
-  config: HostSpanConfig;
   targets: TargetRegistry;
   handlers: HostSpanToolHandlers;
 }
@@ -122,69 +120,63 @@ export async function runSmoke(context: SmokeContext, targetId: string): Promise
     });
 
     if (target.capabilities.includes("exec") && target.exec_profile) {
-      const profile = context.config.exec_profiles[target.exec_profile];
-      const trustedExec = profile?.policy === "trusted";
-      if (trustedExec || profile?.allowed_programs.includes("node")) {
-        const embeddedNode = Boolean(process.versions.electron);
-        const nodeProgram = trustedExec ? process.execPath : "node";
-        const nodeEnv = trustedExec && embeddedNode ? { ELECTRON_RUN_AS_NODE: "1" } : {};
-        await record("short_process", async () => {
-          let result = await context.handlers.process_start(
-            {
-              idempotency_key: uuidv7(),
-              target_id: targetId,
-              argv: [nodeProgram, "-e", "process.stdout.write('smoke')"],
-              cwd: ".",
-              env: nodeEnv,
-              wait_ms: 1_200,
-              deadline_ms: 5_000,
-              max_output_bytes: 64 * 1024,
-            },
-            "smoke_process_short",
-          );
-          let stdout = String(result.stdout ?? "");
-          const completionAttempts = process.platform === "win32" ? 24 : 8;
-          for (let attempt = 0; attempt < completionAttempts && result.state === "running"; attempt += 1) {
-            result = await context.handlers.process_poll(
-              {
-                process_id: String(result.process_id),
-                stdout_cursor: Number(result.next_stdout_cursor ?? 0),
-                stderr_cursor: Number(result.next_stderr_cursor ?? 0),
-                wait_ms: 500,
-                max_bytes: 64 * 1024,
-              },
-              `smoke_process_short_poll_${attempt}`,
-            );
-            stdout += String(result.stdout ?? "");
-          }
-          if (result.state !== "succeeded" || !stdout.includes("smoke")) {
-            throw new Error(`short process failed: state=${String(result.state)} stdout=${JSON.stringify(stdout)}`);
-          }
-        });
-        await record("long_process_cancel", async () => {
-          const key = uuidv7();
-          const input = {
-            idempotency_key: key,
+      const embeddedNode = Boolean(process.versions.electron);
+      const nodeProgram = process.execPath;
+      const nodeEnv = embeddedNode ? { ELECTRON_RUN_AS_NODE: "1" } : {};
+      await record("short_process", async () => {
+        let result = await context.handlers.process_start(
+          {
+            idempotency_key: uuidv7(),
             target_id: targetId,
-            argv: [nodeProgram, "-e", "setTimeout(()=>{},60000)"],
+            argv: [nodeProgram, "-e", "process.stdout.write('smoke')"],
             cwd: ".",
             env: nodeEnv,
-            wait_ms: 25,
-            deadline_ms: 60_000,
+            wait_ms: 1_200,
+            deadline_ms: 5_000,
             max_output_bytes: 64 * 1024,
-          };
-          const first = await context.handlers.process_start(input, "smoke_process_long");
-          const replay = await context.handlers.process_start(input, "smoke_process_replay");
-          if (first.process_id !== replay.process_id) throw new Error("duplicate process key spawned a different process");
-          const cancelled = await context.handlers.process_cancel(
-            { idempotency_key: uuidv7(), process_id: String(first.process_id), grace_ms: 100 },
-            "smoke_process_cancel",
+          },
+          "smoke_process_short",
+        );
+        let stdout = String(result.stdout ?? "");
+        const completionAttempts = process.platform === "win32" ? 24 : 8;
+        for (let attempt = 0; attempt < completionAttempts && result.state === "running"; attempt += 1) {
+          result = await context.handlers.process_poll(
+            {
+              process_id: String(result.process_id),
+              stdout_cursor: Number(result.next_stdout_cursor ?? 0),
+              stderr_cursor: Number(result.next_stderr_cursor ?? 0),
+              wait_ms: 500,
+              max_bytes: 64 * 1024,
+            },
+            `smoke_process_short_poll_${attempt}`,
           );
-          if (cancelled.state !== "cancelled") throw new Error(`cancel ended in ${String(cancelled.state)}`);
-        });
-      } else {
-        steps.push({ name: "process", status: "skip", details: "exec profile does not allow node; smoke harness uses node for deterministic fixtures" });
-      }
+          stdout += String(result.stdout ?? "");
+        }
+        if (result.state !== "succeeded" || !stdout.includes("smoke")) {
+          throw new Error(`short process failed: state=${String(result.state)} stdout=${JSON.stringify(stdout)}`);
+        }
+      });
+      await record("long_process_cancel", async () => {
+        const key = uuidv7();
+        const input = {
+          idempotency_key: key,
+          target_id: targetId,
+          argv: [nodeProgram, "-e", "setTimeout(()=>{},60000)"],
+          cwd: ".",
+          env: nodeEnv,
+          wait_ms: 25,
+          deadline_ms: 60_000,
+          max_output_bytes: 64 * 1024,
+        };
+        const first = await context.handlers.process_start(input, "smoke_process_long");
+        const replay = await context.handlers.process_start(input, "smoke_process_replay");
+        if (first.process_id !== replay.process_id) throw new Error("duplicate process key spawned a different process");
+        const cancelled = await context.handlers.process_cancel(
+          { idempotency_key: uuidv7(), process_id: String(first.process_id), grace_ms: 100 },
+          "smoke_process_cancel",
+        );
+        if (cancelled.state !== "cancelled") throw new Error(`cancel ended in ${String(cancelled.state)}`);
+      });
     }
   } finally {
     rmSync(absoluteDir, { recursive: true, force: true });

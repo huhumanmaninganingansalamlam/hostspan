@@ -96,8 +96,6 @@ function fixture(terminalCapability = true, maxConcurrentSessions = 2, requireOw
     exec_profiles: {
       "native-test": {
         mode: "native",
-        allowed_programs: ["node"],
-        env_allowlist: [],
         default_deadline_ms: 30_000,
         max_deadline_ms: 60_000,
         default_output_bytes: 1024 * 1024,

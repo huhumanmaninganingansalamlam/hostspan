@@ -1,5 +1,5 @@
 import { existsSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import type { ExecProfile, HostSpanConfig } from "../config/schema.js";
 import { HostSpanError } from "../mcp/errors.js";
 import type { TargetRuntime } from "../targets/registry.js";
@@ -54,26 +54,11 @@ export class PolicyEvaluator {
     return profile;
   }
 
-  validateExec(target: TargetRuntime, argv: string[], env: Record<string, string>, deadlineMs: number, maxOutputBytes: number): ExecProfile {
+  validateExec(target: TargetRuntime, argv: string[], deadlineMs: number, maxOutputBytes: number): ExecProfile {
     const profile = this.execProfile(target);
     const program = argv[0];
     if (!program) {
       throw new HostSpanError("SCOPE_DENIED", "Process argv must include a program.", false, { reason: "missing_program" });
-    }
-    if ((profile.policy ?? "restricted") === "restricted" && !target.capabilities.includes("terminal")) {
-      const explicitProgramPath =
-        isAbsolute(program) || program.includes("/") || (process.platform === "win32" && program.includes("\\"));
-      if (explicitProgramPath || !profile.allowed_programs.includes(basename(program))) {
-        throw new HostSpanError("SCOPE_DENIED", `Program is not allowed by exec profile: ${program ?? "<missing>"}`, false, {
-          reason: "program_not_allowed",
-        });
-      }
-      const deniedEnv = Object.keys(env).filter((key) => !profile.env_allowlist.includes(key));
-      if (deniedEnv.length) {
-        throw new HostSpanError("SCOPE_DENIED", `Environment variables are not allowed: ${deniedEnv.join(", ")}`, false, {
-          reason: "environment_not_allowed",
-        });
-      }
     }
     if (deadlineMs > profile.max_deadline_ms) {
       throw new HostSpanError("SCOPE_DENIED", "deadline_ms exceeds exec profile maximum.", false, {
