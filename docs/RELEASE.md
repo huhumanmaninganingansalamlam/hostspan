@@ -1,13 +1,18 @@
 # HostSpan release notes
 
-## 0.5.0 candidate
+## Unreleased changes on dev
+
+- Native `exec` no longer uses per-program or environment-variable allowlists. Old exec-profile fields are ignored on load and removed by the next config write.
+- Target `exec` capability, OAuth authority, and process resource limits remain in effect. These changes are not in the published `v0.5.0` packages.
+
+## 0.5.0 published release
 
 - Public MCP contract: `hostspan-v3.1`, exactly 10 tools, with `git_changes` removed.
 - Toolset hash: `sha256:adcd8ec1b5643dd1b0d4bcaf311d23560786ae33b5515777483ce5968e247a9f`.
 - The dedicated Git inspection runtime, queue, status output, and new-workspace Git capability selection are removed. Existing config files containing the old `git` capability or Git queue fields still load; that capability is ignored at runtime.
 - `file_patch` still supports the optional `git_diff_check` validator. Explicit process execution can still run Git when the target's exec authority permits it.
 - The database schema, process lifecycle, OAuth scopes, and remaining tool input schemas are unchanged. Refresh MCP clients after upgrading because the public tool list and hash changed.
-- The published `v0.4.0` release and tag remain unchanged. Publish this candidate only after the exact candidate SHA passes the local and GitHub native package gates.
+- Published as the stable `v0.5.0` release from commit `5dc1f1f`.
 
 ## 0.4.0 published release
 
@@ -36,7 +41,7 @@
 - Windows guarded file read/replace parent pinning through native directory handles plus private DACLs for HostSpan config/state
 - process-group/job deadline/cancel, UTF-8-safe process-output byte cursors, bounded UTF-8/UTF-16 file reads, idempotent submission
 - SQLite WAL operation/process/transaction/audit state
-- native exec with target capability checks and output/deadline/concurrency limits
+- native exec policy with bounded exec-only allowlists, terminal-authority parity, and output/deadline/concurrency limits
 - bounded JSONL rotation, redaction, short output retention, spool quota eviction, idempotency-result compaction, support export
 - doctor/smoke/status/admin/service commands
 - ChatGPT Refresh/tunnel/troubleshooting documentation

@@ -78,13 +78,13 @@ The `--platform`, `--arch`, and `--out-dir` overrides are for static package val
 7. packs the npm/CLI payload as `hostspan-<version>.tgz`;
 8. refuses to overwrite an existing GitHub Release, then uploads the user-facing packages only after those installed-artifact gates pass;
 9. generates `SHA256SUMS.txt`;
-10. marks tags containing `-` as prereleases; `v0.5.0` will be a stable release.
+10. marks tags containing `-` as prereleases; other version tags are stable releases.
 
-Create a release after the intended commit is on `main`:
+Create a release after the intended commit is on `main`. Replace `X.Y.Z` with the version in `package.json`:
 
 ```bash
-git tag v0.5.0
-git push origin v0.5.0
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 Do not move or reuse a published tag. The workflow also refuses to replace assets on an already-published release. Increment `package.json`, `src/version.ts`, and `docs/RELEASE.md` together before creating the next tag.

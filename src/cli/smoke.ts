@@ -119,7 +119,7 @@ export async function runSmoke(context: SmokeContext, targetId: string): Promise
       if (!rejected) throw new Error("path escape was not rejected");
     });
 
-    if (target.capabilities.includes("exec") && target.exec_profile) {
+    if (target.capabilities.includes("exec")) {
       const embeddedNode = Boolean(process.versions.electron);
       const nodeProgram = process.execPath;
       const nodeEnv = embeddedNode ? { ELECTRON_RUN_AS_NODE: "1" } : {};

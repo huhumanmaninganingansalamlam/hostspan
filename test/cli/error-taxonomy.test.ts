@@ -156,4 +156,29 @@ describe("CLI target workspace defaults", () => {
     expect(Object.keys(updated.exec_profiles)).toEqual(["native-dev"]);
     expect(readFileSync(configPath, "utf8")).not.toMatch(/policy: restricted|allowed_programs:|env_allowlist:/);
   });
+
+  it("fails smoke when an exec target has no exec profile", async () => {
+    const configPath = configFixture();
+    const targetRoot = mkdtempSync(join(tmpdir(), "hostspan-cli-target-missing-profile-"));
+    roots.push(targetRoot);
+    const config = loadConfig(configPath);
+    config.targets.incomplete = {
+      label: "Incomplete",
+      provider: "local",
+      root: targetRoot,
+      capabilities: ["read", "exec"],
+      deny_globs: [],
+      ignore_globs: [],
+    };
+    writeConfigAtomic(configPath, config);
+
+    const runtime = createRuntime(configPath);
+    try {
+      const smoke = await runSmoke(runtime, "incomplete");
+      expect(smoke.ok).toBe(false);
+      expect(smoke.steps.find((step) => step.name === "short_process")?.status).toBe("fail");
+    } finally {
+      await runtime.close();
+    }
+  });
 });
