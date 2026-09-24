@@ -47,7 +47,7 @@ export class PolicyEvaluator {
       });
     }
     if (profile.mode !== "native") {
-      throw new HostSpanError("POLICY_UNENFORCEABLE", "Alpha only supports native execution.", false, {
+      throw new HostSpanError("POLICY_UNENFORCEABLE", "HostSpan only supports native execution.", false, {
         reason: "exec_profile_mode_unsupported",
       });
     }

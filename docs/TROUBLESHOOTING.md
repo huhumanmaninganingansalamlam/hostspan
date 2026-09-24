@@ -48,7 +48,7 @@ Before restarting, review the tray warning. Active ordinary native processes are
 
 ## `file_search` fails
 
-HostSpan Alpha requires ripgrep. `hostspan doctor` reports whether `rg` is available. If missing, the server remains available in degraded mode but `file_search` returns `SEARCH_BACKEND_UNAVAILABLE`.
+HostSpan requires ripgrep for search. `hostspan doctor` reports whether `rg` is available. If missing, the server remains available in degraded mode but `file_search` returns `SEARCH_BACKEND_UNAVAILABLE`.
 
 Broad/match-all searches are intentionally rejected or capped with `SEARCH_SCOPE_TOO_BROAD`.
 
@@ -83,7 +83,7 @@ hostspan terminal attach --process <process_id>
 
 ## Cancelled process appears to remain
 
-Collect a support bundle and check the stored `pgid`, terminal state, signal, and reason. Alpha sends SIGTERM to the process group, waits the requested grace period, then uses SIGKILL and checks group liveness. A group that cannot be proven gone is not marked cancelled.
+Collect a support bundle and check the stored `pgid`, terminal state, signal, and reason. HostSpan sends SIGTERM to the process group, waits the requested grace period, then uses SIGKILL and checks group liveness. A group that cannot be proven gone is not marked cancelled.
 
 ## Unsupported HostSpan database schema
 
@@ -93,7 +93,7 @@ If Doctor/startup reports an unsupported schema, stop HostSpan and preserve that
 
 ## Windows `config_acl` or `state_acl` fails
 
-HostSpan's Windows config/secret files and durable state directory are expected to grant access only to the current Windows user and LocalSystem. Alpha.5 applies that DACL when it writes config/secrets and when the runtime or tray starts.
+HostSpan's Windows config/secret files and durable state directory are expected to grant access only to the current Windows user and LocalSystem. HostSpan applies that DACL when it writes config/secrets and when the runtime or tray starts.
 
 If Doctor still reports an unexpected principal, first start/restart the HostSpan runtime once so the owned paths can be hardened, then rerun Doctor. If the failure persists, the configured path may be on a filesystem/share that cannot enforce the required Windows ACL semantics; move HostSpan config/state to a user-owned NTFS location rather than weakening the check.
 

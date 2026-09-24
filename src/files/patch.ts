@@ -159,7 +159,7 @@ function syntaxCheck(file: PreparedFile): ValidatorResult {
   try {
     if (extension === ".json") JSON.parse(text);
     else if (extension === ".yaml" || extension === ".yml") parseYaml(text);
-    else return { name: "syntax_check", status: "unavailable", details: `No Alpha syntax validator for ${extension || "extensionless files"}.` };
+    else return { name: "syntax_check", status: "unavailable", details: `No syntax validator for ${extension || "extensionless files"}.` };
   } catch (error) {
     throw new HostSpanError("VALIDATION_FAILED", `syntax_check failed for ${file.path}.`, false, {
       validator: "syntax_check",

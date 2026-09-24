@@ -12,9 +12,9 @@ HostSpan is a terminal-first MCP execution gateway for ChatGPT Web Developer Mod
 
 The HostSpan mark represents an MCP gateway spanning two local endpoints through a central protocol-routing hub. The tray uses a separate simplified bridge/hub glyph so it stays legible at 16–32 px instead of shrinking the full application artwork.
 
-HostSpan Alpha has native Linux x64, Windows x64, and macOS x64 core paths. **Native execution is not an OS sandbox**: a child process runs with the permissions of the user running HostSpan. See [Security](SECURITY.md) before enabling `exec` on a target.
+HostSpan has native Linux x64, Windows x64, and macOS x64 core paths. **Native execution is not an OS sandbox**: a child process runs with the permissions of the user running HostSpan. See [Security](SECURITY.md) before enabling `exec` on a target.
 
-## Alpha scope
+## Current scope
 
 The MCP tool registry is immutable for `hostspan-v3.1`:
 
@@ -22,7 +22,7 @@ The MCP tool registry is immutable for `hostspan-v3.1`:
 
 Every file/process request names a persistent `target_id`; no ChatGPT session ID or temporary workspace handle is product state. File mutation uses expected SHA-256 values, dry-run/staging, per-file atomic replacement, a durable transaction journal, and postcondition hashes. Non-interactive commands use the durable native process supervisor. Interactive commands use the same `process_id` lifecycle through a HostSpan-owned, daemon-independent PTY session worker: start with `tty=true`, read through `process_poll`, write/resize through `process_write`, and close through `process_cancel`.
 
-Linux x64 and macOS x64 use Unix PTYs and POSIX process groups. Native Windows x64 uses ConPTY plus a Job Object-backed process-tree controller. WSL2 remains a Linux runtime and is not counted as Windows qualification. Linux x64, native Windows x64, and native macOS x64 have passed the full Alpha core gate, installed CLI smoke, and packaged-runtime verification. macOS arm64 remains release-runner qualified rather than locally hardware-qualified. GUI/browser computer-use, multi-host routing, LSP/CodeGraph, and claims of sandboxed execution remain out of scope.
+Linux x64 and macOS x64 use Unix PTYs and POSIX process groups. Native Windows x64 uses ConPTY plus a Job Object-backed process-tree controller. WSL2 remains a Linux runtime and is not counted as Windows qualification. Linux x64, native Windows x64, and native macOS x64 have passed the full core gate, installed CLI smoke, and packaged-runtime verification. macOS arm64 remains release-runner qualified rather than locally hardware-qualified. GUI/browser computer-use, multi-host routing, LSP/CodeGraph, and claims of sandboxed execution remain out of scope.
 
 ## Requirements
 
@@ -157,7 +157,7 @@ pnpm desktop:make
 pnpm desktop:smoke
 ```
 
-Linux x64 produces AppImage and Debian packages, Windows x64 produces an NSIS installer and ZIP, and macOS produces separate Apple Silicon and Intel DMG/ZIP artifacts. `desktop:smoke` executes the CLI from the packaged ASAR and verifies packaged SQLite, bundled ripgrep, native PTY loading, the full local file/Git/process workflow, and a real HostSpan `tty=true` start/write/resize/poll lifecycle. Tagging a commit as `v<package-version>` runs the cross-platform GitHub Actions release workflow, verifies that the tag matches `package.json` and points to a commit contained in `main`, builds the four desktop architecture lanes plus a portable CLI `.tgz`, generates `SHA256SUMS.txt`, refuses to overwrite an existing release, and publishes a GitHub prerelease for alpha/beta tags. Current CI artifacts are unsigned; operating-system signing and notarization credentials can be added without changing the MCP contract. See [Desktop distribution](docs/DISTRIBUTION.md).
+Linux x64 produces AppImage and Debian packages, Windows x64 produces an NSIS installer and ZIP, and macOS produces separate Apple Silicon and Intel DMG/ZIP artifacts. `desktop:smoke` executes the CLI from the packaged ASAR and verifies packaged SQLite, bundled ripgrep, native PTY loading, the full local file/process workflow, and a real HostSpan `tty=true` start/write/resize/poll lifecycle. Tagging a commit as `v<package-version>` runs the cross-platform GitHub Actions release workflow, verifies that the tag matches `package.json` and points to a commit contained in `main`, builds the four desktop architecture lanes plus a portable CLI `.tgz`, generates `SHA256SUMS.txt`, refuses to overwrite an existing release, and publishes a GitHub prerelease for alpha/beta tags. Current CI artifacts are unsigned; operating-system signing and notarization credentials can be added without changing the MCP contract. See [Desktop distribution](docs/DISTRIBUTION.md).
 
 To listen on a specific interface:
 
@@ -249,7 +249,7 @@ hostspan service status
 
 ## ChatGPT Web
 
-The standard Alpha topology is:
+The standard topology is:
 
 ```text
 ChatGPT Web Developer Mode
@@ -276,7 +276,7 @@ hostspan doctor
 hostspan smoke --target local-app
 ```
 
-The contract suite performs 100 modern per-request `tools/list` exchanges against the fixed 10-tool `hostspan-v3.1` toolset and pins the approved toolset hash. The Alpha acceptance suite also runs the 9-turn workflow 50 times and verifies stable toolset hashing and request/response trace coverage. PTY integration tests cover interactive input, resize/output polling, descendant cleanup, output-drain ordering, explicit terminal capability enforcement, worker-crash honesty, and daemon-restart recovery. Windows additionally runs Job Object descendant-cleanup and Windows path-security tests.
+The contract suite performs 100 modern per-request `tools/list` exchanges against the fixed 10-tool `hostspan-v3.1` toolset and pins the approved toolset hash. The acceptance suite also runs the 9-turn workflow 50 times and verifies stable toolset hashing and request/response trace coverage. PTY integration tests cover interactive input, resize/output polling, descendant cleanup, output-drain ordering, explicit terminal capability enforcement, worker-crash honesty, and daemon-restart recovery. Windows additionally runs Job Object descendant-cleanup and Windows path-security tests.
 
 ## Security and support
 
@@ -284,7 +284,7 @@ The contract suite performs 100 modern per-request `tools/list` exchanges agains
 - [Security model](docs/SECURITY.md)
 - [ChatGPT Web / Secure MCP Tunnel / reverse proxy](docs/CHATGPT.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [Alpha release notes](docs/RELEASE.md)
+- [Release notes](docs/RELEASE.md)
 - [Contributing](CONTRIBUTING.md)
 - [Code of Conduct](CODE_OF_CONDUCT.md)
 - [Desktop distribution and release automation](docs/DISTRIBUTION.md)

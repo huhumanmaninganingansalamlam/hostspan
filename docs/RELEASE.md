@@ -1,6 +1,6 @@
 # HostSpan release notes
 
-## 0.6.0 release
+## 0.6.0 published release
 
 - Native `exec` no longer uses per-program or environment-variable allowlists. Existing `restricted` exec profiles continue to load; obsolete allowlist fields are ignored and removed by the next config write. Operators who relied on those fields as an execution boundary should review target and OAuth authority before upgrading.
 - Target `exec` capability, OAuth authority, and process resource limits remain in effect.
@@ -17,7 +17,7 @@
 
 ## 0.4.0 published release
 
-## Release contract
+### Release contract
 
 - Version: `0.4.0`
 - Toolset: `hostspan-v3`
@@ -26,7 +26,7 @@
 - Client target: ChatGPT Web Developer Mode
 - Transport: loopback HostSpan + OpenAI Secure MCP Tunnel; optional user-managed HTTPS reverse proxy/ingress
 
-## Included
+### Included
 
 - immutable 11-tool MCP registry and stable toolset digest
 - persistent explicit `target_id` routing
@@ -65,18 +65,18 @@
 - tag-gated GitHub Actions release builds with main-ancestry/version verification, portable CLI tarball, checksums, prerelease classification, and immutable GitHub Release publication
 - four-platform native CI core/runtime smoke on Linux x64, Windows x64, macOS arm64, and macOS x64
 
-## Explicitly excluded
+### Explicitly excluded
 
 Multi-host routing, GUI/browser computer-use, LSP/CodeGraph, MCP aggregation, scheduler, and an OS sandbox. The small tray/dashboard is a local management surface, not computer-use automation.
 
-## Known distribution and operations work
+### Known distribution and operations work
 
 - configure Windows Authenticode and Apple Developer ID/notarization secrets for signed public downloads;
 - extend soak duration beyond the current functional/concurrency/recovery evidence for production-style multi-day steady-state measurement.
 
 These items affect signed distribution and long-running operations. The core and packaged-runtime gates cover Linux x64, native Windows x64, native macOS x64, and native macOS arm64 on their matching CI/release runners.
 
-## Contract and state policy
+### Contract and state policy
 
 `hostspan-v3` exposes the fixed 11-tool durable PTY lifecycle. Its approved public toolset hash is pinned in the contract test, so a schema/description/annotation change cannot silently retain the v3 contract. Refresh the ChatGPT app after upgrading server versions.
 
@@ -88,7 +88,7 @@ Config schema remains version 1 with `terminal.backend: pty` as the only interac
 
 Operation-result retention compacts large result/error payloads while preserving the idempotency-key tombstone, so expiration never turns an old side-effect key into permission to execute the side effect again. Completed process output/session artifacts are TTL-bounded and the retained spool budget evicts the oldest completed output before admitting unbounded growth. Redundant terminal process/patch detail rows are removed only after the associated artifacts are gone and the durable operation tombstone has been compacted.
 
-## Release gates
+### Release gates
 
 Before publishing this release:
 

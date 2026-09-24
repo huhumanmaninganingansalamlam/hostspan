@@ -39,7 +39,7 @@ export function systemdServiceInstalled(unitPath = serviceUnitPath(), platform =
 }
 
 export function installSystemdService(configPath: string, cliPath = process.argv[1] ?? "hostspan"): { ok: boolean; unit_path: string; output: string } {
-  if (process.platform !== "linux") return { ok: false, unit_path: serviceUnitPath(), output: "Alpha service management supports systemd on Linux/WSL2 only." };
+  if (process.platform !== "linux") return { ok: false, unit_path: serviceUnitPath(), output: "Service management supports systemd on Linux/WSL2 only." };
   const unitPath = serviceUnitPath();
   mkdirSync(dirname(unitPath), { recursive: true, mode: 0o700 });
   const unit = buildSystemdServiceUnit(configPath, cliPath);

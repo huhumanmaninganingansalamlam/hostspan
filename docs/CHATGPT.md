@@ -1,6 +1,6 @@
 # ChatGPT Web connection
 
-HostSpan Alpha is designed for ChatGPT Web Developer Mode through OpenAI Secure MCP Tunnel.
+HostSpan is designed for ChatGPT Web Developer Mode through OpenAI Secure MCP Tunnel.
 
 As an alternative, you can operate any ordinary HTTPS reverse proxy or tunnel gateway yourself. HostSpan does not create or manage provider-specific public endpoints. Non-loopback HostSpan requires its built-in OAuth layer.
 

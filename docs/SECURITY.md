@@ -1,4 +1,4 @@
-# HostSpan Alpha security model
+# HostSpan security model
 
 ## Trust boundaries
 
@@ -10,7 +10,7 @@ Tool annotations remain truthful: file/process mutation tools are not relabeled 
 
 ## Native execution is not sandboxed execution
 
-Alpha supports `mode: native` only. A native child process runs as the same OS user as HostSpan and may be able to read files outside the target or use the network. Target capabilities and OAuth scopes control who can request execution; native execution is not a kernel/container/VM security boundary.
+HostSpan supports `mode: native` only. A native child process runs as the same OS user as HostSpan and may be able to read files outside the target or use the network. Target capabilities and OAuth scopes control who can request execution; native execution is not a kernel/container/VM security boundary.
 
 HostSpan therefore reports process results with:
 
@@ -21,7 +21,7 @@ HostSpan therefore reports process results with:
 }
 ```
 
-Do not describe Alpha as secure sandboxed execution. A future sandbox provider must enforce stronger policies rather than silently pretending native mode can enforce them.
+Do not describe HostSpan as secure sandboxed execution. A future sandbox provider must enforce stronger policies rather than silently pretending native mode can enforce them.
 
 ## File boundary
 
@@ -66,7 +66,7 @@ On Unix, keep normal restrictive ownership/mode semantics on HostSpan config/sta
 
 ## Network exposure
 
-Alpha defaults to `127.0.0.1`, but may bind to a specific interface, `0.0.0.0`, or `::` when the deployment requires LAN/container/reverse-proxy reachability. Host headers are always validated by the MCP Fastify adapter.
+HostSpan defaults to `127.0.0.1`, but may bind to a specific interface, `0.0.0.0`, or `::` when the deployment requires LAN/container/reverse-proxy reachability. Host headers are always validated by the MCP Fastify adapter.
 
 For wildcard binds, `allowed_hosts` is mandatory and configuration fails closed when it is empty. For a specific bind address, HostSpan derives the allowed Host from that address unless an explicit allowlist is configured. This is DNS-rebinding protection, not client authentication. **Any non-loopback HostSpan server additionally requires HostSpan OAuth and refuses to start without it.**
 
@@ -81,7 +81,7 @@ The recommended remote path remains outbound-only OpenAI Secure MCP Tunnel. If y
 - access tokens are short-lived (15 minutes by default);
 - refresh tokens rotate on every successful refresh and replay of an old refresh token fails;
 - OAuth tokens are bound to the configured MCP `resource` URL;
-- HostSpan advertises four least-privilege scopes: `hostspan.read` for status/targets/file observation/git diff/process polling, `hostspan.write` for file patching, `hostspan.exec` for non-TTY process start/native cancellation, and `hostspan.terminal` for TTY start/input/PTY cancellation;
+- HostSpan advertises four least-privilege scopes: `hostspan.read` for status/targets/file observation/process polling, `hostspan.write` for file patching, `hostspan.exec` for non-TTY process start/native cancellation, and `hostspan.terminal` for TTY start/input/PTY cancellation;
 - an authorization request that omits `scope` defaults to `hostspan.read`;
 - the legacy `hostspan` scope remains accepted as a full-authority compatibility alias for existing clients, but it is no longer advertised and cannot be combined with granular scopes;
 - refresh preserves or narrows authority only. A legacy `hostspan` refresh may migrate to granular scopes, but granular scopes cannot widen or refresh back to the legacy alias;
