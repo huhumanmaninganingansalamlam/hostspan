@@ -353,8 +353,11 @@ describe("security and operational boundaries", () => {
     }
   });
 
-  it("allows trusted exec to run arbitrary native programs and env overrides without terminal authority", async () => {
-    const { configPath } = fixture({ trusted: true });
+  it.each([
+    { authority: "trusted exec profile", options: { trusted: true } },
+    { authority: "terminal-capable target", options: { terminal: true } },
+  ])("allows arbitrary native programs and env overrides with $authority", async ({ options }) => {
+    const { configPath } = fixture(options);
     const runtime = createRuntime(configPath);
     try {
       let result = await runtime.handlers.process_start(
@@ -363,12 +366,12 @@ describe("security and operational boundaries", () => {
           target_id: "local",
           argv: [process.execPath, "-e", "process.stdout.write(process.env.HOSTSPAN_TEST_ENV ?? '')"],
           cwd: ".",
-          env: { HOSTSPAN_TEST_ENV: "trusted-exec-ok" },
+          env: { HOSTSPAN_TEST_ENV: "unrestricted-exec-ok" },
           wait_ms: 1_000,
           deadline_ms: 5_000,
           max_output_bytes: 4096,
         },
-        "req_trusted_exec",
+        "req_unrestricted_exec",
       );
       let stdout = String(result.stdout ?? "");
       for (let attempt = 0; attempt < 12 && result.state === "running"; attempt += 1) {
@@ -380,56 +383,16 @@ describe("security and operational boundaries", () => {
             wait_ms: 500,
             max_bytes: 4096,
           },
-          `req_trusted_exec_poll_${attempt}`,
+          `req_unrestricted_exec_poll_${attempt}`,
         );
         stdout += String(result.stdout ?? "");
       }
       expect({ ...result, stdout }).toMatchObject({
         state: "succeeded",
-        stdout: "trusted-exec-ok",
+        stdout: "unrestricted-exec-ok",
         exit_code: 0,
         interactive: false,
       });
-    } finally {
-      await runtime.close();
-    }
-  });
-
-  it("does not let terminal authority widen restricted non-interactive exec", async () => {
-    const { configPath } = fixture({ terminal: true });
-    const runtime = createRuntime(configPath);
-    try {
-      await expect(
-        runtime.handlers.process_start(
-          {
-            idempotency_key: uuidv7(),
-            target_id: "local",
-            argv: ["node", "-e", "process.stdout.write('should-not-run')"],
-            cwd: ".",
-            env: { HOSTSPAN_TEST_ENV: "should-not-pass" },
-            wait_ms: 100,
-            deadline_ms: 5_000,
-            max_output_bytes: 4096,
-          },
-          "req_terminal_restricted_env",
-        ),
-      ).rejects.toMatchObject({ code: "SCOPE_DENIED", details: { reason: "environment_not_allowed" } });
-
-      await expect(
-        runtime.handlers.process_start(
-          {
-            idempotency_key: uuidv7(),
-            target_id: "local",
-            argv: [process.execPath, "-e", "process.stdout.write('should-not-run')"],
-            cwd: ".",
-            env: {},
-            wait_ms: 100,
-            deadline_ms: 5_000,
-            max_output_bytes: 4096,
-          },
-          "req_terminal_restricted_program",
-        ),
-      ).rejects.toMatchObject({ code: "SCOPE_DENIED", details: { reason: "program_not_allowed" } });
     } finally {
       await runtime.close();
     }

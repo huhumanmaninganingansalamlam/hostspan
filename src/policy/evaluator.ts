@@ -60,7 +60,7 @@ export class PolicyEvaluator {
     if (!program) {
       throw new HostSpanError("SCOPE_DENIED", "Process argv must include a program.", false, { reason: "missing_program" });
     }
-    if ((profile.policy ?? "restricted") === "restricted") {
+    if ((profile.policy ?? "restricted") === "restricted" && !target.capabilities.includes("terminal")) {
       const explicitProgramPath =
         isAbsolute(program) || program.includes("/") || (process.platform === "win32" && program.includes("\\"));
       if (explicitProgramPath || !profile.allowed_programs.includes(basename(program))) {
