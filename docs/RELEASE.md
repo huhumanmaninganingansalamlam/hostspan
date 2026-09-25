@@ -1,11 +1,13 @@
 # HostSpan release notes
 
+Entries below describe the behavior of their named release. The latest release is listed first.
+
 ## 0.8.2 release
 
 - Align native and PTY per-target concurrency defaults at 16 from one shared default. Update example configurations; existing explicit settings must be updated and the daemon restarted to change live capacity.
 - Check new process capacity before accepting an idempotency key. Saturation returns retryable `SERVER_BUSY` without permanently recording an unstarted operation as failed; identical retries can start once capacity frees. Existing accepted operations still replay while capacity is full.
 - Record the native OS PID before a nonblocking start returns, so immediate cancellation stops the process instead of losing its launch identity.
-- The shared admission path covers native execution, PTY sessions, and retained-output capacity. Public tool schemas/hash and database schema are unchanged.
+- The shared admission path covers native execution, PTY sessions, and retained-output capacity. The active `hostspan-v3.2` contract still has exactly 10 tools and the same hash; the database schema is unchanged.
 
 ## 0.8.1 release
 

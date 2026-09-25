@@ -109,6 +109,6 @@ Packaging and native-core support are separate claims:
 | WSL2 | uses the Linux core; not native Windows qualification |
 | Windows x64 | native core; ConPTY + Job Objects + private HostSpan DACL/state-path guard; full test/build, NSIS install, installed doctor/full smoke, packaged PTY lifecycle |
 | macOS x64 | native core; full test/build, installed CLI doctor/full smoke, packaged PTY lifecycle, DMG/app runtime smoke |
-| macOS arm64 | native core qualified on the matching GitHub macOS arm64 runner with the same core/package/runtime gate |
+| macOS arm64 | native core qualified on the matching GitHub runner; installed app workflow and PTY smoke also passed on a separate native Mac |
 
 Packaging success must not be described as native-core security or process-recovery qualification.

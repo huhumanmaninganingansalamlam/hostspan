@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-HostSpan is currently an Alpha project. Security fixes are applied to the latest Alpha release and the `main` branch; older Alpha builds may not receive backports.
+Security fixes are directed to the latest published release and the `main` branch; older releases may not receive backports.
 
 ## Reporting a vulnerability
 

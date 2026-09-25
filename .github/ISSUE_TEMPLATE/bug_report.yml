@@ -1,5 +1,5 @@
 name: HostSpan bug report
-description: Report a HostSpan Alpha defect or ChatGPT/MCP compatibility issue
+description: Report a HostSpan defect or ChatGPT/MCP compatibility issue
 title: "[bug] "
 labels: [bug]
 body:
@@ -11,7 +11,7 @@ body:
     id: version
     attributes:
       label: HostSpan version
-      placeholder: 0.3.0-alpha.6
+      placeholder: Output of hostspan --version
     validations:
       required: true
   - type: input
