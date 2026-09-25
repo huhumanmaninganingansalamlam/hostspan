@@ -488,8 +488,9 @@ export class ProcessSupervisor {
     });
 
     if (sessionManager && session) {
+      let started: { session: string; pid: number | null };
       try {
-        const started = await sessionManager.start({
+        started = await sessionManager.start({
           processId,
           cwd: cwd.absolute,
           argv: input.argv,
@@ -499,32 +500,32 @@ export class ProcessSupervisor {
           deadlineAt,
           maxOutputBytes: effectiveMaxOutputBytes,
         });
-        const launchState = await sessionManager.inspect(session);
-        if (!launchState.exists) {
-          this.finalize(processId, "unknown", null, null, "interactive_session_missing_after_launch");
-          return this.snapshot(processId, 0, 0, responseBytes);
-        }
-        if (launchState.dead) {
-          await this.syncInteractiveState(processId);
-          return this.snapshot(processId, 0, 0, responseBytes);
-        }
-        if (!this.options.processes.markRunning(processId, started.pid, null)) {
-          sessionManager.closeSync(session);
-          const current = this.options.processes.get(processId);
-          if (!current) throw new HostSpanError("PROCESS_UNKNOWN", "PTY process record disappeared during launch.");
-          return this.snapshot(processId, 0, 0, responseBytes);
-        }
-        this.options.operations.setState(input.idempotency_key, "running", { state: "running", process_id: processId, backend: "pty" });
-        this.options.logger?.info("process.started", { request_id: requestId, process_id: processId, pid: started.pid, backend: "pty", session });
-        const beforeBytes = sessionManager.outputBytes(processId);
-        await sessionManager.waitForActivity(session, processId, beforeBytes, input.wait_ms);
-        await this.syncInteractiveState(processId);
-        return this.snapshot(processId, 0, 0, responseBytes);
       } catch (error) {
         this.options.processes.markTerminal(processId, "failed", null, null, "pty_start_failed", this.expiresAt());
         this.options.operations.setState(input.idempotency_key, "failed", { state: "failed", process_id: processId, reason: "pty_start_failed" }, error);
         throw error;
       }
+      const launchState = await sessionManager.inspect(session);
+      if (!launchState.exists) {
+        this.finalize(processId, "unknown", null, null, "interactive_session_missing_after_launch");
+        return this.snapshot(processId, 0, 0, responseBytes);
+      }
+      if (launchState.dead) {
+        await this.syncInteractiveState(processId);
+        return this.snapshot(processId, 0, 0, responseBytes);
+      }
+      if (!this.options.processes.markRunning(processId, started.pid, null)) {
+        sessionManager.closeSync(session);
+        const current = this.options.processes.get(processId);
+        if (!current) throw new HostSpanError("PROCESS_UNKNOWN", "PTY process record disappeared during launch.");
+        return this.snapshot(processId, 0, 0, responseBytes);
+      }
+      this.options.operations.setState(input.idempotency_key, "running", { state: "running", process_id: processId, backend: "pty" });
+      this.options.logger?.info("process.started", { request_id: requestId, process_id: processId, pid: started.pid, backend: "pty", session });
+      const beforeBytes = sessionManager.outputBytes(processId);
+      await sessionManager.waitForActivity(session, processId, beforeBytes, input.wait_ms);
+      await this.syncInteractiveState(processId);
+      return this.snapshot(processId, 0, 0, responseBytes);
     }
 
     let child: SupervisedChild;

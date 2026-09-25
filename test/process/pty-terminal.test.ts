@@ -281,6 +281,26 @@ describe("durable interactive PTY process backend", () => {
     db.close();
   });
 
+  it("keeps an accepted PTY cancellable when response observation fails", async () => {
+    const { supervisor, terminal, processes } = fixture();
+    const input = ttyInput("setTimeout(()=>{},60000)");
+    const observationError = new Error("PTY observation unavailable");
+    vi.spyOn(terminal, "waitForActivity").mockRejectedValueOnce(observationError);
+    try {
+      await expect(supervisor.start(input, "req_observation_failure")).rejects.toBe(observationError);
+      const record = processes.getByKey(input.idempotency_key);
+      expect(record?.state).toBe("running");
+      const retried = await supervisor.start(input, "req_observation_retry");
+      expect(retried.process_id).toBe(record?.process_id);
+      expect(retried.state).toBe("running");
+      const cancelled = await supervisor.cancel({ idempotency_key: uuidv7(), process_id: String(retried.process_id), grace_ms: 50 });
+      expect(cancelled.state).toBe("cancelled");
+    } finally {
+      const record = processes.getByKey(input.idempotency_key);
+      if (record?.backend_ref) terminal.closeSync(record.backend_ref);
+    }
+  });
+
   it("joins concurrent PTY starts with the same idempotency key before launch", async () => {
     const { supervisor, terminal, processes, db } = fixture();
     const input = ttyInput("setTimeout(()=>{},60000)", 10_000, 0);

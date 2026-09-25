@@ -2,6 +2,8 @@
 
 ## 0.8.0 candidate
 
+- Share native/PTY admission and durable launch bookkeeping; derive reserved capture capacity from active process records instead of maintaining a second in-memory ledger. PTY response-observation failures no longer mark a live process as failed, so identical retries and cancellation retain the same durable execution.
+
 - Separate execution lifetime from response and capture budgets. `process_start` no longer supplies an implicit 30-second deadline; explicit `deadline_ms` and `process_cancel` still stop the process tree. New `process_start.max_bytes` bounds returned output independently of retained output.
 - Filling `max_output_bytes` stops storing output, not the native or PTY process. Retained output remains bounded and readable; live human PTY attachments continue receiving output. `output_budget.scope` is now `retained_output`.
 - Remove obsolete exec-profile fields: `default_deadline_ms`, `max_deadline_ms`, `default_output_bytes`, and `max_output_bytes`. Remove these four keys from existing `exec_profiles` before starting the new version; preserve target configuration and credentials. Do not remove the separate tool or terminal capture settings. No database migration is required.
