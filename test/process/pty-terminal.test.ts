@@ -430,7 +430,7 @@ describe("durable interactive PTY process backend", () => {
       exists: true,
       dead: true,
     });
-    expect(processes.activeCountForTargetBackend("test", "pty")).toBe(1);
+    expect(processes.activeInteractive("test")).toHaveLength(1);
 
     const second = await supervisor.start(ttyInput("setTimeout(()=>process.exit(0),50)", 10_000, 0), "req_pty_slot_second");
     track(terminal, second);
@@ -439,7 +439,7 @@ describe("durable interactive PTY process backend", () => {
 
     await terminal.waitForExitStatus(String(second.terminal_session), process.platform === "win32" ? 5_000 : 2_000);
     await supervisor.reconcileInteractiveProcesses("test");
-    expect(processes.activeCountForTargetBackend("test", "pty")).toBe(0);
+    expect(processes.activeInteractive("test")).toHaveLength(0);
     db.close();
   });
 

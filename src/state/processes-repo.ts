@@ -92,14 +92,6 @@ export class ProcessesRepo implements ProcessesStore {
       .get(processId) as Pick<ProcessRecord, "backend_ref" | "target_id" | "state"> | undefined;
   }
 
-  activeCountForTargetBackend(targetId: string, backend: ProcessRecord["backend"]): number {
-    return (
-      this.db
-        .prepare("SELECT count(*) AS count FROM processes WHERE target_id=? AND backend=? AND state IN ('accepted','launching','running')")
-        .get(targetId, backend) as { count: number }
-    ).count;
-  }
-
   expiredOutput(nowIso = new Date().toISOString()): ProcessRecord[] {
     return this.db
       .prepare("SELECT * FROM processes WHERE output_expires_at IS NOT NULL AND output_expires_at <= ?")
