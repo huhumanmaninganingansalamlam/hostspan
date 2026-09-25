@@ -301,6 +301,27 @@ describe("durable interactive PTY process backend", () => {
     }
   });
 
+  it.each([false, true])("retries an unaccepted start after capacity frees (tty=%s)", async (tty) => {
+    const { supervisor, config, terminal } = fixture(true, 1);
+    config.exec_profiles["native-test"] = { mode: "native", max_concurrent_processes: 1 };
+    const firstInput = { ...ttyInput("setTimeout(()=>{},60000)", 60_000, 0), tty };
+    const waitingInput = { ...firstInput, idempotency_key: uuidv7() };
+    try {
+      const first = await supervisor.start(firstInput, "capacity-first");
+      if (tty) track(terminal, first);
+      await expect(supervisor.start(waitingInput, "capacity-full")).rejects.toMatchObject({ code: "SERVER_BUSY", retryable: true });
+      expect((await supervisor.start(firstInput, "capacity-replay")).process_id).toBe(first.process_id);
+      await supervisor.cancel({ idempotency_key: uuidv7(), process_id: String(first.process_id), grace_ms: 50 });
+      const retried = await supervisor.start(waitingInput, "capacity-retry");
+      if (tty) track(terminal, retried);
+      expect(["launching", "running"]).toContain(retried.state);
+      expect(retried.process_id).not.toBe(first.process_id);
+      await supervisor.cancel({ idempotency_key: uuidv7(), process_id: String(retried.process_id), grace_ms: 50 });
+    } finally {
+      await supervisor.shutdown();
+    }
+  });
+
   it("joins concurrent PTY starts with the same idempotency key before launch", async () => {
     const { supervisor, terminal, processes, db } = fixture();
     const input = ttyInput("setTimeout(()=>{},60000)", 10_000, 0);

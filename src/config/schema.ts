@@ -58,10 +58,12 @@ export const PolicyGlobSchema = z
     },
   );
 
+const DEFAULT_PROCESS_CONCURRENCY = 16;
+
 export const TerminalConfigSchema = z
   .object({
     backend: z.literal("pty").default("pty"),
-    max_concurrent_sessions: z.number().int().positive().max(64).default(16),
+    max_concurrent_sessions: z.number().int().positive().max(64).default(DEFAULT_PROCESS_CONCURRENCY),
     attach_history_bytes: z.number().int().min(0).max(4 * 1024 * 1024).default(65_536),
     max_output_bytes: z.number().int().positive().max(268_435_456).default(16_777_216),
   })
@@ -70,7 +72,7 @@ export const TerminalConfigSchema = z
 export const ExecProfileSchema = z
   .object({
     mode: z.literal("native"),
-    max_concurrent_processes: z.number().int().positive().max(64).default(4),
+    max_concurrent_processes: z.number().int().positive().max(64).default(DEFAULT_PROCESS_CONCURRENCY),
   })
   .strict();
 

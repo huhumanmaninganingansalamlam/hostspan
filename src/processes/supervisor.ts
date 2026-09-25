@@ -409,6 +409,35 @@ export class ProcessSupervisor {
     if (interactive && this.options.terminal && this.options.config.terminal) {
       await this.reconcileInteractiveProcesses(input.target_id);
     }
+    const sessionManager = interactive ? this.options.terminal : undefined;
+    const terminalConfig = this.options.config.terminal;
+    const backend = interactive ? "pty" : "native";
+    let effectiveMaxOutputBytes = input.max_output_bytes;
+    // Check capacity before accepting new work; no await separates admission and reservation.
+    if (this.options.operations.getState(input.idempotency_key) === undefined) {
+      let maxConcurrent: number;
+      let limitReason: string;
+      if (interactive) {
+        if (!sessionManager || !terminalConfig) {
+          throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "Interactive terminal support is not configured.", true);
+        }
+        maxConcurrent = terminalConfig.max_concurrent_sessions;
+        limitReason = "max_concurrent_terminal_sessions";
+        effectiveMaxOutputBytes = Math.min(effectiveMaxOutputBytes, terminalConfig.max_output_bytes);
+      } else {
+        if (!profile) throw new HostSpanError("POLICY_UNENFORCEABLE", "Missing native exec profile.");
+        maxConcurrent = profile.max_concurrent_processes;
+        limitReason = "max_concurrent_processes";
+      }
+      const active = this.options.processes.active();
+      const activeForTarget = active.filter((record) => record.target_id === input.target_id && record.backend === backend).length;
+      if (activeForTarget >= maxConcurrent) {
+        throw new HostSpanError("SERVER_BUSY", `Target ${input.target_id} reached ${limitReason}.`, true, {
+          resource: "process", reason: limitReason, active: activeForTarget, max_concurrent: maxConcurrent,
+        });
+      }
+      this.checkSpoolBudget(effectiveMaxOutputBytes, active);
+    }
     const resolution = this.options.operations.resolve(input.idempotency_key, "process_start", input, input.target_id);
     if (resolution.kind !== "new") {
       const existing = this.options.processes.getByKey(input.idempotency_key);
@@ -428,38 +457,10 @@ export class ProcessSupervisor {
       return this.snapshot(existing.process_id, 0, 0, responseBytes);
     }
 
-    const sessionManager = interactive ? this.options.terminal : undefined;
-    const terminalConfig = this.options.config.terminal;
-    const backend = interactive ? "pty" : "native";
     const processId = `proc_${uuidv7().replaceAll("-", "")}`;
     const session = sessionManager?.sessionName(processId) ?? null;
     const deadlineAt = input.deadline_ms === undefined ? null : new Date(Date.now() + input.deadline_ms).toISOString();
-    let effectiveMaxOutputBytes = input.max_output_bytes;
     try {
-      let maxConcurrent: number;
-      let limitReason: string;
-      if (interactive) {
-        if (!sessionManager || !terminalConfig) {
-          throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "Interactive terminal support is not configured.", true);
-        }
-        maxConcurrent = terminalConfig.max_concurrent_sessions;
-        limitReason = "max_concurrent_terminal_sessions";
-        effectiveMaxOutputBytes = Math.min(effectiveMaxOutputBytes, terminalConfig.max_output_bytes);
-      } else {
-        if (!profile) throw new HostSpanError("POLICY_UNENFORCEABLE", "Missing native exec profile.");
-        maxConcurrent = profile.max_concurrent_processes;
-        limitReason = "max_concurrent_processes";
-      }
-      const active = this.options.processes.active();
-      const activeForTarget = active.filter((record) => record.target_id === input.target_id && record.backend === backend).length;
-      if (activeForTarget >= maxConcurrent) {
-        throw new HostSpanError("SCOPE_DENIED", `Target ${input.target_id} reached ${limitReason}.`, false, {
-          reason: limitReason,
-        });
-      }
-      // Admission and creation are synchronous: the durable row reserves capture
-      // capacity before either backend can yield during launch.
-      this.checkSpoolBudget(effectiveMaxOutputBytes, active);
       this.options.processes.create({
         process_id: processId,
         idempotency_key: input.idempotency_key,

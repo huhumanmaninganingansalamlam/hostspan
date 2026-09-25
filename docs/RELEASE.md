@@ -1,5 +1,11 @@
 # HostSpan release notes
 
+## 0.8.2 release
+
+- Align native and PTY per-target concurrency defaults at 16 from one shared default. Update example configurations; existing explicit settings must be updated and the daemon restarted to change live capacity.
+- Check new process capacity before accepting an idempotency key. Saturation returns retryable `SERVER_BUSY` without permanently recording an unstarted operation as failed; identical retries can start once capacity frees. Existing accepted operations still replay while capacity is full.
+- The shared admission path covers native execution, PTY sessions, and retained-output capacity. Public tool schemas/hash and database schema are unchanged.
+
 ## 0.8.1 release
 
 - Preserve collected search results when a single ripgrep JSON record exceeds the bounded reader buffer; report partial results with `truncation_reason: backend_output` instead of failing the entire search. Apply the same record boundary regardless of pipe chunking.

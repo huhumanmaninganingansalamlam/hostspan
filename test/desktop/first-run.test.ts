@@ -28,6 +28,7 @@ describe("desktop first-run config", () => {
     expect(first.targets).toEqual({});
     expect(first.exec_profiles["native-dev"]).toMatchObject({
       mode: "native",
+      max_concurrent_processes: 16,
     });
 
     first.targets.existing = {
