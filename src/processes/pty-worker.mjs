@@ -287,10 +287,10 @@ async function main() {
   const pty = await import("node-pty");
   const program = spec.argv[0];
   if (!program) throw new Error("interactive argv is empty");
-  const childEnv = { ...process.env, ...spec.env };
+  const childEnv = spec.env;
   const command = resolvePtyCommand(program, spec.argv.slice(1), spec.cwd, childEnv);
   ptyProcess = pty.spawn(command.program, command.ptyArgv ?? command.argv, {
-    name: process.env.TERM || "xterm-256color",
+    name: childEnv.TERM || "xterm-256color",
     cols: spec.columns,
     rows: spec.rows,
     cwd: spec.cwd,

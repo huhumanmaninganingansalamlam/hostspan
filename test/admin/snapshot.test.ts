@@ -12,6 +12,7 @@ import {
   stopDaemon,
   writeDaemonPid,
 } from "../../src/daemon/control.js";
+import { createRuntime } from "../../src/runtime/create-runtime.js";
 import { loadConfig } from "../../src/config/loader.js";
 import { runDoctor } from "../../src/diagnostics/doctor.js";
 import type { HostSpanConfig } from "../../src/config/schema.js";
@@ -107,9 +108,10 @@ describe("local admin snapshot", () => {
     }
   });
 
-  it("reads targets, active work, calls, process state, and daemon pid without mutating running records", () => {
+  it("reads targets, active work, calls, process state, and daemon pid without mutating running records", async () => {
     const { configPath, dataDir } = fixture();
-    const db = openDatabase(join(dataDir, "state.db"));
+    const runtime = createRuntime(configPath);
+    const db = runtime.db;
     const processes = new ProcessesRepo(db);
     processes.create({
       process_id: "proc_admin",
@@ -124,7 +126,8 @@ describe("local admin snapshot", () => {
     });
     processes.markRunning("proc_admin", 12345, null);
     new AuditRepo(db).append({ request_id: "req_admin", event_type: "request.accepted", metadata: { tool: "system_status" } });
-    db.close();
+    await runtime.close();
+    rmSync(join(dataDir, "sessions"), { recursive: true, force: true });
     writeDaemonPid(configPath, process.pid);
 
     try {
@@ -153,6 +156,28 @@ describe("local admin snapshot", () => {
       removeDaemonPid(configPath, process.pid);
     }
     expect(daemonStatus(configPath).running).toBe(false);
+  });
+
+  it("does not present a newly available or changed folder as ready in the running daemon", async () => {
+    const { configPath, targetRoot } = fixture();
+    rmSync(targetRoot, { recursive: true });
+    let runtime = createRuntime(configPath);
+    writeDaemonPid(configPath);
+    try {
+      mkdirSync(targetRoot);
+      expect(buildAdminSnapshot(configPath).targets[0]?.ready).toBe(false);
+      await runtime.close();
+      runtime = createRuntime(configPath);
+      expect(buildAdminSnapshot(configPath).targets[0]?.ready).toBe(true);
+      const config = loadConfig(configPath);
+      for (const target of Object.values(config.targets)) target.capabilities = ["read"];
+      writeConfigAtomic(configPath, config);
+      expect(buildAdminSnapshot(configPath).targets[0]?.ready).toBe(false);
+    } finally {
+      await runtime.close();
+      removeDaemonPid(configPath);
+    }
+    expect(buildAdminSnapshot(configPath).targets[0]?.ready).toBe(true);
   });
 
   it("limits active-request matching to the same recent window returned by the snapshot", () => {
@@ -293,16 +318,16 @@ describe("local admin snapshot", () => {
     expect(added).toMatchObject({
       ok: true,
       target_id: "another-workspace",
-      capabilities: ["read", "terminal", "exec"],
+      capabilities: ["read", "terminal"],
       restart_required: true,
     });
 
     const afterAdd = loadConfig(configPath);
     expect(afterAdd.targets["another-workspace"]).toMatchObject({
       label: "Another workspace",
-      capabilities: ["read", "terminal", "exec"],
-      exec_profile: "native",
+      capabilities: ["read", "terminal"],
     });
+    expect(afterAdd.targets["another-workspace"]).not.toHaveProperty("exec_profile");
     expect(afterAdd.targets.local?.exec_profile).toBe("native");
     expect(afterAdd.exec_profiles.native?.max_deadline_ms).toBe(60_000);
     expect(Object.keys(afterAdd.exec_profiles)).toEqual(["native"]);

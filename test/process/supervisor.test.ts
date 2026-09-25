@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { v7 as uuidv7 } from "uuid";
 import type { HostSpanConfig } from "../../src/config/schema.js";
+import { createRuntime } from "../../src/runtime/create-runtime.js";
+import { writeConfigAtomic } from "../../src/config/writer.js";
 import { ProcessSupervisor } from "../../src/processes/supervisor.js";
 import { processGroupAlive } from "../../src/processes/recovery.js";
 import { cleanupExpiredProcessSpools } from "../../src/processes/output-spool.js";
@@ -129,6 +131,26 @@ async function pollUntilTerminal(
 }
 
 describe("process supervisor", () => {
+  it("recovers native crash-boundary records after activation with PTY disabled", async () => {
+    const { config, processes, db } = fixture();
+    const configPath = join(config.server.data_dir, "config.yaml");
+    writeConfigAtomic(configPath, config);
+    const key = uuidv7();
+    const input = { target_id: "test", idempotency_key: key, argv: ["node"] };
+    new OperationsRepo(db).resolve(key, "process_start", input, "test");
+    processes.create({ process_id: "proc_crashed", idempotency_key: key, target_id: "test", argv_digest: "sha256:test", cwd_relative: "." });
+    const runtime = createRuntime(configPath, { deferActivation: true });
+    try {
+      expect(runtime.processes.get("proc_crashed")?.state).toBe("launching");
+      runtime.activate();
+      expect(runtime.processes.get("proc_crashed")?.state).toBe("unknown");
+      expect(runtime.processes.activeCount()).toBe(0);
+      expect(runtime.operations.resolve(key, "process_start", input, "test").kind).toBe("unknown");
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("returns a terminal result for a short process", async () => {
     const { supervisor } = fixture();
     const result = await supervisor.start(startInput(), "req_short");

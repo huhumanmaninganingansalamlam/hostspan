@@ -2,11 +2,14 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { v7 as uuidv7 } from "uuid";
-import { PolicyGlobSchema, type HostSpanConfig } from "../../src/config/schema.js";
+import { PolicyGlobSchema, TerminalConfigSchema, type HostSpanConfig } from "../../src/config/schema.js";
+import { loadConfig } from "../../src/config/loader.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
+import { daemonStatus, requestDaemonShutdown, startDaemonControlServer } from "../../src/daemon/control.js";
 import { main } from "../../src/cli/index.js";
 import { createRuntime } from "../../src/runtime/create-runtime.js";
 import { HostSpanLogger } from "../../src/observability/logger.js";
@@ -64,7 +67,61 @@ function fixture(options: { terminal?: boolean } = {}): { root: string; configPa
 }
 
 describe("security and operational boundaries", () => {
-  it("keeps policy glob syntax portable across HostSpan, ripgrep, and Git filtering", () => {
+  it("releases daemon listeners and credentials when runtime activation fails", async () => {
+    const { root, configPath } = fixture();
+    const probe = createServer();
+    await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+    const address = probe.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP address");
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+    const config = loadConfig(configPath);
+    config.server.listen_port = address.port;
+    config.terminal = TerminalConfigSchema.parse({});
+    writeConfigAtomic(configPath, config);
+    // A directory at the ownership file forces activation to fail after bind.
+    mkdirSync(join(root, "state", "sessions", "runtime-owner.json"), { recursive: true });
+    await expect(main(["serve", "--config", configPath])).rejects.toThrow();
+    expect(existsSync(join(root, "state", "daemon-control-token"))).toBe(false);
+    expect(daemonStatus(configPath).running).toBe(false);
+    const replacement = await startDaemonControlServer(configPath, () => {});
+    try {
+      await new Promise<void>((resolve, reject) => {
+        probe.once("error", reject);
+        probe.listen(address.port, "127.0.0.1", resolve);
+      });
+    } finally {
+      await replacement.close();
+      await new Promise<void>((resolve) => probe.close(() => resolve()));
+    }
+  });
+
+  it("preserves the active control owner when another server attempts to start", async () => {
+    const { root, configPath } = fixture();
+    let shutdown = false;
+    const control = await startDaemonControlServer(configPath, () => { shutdown = true; });
+    try {
+      await expect(startDaemonControlServer(configPath, () => {})).rejects.toThrow();
+      expect(await requestDaemonShutdown(configPath)).toEqual({ ok: true, pid: process.pid });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(shutdown).toBe(true);
+      await control.close();
+      const replacement = await startDaemonControlServer(configPath, () => {});
+      try {
+        await control.close();
+        expect(await requestDaemonShutdown(configPath)).toEqual({ ok: true, pid: process.pid });
+      } finally {
+        await replacement.close();
+      }
+      const pidPath = join(root, "state", "hostspan.pid");
+      writeFileSync(pidPath, "2147483647\n");
+      expect(daemonStatus(configPath).running).toBe(false);
+      expect(readFileSync(pidPath, "utf8")).toBe("2147483647\n");
+    } finally {
+      await control.close();
+    }
+  });
+
+  it("keeps policy glob syntax portable across HostSpan and ripgrep", () => {
     for (const glob of ["**/.env*", "**/node_modules/**", "src/*.ts", "file?.json"]) {
       expect(PolicyGlobSchema.safeParse(glob).success).toBe(true);
     }

@@ -25,12 +25,6 @@ function daemonControlPaths(configPath: string): { address: string; token_path: 
   return { address: join(dataDir, "daemon-control.sock"), token_path };
 }
 
-function cleanupDaemonControlArtifacts(configPath: string): void {
-  const control = daemonControlPaths(configPath);
-  rmSync(control.token_path, { force: true });
-  if (process.platform !== "win32") rmSync(control.address, { force: true });
-}
-
 export async function startDaemonControlServer(
   configPath: string,
   onShutdown: () => void,
@@ -38,15 +32,30 @@ export async function startDaemonControlServer(
   const control = daemonControlPaths(configPath);
   mkdirSync(dirname(control.token_path), { recursive: true, mode: 0o700 });
   const token = randomBytes(32).toString("base64url");
-  writeFileSync(control.token_path, `${token}\n`, { mode: 0o600 });
-  if (process.platform !== "win32") {
-    chmodSync(control.token_path, 0o600);
+  if (process.platform !== "win32" && existsSync(control.address)) {
+    await new Promise<void>((resolveProbe, rejectProbe) => {
+      const probe = createConnection(control.address);
+      probe.once("connect", () => {
+        probe.destroy();
+        rejectProbe(new HostSpanError("VALIDATION_FAILED", "A daemon already owns the control socket.", false, { reason: "daemon_control_in_use" }));
+      });
+      probe.once("error", (error: NodeJS.ErrnoException) => {
+        if (error.code === "ECONNREFUSED" || error.code === "ENOENT") resolveProbe();
+        else rejectProbe(error);
+      });
+      probe.setTimeout(2_000, () => {
+        probe.destroy();
+        rejectProbe(new Error("Daemon control socket did not respond."));
+      });
+    });
     rmSync(control.address, { force: true });
   }
 
   let shutdownRequested = false;
   const server = createServer((socket) => {
     socket.setEncoding("utf8");
+    socket.setTimeout(2_000, () => socket.destroy());
+    socket.on("error", () => socket.destroy());
     let input = "";
     socket.on("data", (chunk: string) => {
       input += chunk;
@@ -87,19 +96,25 @@ export async function startDaemonControlServer(
       server.once("listening", onListening);
       server.listen(control.address);
     });
-    if (process.platform !== "win32") chmodSync(control.address, 0o600);
+    writeFileSync(control.token_path, `${token}\n`, { mode: 0o600 });
+    if (process.platform !== "win32") {
+      chmodSync(control.token_path, 0o600);
+      chmodSync(control.address, 0o600);
+    }
   } catch (error) {
-    cleanupDaemonControlArtifacts(configPath);
+    if (server.listening) {
+      rmSync(control.token_path, { force: true });
+      server.close();
+    }
     throw error;
   }
 
   return {
     address: control.address,
     close: async () => {
-      if (server.listening) {
-        await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
-      }
-      cleanupDaemonControlArtifacts(configPath);
+      if (!server.listening) return;
+      rmSync(control.token_path, { force: true });
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     },
   };
 }
@@ -163,8 +178,11 @@ export function pidAlive(pid: number | null): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return false;
+    if (code === "EPERM") return true;
+    throw error;
   }
 }
 
@@ -186,7 +204,6 @@ export function daemonStatus(configPath: string): { running: boolean; pid: numbe
   const pid_file = daemonPidPath(configPath);
   const pid = readPidFile(pid_file);
   const running = pidAlive(pid);
-  if (pid && !running) rmSync(pid_file, { force: true });
   return { running, pid: running ? pid : null, pid_file };
 }
 
@@ -227,38 +244,25 @@ export async function stopDaemon(configPath: string): Promise<{ running: boolean
       { reason: "daemon_identity_unconfirmed", pid: current.pid },
     );
   }
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    if (!pidAlive(current.pid)) {
-      removeDaemonPid(configPath, current.pid);
-      return { running: false, pid: null };
+  const stages: Array<[NodeJS.Signals | null, number]> = [[null, 5_000]];
+  if (process.platform !== "win32") stages.push(["SIGTERM", 1_000]);
+  stages.push(["SIGKILL", 1_000]);
+  for (const [signal, waitMs] of stages) {
+    if (signal) {
+      try {
+        process.kill(current.pid, signal);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
     }
-    await sleep(50);
-  }
-  if (process.platform !== "win32") {
-    try {
-      process.kill(current.pid, "SIGTERM");
-    } catch {
-      removeDaemonPid(configPath, current.pid);
-      cleanupDaemonControlArtifacts(configPath);
-      return { running: false, pid: null };
-    }
-    const termDeadline = Date.now() + 1_000;
-    while (Date.now() < termDeadline) {
+    const deadline = Date.now() + waitMs;
+    do {
       if (!pidAlive(current.pid)) {
         removeDaemonPid(configPath, current.pid);
-        cleanupDaemonControlArtifacts(configPath);
         return { running: false, pid: null };
       }
       await sleep(50);
-    }
+    } while (Date.now() < deadline);
   }
-  try {
-    process.kill(current.pid, "SIGKILL");
-  } catch {
-    // Already stopped.
-  }
-  removeDaemonPid(configPath, current.pid);
-  cleanupDaemonControlArtifacts(configPath);
-  return { running: pidAlive(current.pid), pid: pidAlive(current.pid) ? current.pid : null };
+  return { running: true, pid: current.pid };
 }

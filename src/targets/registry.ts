@@ -11,6 +11,11 @@ export interface TargetRuntime extends TargetConfig {
   ready: boolean;
 }
 
+export function targetConfigDigest(target: TargetConfig | undefined): string {
+  if (!target) throw new Error("Target configuration is missing.");
+  return `sha256:${createHash("sha256").update(JSON.stringify(target)).digest("hex")}`;
+}
+
 export class TargetRegistry {
   private readonly targets = new Map<string, TargetRuntime>();
 

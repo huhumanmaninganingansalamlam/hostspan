@@ -272,3 +272,15 @@ export function syncTargetSnapshots(
     }
   })();
 }
+
+export function readTargetSnapshots(db: HostSpanDatabase): Map<string, {
+  config_digest: string;
+  policy_epoch: number;
+  root_fingerprint: string;
+  ready: number;
+}> {
+  const rows = db.prepare(
+    "SELECT target_id, config_digest, policy_epoch, root_fingerprint, ready FROM targets_snapshot",
+  ).all() as Array<{ target_id: string; config_digest: string; policy_epoch: number; root_fingerprint: string; ready: number }>;
+  return new Map(rows.map((row) => [row.target_id, row]));
+}

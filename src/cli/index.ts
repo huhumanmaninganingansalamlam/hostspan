@@ -180,7 +180,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     if (existingDaemon.running && existingDaemon.pid !== process.pid) {
       throw cliValidationError(`HostSpan is already running with pid ${existingDaemon.pid}.`);
     }
-    const runtime = createRuntime(configPath, { deferSessionOwnership: true });
+    const runtime = createRuntime(configPath, { deferActivation: true });
     if (!isLoopbackHost(runtime.config.server.listen_host) && !runtime.oauth) {
       await runtime.close();
       throw cliValidationError("Non-loopback listen_host requires OAuth. Run hostspan oauth init --public-url https://<host>/mcp first.");
@@ -213,11 +213,13 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       requestShutdown = resolveShutdown;
     });
     const control = await (async () => {
+      let started: Awaited<ReturnType<typeof startDaemonControlServer>> | undefined;
       try {
-        const started = await startDaemonControlServer(configPath, requestShutdown);
-        runtime.activateSessionOwnership();
+        started = await startDaemonControlServer(configPath, requestShutdown);
+        runtime.activate();
         return started;
       } catch (error) {
+        await started?.close();
         await app.close().catch(() => undefined);
         await runtime.close();
         throw error;

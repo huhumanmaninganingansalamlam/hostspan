@@ -19,7 +19,7 @@ export function buildSystemdServiceUnit(
   inheritedPath = process.env.PATH ?? "",
 ): string {
   const executable = cliPath === "hostspan" ? "hostspan" : resolve(cliPath);
-  return `[Unit]\nDescription=HostSpan MCP execution gateway\nAfter=network-online.target\n\n[Service]\nType=simple\nKillMode=process\nEnvironment=${systemdQuote(`PATH=${serviceExecutionPath(nodePath, inheritedPath)}`)}\nExecStart=${systemdQuote(nodePath)} ${systemdQuote(executable)} serve --config ${systemdQuote(resolve(configPath))}\nRestart=on-failure\nRestartSec=2\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n`;
+  return `[Unit]\nDescription=HostSpan MCP execution gateway\nAfter=network-online.target\n\n[Service]\nType=simple\nKillMode=process\nEnvironment=${systemdQuote(`PATH=${serviceExecutionPath(nodePath, inheritedPath)}`)}\nExecStart=${systemdQuote(nodePath)} ${systemdQuote(executable)} serve --config ${systemdQuote(resolve(configPath))}\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n`;
 }
 
 function systemctl(args: string[]): { ok: boolean; output: string } {

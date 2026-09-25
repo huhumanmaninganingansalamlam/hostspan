@@ -114,3 +114,11 @@ hostspan support-export ./hostspan-support.json
 ```
 
 The bundle includes versions, toolset hash, target aliases/capabilities, process lifecycle metadata, and recent audit events. It excludes target root paths, command argv content, and process stdout/stderr, and applies redaction. Review it before sharing.
+
+## A target under /tmp differs between the shell and the daemon
+
+Older generated systemd units enabled `PrivateTmp=true`, giving the daemon a different `/tmp` and `/var/tmp` from the user shell. Current units preserve the host filesystem view and do not impose `NoNewPrivileges` on child programs. No path-specific bind mounts are required.
+
+After installing the updated CLI, run `hostspan service install --config <config-path>` to regenerate the unit and reload systemd. Apply it with a service restart after reviewing active work. Existing running services do not change merely because the source or CLI was updated. User-managed service overrides can still impose these restrictions; inspect `systemctl --user cat hostspan.service` if they persist.
+
+While a daemon is running, CLI/dashboard target readiness requires its recorded startup target to be ready and match the current config and root identity. Creating a previously missing folder or changing target configuration requires restart before it is shown as ready. With the daemon stopped, readiness describes the configured local folder only.

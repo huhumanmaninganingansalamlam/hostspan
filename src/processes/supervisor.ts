@@ -11,6 +11,7 @@ import type { PolicyEvaluator } from "../policy/evaluator.js";
 import type { TargetRegistry } from "../targets/registry.js";
 import { resolveTargetPath } from "../targets/path.js";
 import type { ProcessesStore, ProcessState } from "./store.js";
+import { processEnvironment } from "./environment.js";
 import { OutputSpool, scanProcessSpools } from "./output-spool.js";
 import { processGroupAlive, signalProcessGroup } from "./recovery.js";
 import type { InteractiveSessionManager } from "./interactive-session.js";
@@ -589,11 +590,7 @@ export class ProcessSupervisor {
     let child: SupervisedChild;
     let windowsReady: Promise<WindowsJobReceipt> | undefined;
     try {
-      const env: NodeJS.ProcessEnv = {
-        PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
-        LANG: process.env.LANG ?? "C.UTF-8",
-        ...input.env,
-      };
+      const env = processEnvironment(input.env);
       const program = input.argv[0];
       if (!program) throw new HostSpanError("SCOPE_DENIED", "Process argv must include a program.");
       if (process.platform === "win32") {

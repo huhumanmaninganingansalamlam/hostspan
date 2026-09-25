@@ -61,11 +61,15 @@ hostspan doctor
 hostspan smoke --target local-app
 ```
 
-`hostspan init` writes the default config under `%APPDATA%\HostSpan\config.yaml` on Windows and `$XDG_CONFIG_HOME/hostspan/config.yaml` (or `~/.config/hostspan/config.yaml`) on Linux/macOS. Use `--config /path/to/config.yaml` or `HOSTSPAN_CONFIG` to select another file. Target creation/removal and policy changes are local admin operations; they are not MCP tools. Workspace capabilities are `read`, `write`, `exec`, and `terminal`; configuration keys outside the current schema are rejected.
+`hostspan init` writes the default config under `%APPDATA%\HostSpan\config.yaml` on Windows and `$XDG_CONFIG_HOME/hostspan/config.yaml` (or `~/.config/hostspan/config.yaml`) on Linux/macOS. Use `--config /path/to/config.yaml` or `HOSTSPAN_CONFIG` to select another file. Target creation/removal and policy changes are local admin operations; they are not MCP tools. Workspace capabilities are explicitly selected from `read`, `write`, `exec`, and `terminal`; selecting `terminal` does not silently add `exec`. Configuration keys outside the current schema are rejected.
 
 The sample configuration and policy guidance are in [`examples/hostspan.example.yaml`](examples/hostspan.example.yaml) and [`examples/policy.example.yaml`](examples/policy.example.yaml).
 
 Target `deny_globs` / `ignore_globs` use a deliberately portable policy syntax: forward-slash paths with literal characters plus `*`, `**`, and `?`. HostSpan rejects leading `!`, backslashes, bracket classes, and brace expansion so file tools and ripgrep interpret the same policy consistently.
+
+Native and PTY commands inherit the HostSpan process's OS environment with caller-provided `env` entries taking precedence. HostSpan's internal Electron `ELECTRON_RUN_AS_NODE` bootstrap flag is not implicitly passed to user programs; callers can still set it explicitly. A headless service inherits its service environment, not a separate interactive desktop session.
+
+File discovery follows the selected target's `ignore_globs`, `deny_globs`, and the tool's hidden-file setting. Directory names such as `dist` and `node_modules` are not unconditionally hidden: configure exclusions on the target when wanted. Search accepts valid regular expressions, including blank-line and match-all patterns; requested match/byte/deadline budgets and the shared search concurrency limit bound the work.
 
 `file_read` may scan forward to a requested late line independently of the response `max_bytes`, but each call has a fixed 64 MiB line-scan ceiling. Requests beyond that bound fail explicitly with `reason=file_read_scan_limit`; use `file_search` to narrow the location first rather than turning one read into an unbounded filesystem scan.
 
