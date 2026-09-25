@@ -13,9 +13,7 @@ export class AuditRepo {
   constructor(
     private readonly db: HostSpanDatabase,
     private readonly options?: AuditRepoOptions,
-  ) {
-    if (options) this.maintain();
-  }
+  ) {}
 
   append(event: {
     request_id: string;

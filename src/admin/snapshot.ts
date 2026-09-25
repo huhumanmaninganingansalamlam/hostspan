@@ -7,9 +7,9 @@ import { writeConfigAtomic } from "../config/writer.js";
 import { processOutputActivity } from "../processes/output-spool.js";
 import { PtySessionManager } from "../processes/pty-session.js";
 import { AuditRepo } from "../state/audit-repo.js";
-import { DB_SCHEMA_VERSION, openReadOnlyDatabase } from "../state/database.js";
+import { DB_SCHEMA_VERSION, openReadOnlyDatabase, readTargetSnapshots } from "../state/database.js";
 import { ProcessesRepo } from "../state/processes-repo.js";
-import { TargetRegistry } from "../targets/registry.js";
+import { targetConfigDigest, TargetRegistry } from "../targets/registry.js";
 import { daemonStatus } from "../daemon/control.js";
 import { SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
 
@@ -48,12 +48,6 @@ export function uniqueWorkspaceTargetId(base: string, existing: Iterable<string>
   throw new Error("could not generate a unique target_id for this workspace");
 }
 
-function normalizedCapabilities(input: Capability[]): Capability[] {
-  const capabilities = [...new Set(input)];
-  if (capabilities.includes("terminal") && !capabilities.includes("exec")) capabilities.push("exec");
-  return capabilities;
-}
-
 function defaultExecProfile(config: HostSpanConfig): string {
   const existing = config.exec_profiles["native-dev"] ? "native-dev" : Object.keys(config.exec_profiles)[0];
   if (existing) return existing;
@@ -85,7 +79,7 @@ export function addLocalWorkspace(configPath: string, input: AddWorkspaceInput) 
     : uniqueWorkspaceTargetId(basename(root), Object.keys(config.targets));
   if (config.targets[targetId]) throw new Error(`target already exists: ${targetId}`);
 
-  const capabilities = normalizedCapabilities(input.capabilities);
+  const capabilities = [...new Set(input.capabilities)];
   if (capabilities.length === 0) throw new Error("select at least one workspace capability.");
   if (input.exec_profile && !capabilities.includes("exec")) {
     throw new Error("exec_profile requires the exec capability.");
@@ -136,6 +130,8 @@ export function buildAdminSnapshot(configPath: string, options: AdminSnapshotOpt
   const resolvedConfigPath = resolve(configPath);
   const config = loadConfig(resolvedConfigPath);
   const targets = new TargetRegistry(config);
+  const daemon = daemonStatus(resolvedConfigPath);
+  let runtimeTargets: ReturnType<typeof readTargetSnapshots> = new Map();
   const statePath = join(config.server.data_dir, "state.db");
   const recent = Math.max(1, Math.min(options.recent ?? 30, 200));
   let recentCalls: Array<Record<string, unknown>> = [];
@@ -148,6 +144,7 @@ export function buildAdminSnapshot(configPath: string, options: AdminSnapshotOpt
     const db = openReadOnlyDatabase(statePath);
     try {
       schemaVersion = DB_SCHEMA_VERSION;
+      if (daemon.running) runtimeTargets = readTargetSnapshots(db);
       const audit = new AuditRepo(db);
       const processes = new ProcessesRepo(db);
       recentCalls = audit.recentPerformanceEvents(recent).map((row) => ({
@@ -194,15 +191,22 @@ export function buildAdminSnapshot(configPath: string, options: AdminSnapshotOpt
     server_version: SERVER_VERSION,
     toolset_version: TOOLSET_VERSION,
     policy_epoch: config.policy_epoch,
-    daemon: daemonStatus(resolvedConfigPath),
+    daemon,
     listen: { host: config.server.listen_host, port: config.server.listen_port },
-    targets: targets.list().map((target) => ({
-      target_id: target.target_id,
-      label: target.label,
-      root: target.root_real,
-      capabilities: target.capabilities,
-      ready: target.ready,
-    })),
+    targets: targets.list().map((target) => {
+      const active = runtimeTargets.get(target.target_id);
+      return {
+        target_id: target.target_id,
+        label: target.label,
+        root: target.root_real,
+        capabilities: target.capabilities,
+        ready: target.ready && (!daemon.running || (
+          active?.ready === 1 && active.policy_epoch === config.policy_epoch &&
+          active.config_digest === targetConfigDigest(config.targets[target.target_id]) &&
+          active.root_fingerprint === targets.fingerprint(target)
+        )),
+      };
+    }),
     terminal: {
       configured: Boolean(config.terminal),
       backend: config.terminal?.backend ?? null,

@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { createConnection, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { v7 as uuidv7 } from "uuid";
 import { main } from "../../src/cli/index.js";
 import type { HostSpanConfig } from "../../src/config/schema.js";
@@ -37,6 +37,7 @@ function pidAlive(pid: number): boolean {
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const socket of attachments.splice(0)) socket.destroy();
   for (const entry of sessions.splice(0)) entry.terminal.closeSync(entry.session);
   for (const db of databases.splice(0)) {
@@ -204,6 +205,26 @@ async function unusedTcpPort(): Promise<number> {
 }
 
 describe("durable interactive PTY process backend", () => {
+  it("inherits the same host environment and honors explicit overrides in native and PTY execution", async () => {
+    const { root, terminal, supervisor } = fixture();
+    vi.stubEnv("HOSTSPAN_INHERITED", "parent");
+    vi.stubEnv("HOSTSPAN_OVERRIDDEN", "parent");
+    try {
+      for (const tty of [false, true]) {
+        const output = join(root, tty ? "pty-env.json" : "native-env.json");
+        const script = `require('node:fs').writeFileSync(${JSON.stringify(output)},JSON.stringify([process.env.HOSTSPAN_INHERITED,process.env.HOSTSPAN_OVERRIDDEN]))`;
+        const started = await supervisor.start({
+          ...ttyInput(script, 10_000, 1_000), tty, env: { HOSTSPAN_OVERRIDDEN: "caller" },
+        }, "req_environment");
+        if (tty) sessions.push({ terminal, session: terminal.sessionName(String(started.process_id)) });
+        await expect.poll(() => existsSync(output), { timeout: 5_000 }).toBe(true);
+        expect(JSON.parse(readFileSync(output, "utf8"))).toEqual(["parent", "caller"]);
+      }
+    } finally {
+      await supervisor.shutdown();
+    }
+  });
+
   it("keeps a launching PTY pending while its worker status is still appearing", async () => {
     const { processes, supervisor } = fixture();
     const processId = "proc_launch_pending";

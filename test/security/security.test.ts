@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { v7 as uuidv7 } from "uuid";
 import { PolicyGlobSchema, type HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
+import { daemonStatus, requestDaemonShutdown, startDaemonControlServer } from "../../src/daemon/control.js";
 import { main } from "../../src/cli/index.js";
 import { createRuntime } from "../../src/runtime/create-runtime.js";
 import { HostSpanLogger } from "../../src/observability/logger.js";
@@ -64,7 +65,33 @@ function fixture(options: { terminal?: boolean } = {}): { root: string; configPa
 }
 
 describe("security and operational boundaries", () => {
-  it("keeps policy glob syntax portable across HostSpan, ripgrep, and Git filtering", () => {
+  it("preserves the active control owner when another server attempts to start", async () => {
+    const { root, configPath } = fixture();
+    let shutdown = false;
+    const control = await startDaemonControlServer(configPath, () => { shutdown = true; });
+    try {
+      await expect(startDaemonControlServer(configPath, () => {})).rejects.toThrow();
+      expect(await requestDaemonShutdown(configPath)).toEqual({ ok: true, pid: process.pid });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(shutdown).toBe(true);
+      await control.close();
+      const replacement = await startDaemonControlServer(configPath, () => {});
+      try {
+        await control.close();
+        expect(await requestDaemonShutdown(configPath)).toEqual({ ok: true, pid: process.pid });
+      } finally {
+        await replacement.close();
+      }
+      const pidPath = join(root, "state", "hostspan.pid");
+      writeFileSync(pidPath, "2147483647\n");
+      expect(daemonStatus(configPath).running).toBe(false);
+      expect(readFileSync(pidPath, "utf8")).toBe("2147483647\n");
+    } finally {
+      await control.close();
+    }
+  });
+
+  it("keeps policy glob syntax portable across HostSpan and ripgrep", () => {
     for (const glob of ["**/.env*", "**/node_modules/**", "src/*.ts", "file?.json"]) {
       expect(PolicyGlobSchema.safeParse(glob).success).toBe(true);
     }

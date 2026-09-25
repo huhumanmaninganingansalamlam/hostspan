@@ -223,6 +223,10 @@ describe("file services", () => {
   it("lists symlinks without following them and honors bounded pagination", () => {
     const { root, target } = fixture();
     mkdirSync(join(root, "dir"));
+    for (const name of ["dist", "node_modules", ".git", "ignored"]) {
+      mkdirSync(join(root, name));
+      writeFileSync(join(root, name, "entry.txt"), "data");
+    }
     writeFileSync(join(root, "dir", "a.txt"), "a");
     writeFileSync(join(root, "dir", "b.txt"), "b");
     symlinkSync(join(root, "dir", "a.txt"), join(root, "link"));
@@ -232,6 +236,11 @@ describe("file services", () => {
     expect(first.cursor).toBeTypeOf("string");
     const all = fileList(target, { path: ".", depth: 2, max_entries: 20, include_hidden: true });
     expect(all.entries).toContainEqual(expect.objectContaining({ path: "link", type: "symlink" }));
+    for (const name of ["dist", "node_modules", ".git"]) {
+      expect(all.entries).toContainEqual(expect.objectContaining({ path: `${name}/entry.txt` }));
+    }
+    expect(all.entries.some((entry) => String(entry.path).startsWith("ignored"))).toBe(false);
+
   });
 
   it("reports a missing list path as FILE_NOT_FOUND", () => {
@@ -404,18 +413,16 @@ describe("file services", () => {
     );
   });
 
-  it("rejects match-all searches before invoking ripgrep", async () => {
-    const { target } = fixture();
-    await expect(
-      fileSearch(target, {
-        query: "",
-        paths: ["."],
-        context_before: 0,
-        context_after: 0,
-        max_matches: 10,
-        max_bytes: 4096,
-        deadline_ms: 1000,
-      }),
-    ).rejects.toEqual(expect.objectContaining<Partial<HostSpanError>>({ code: "SEARCH_SCOPE_TOO_BROAD" }));
+  it("allows blank-line, match-all and whitespace searches within the requested budgets", async () => {
+    const { root, target } = fixture();
+    writeFileSync(join(root, "lines.txt"), "alpha\n\n \n");
+    for (const query of ["^$", ".*", " "]) {
+      const result = await fileSearch(target, {
+        query, paths: ["lines.txt"], context_before: 0, context_after: 0,
+        max_matches: 1, max_bytes: 4096, deadline_ms: 1000,
+      });
+      expect(result.match_count).toBe(1);
+      expect(result.returned_record_bytes).toBeLessThanOrEqual(4096);
+    }
   });
 });

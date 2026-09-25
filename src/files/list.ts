@@ -27,9 +27,7 @@ function cursorOffset(cursor?: string): number {
 }
 
 function ignored(target: TargetRuntime, rel: string): boolean {
-  const segments = rel.replaceAll("\\", "/").split("/");
-  if (segments.some((item) => [".git", "node_modules", "dist", ".cache"].includes(item))) return true;
-  return matchesAnyPolicyGlob(rel, target.ignore_globs);
+  return matchesAnyPolicyGlob(rel, target.ignore_globs) || matchesAnyPolicyGlob(`${rel}/`, target.ignore_globs);
 }
 
 export function fileList(target: TargetRuntime, input: FileListInput, policy?: PolicyEvaluator) {
@@ -39,6 +37,7 @@ export function fileList(target: TargetRuntime, input: FileListInput, policy?: P
   const entries: Array<Record<string, unknown>> = [];
   const offset = cursorOffset(input.cursor);
   const collectLimit = offset + input.max_entries + 1;
+  let visited = 0;
   const walk = (relativeDir: string, currentDepth: number): boolean => {
     const opened = openDirectoryNoFollow(target, relativeDir);
     try {
@@ -58,14 +57,15 @@ export function fileList(target: TargetRuntime, input: FileListInput, policy?: P
         const absolute = resolve(target.root_real, rel);
         try {
           policy?.assertFileAllowed(target, rel, absolute, false);
-        } catch {
-          continue;
+        } catch (error) {
+          if (error instanceof HostSpanError && error.code === "SCOPE_DENIED") continue;
+          throw error;
         }
         const entryPath = resolve(enumerationPath, name);
         const stat = lstatSync(entryPath);
         const type = stat.isSymbolicLink() ? "symlink" : stat.isDirectory() ? "directory" : stat.isFile() ? "file" : "other";
-        entries.push({ path: rel, type, size_bytes: stat.size, mtime: stat.mtime.toISOString() });
-        if (entries.length >= collectLimit) {
+        if (++visited > offset) entries.push({ path: rel, type, size_bytes: stat.size, mtime: stat.mtime.toISOString() });
+        if (visited >= collectLimit) {
           assertDirectoryStillCurrent(target, relativeDir, opened);
           return true;
         }
@@ -82,13 +82,13 @@ export function fileList(target: TargetRuntime, input: FileListInput, policy?: P
   };
   const stat = lstatSync(root.absolute);
   if (stat.isDirectory()) walk(root.relative, 1);
-  else entries.push({ path: root.relative, type: stat.isFile() ? "file" : "other", size_bytes: stat.size, mtime: stat.mtime.toISOString() });
-  const page = entries.slice(offset, offset + input.max_entries);
+  else if (offset === 0) entries.push({ path: root.relative, type: stat.isFile() ? "file" : "other", size_bytes: stat.size, mtime: stat.mtime.toISOString() });
+  const page = entries.slice(0, input.max_entries);
   const next = offset + page.length;
   return {
     path: root.relative,
     entries: page,
-    truncated: entries.length > next,
-    ...(entries.length > next ? { cursor: Buffer.from(String(next)).toString("base64url") } : {}),
+    truncated: entries.length > page.length,
+    ...(entries.length > page.length ? { cursor: Buffer.from(String(next)).toString("base64url") } : {}),
   };
 }

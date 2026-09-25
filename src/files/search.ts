@@ -30,13 +30,7 @@ interface RipgrepEvent {
   };
 }
 
-function tooBroad(query: string): boolean {
-  const value = query.trim();
-  return value.length === 0 || [".", ".*", "^.*$", "^$", "*"].includes(value);
-}
-
 export async function fileSearch(target: TargetRuntime, input: FileSearchInput) {
-  if (tooBroad(input.query)) throw new HostSpanError("SEARCH_SCOPE_TOO_BROAD", "Search query is empty or effectively match-all.");
   const guardedSearchPaths = (input.paths.length ? input.paths : ["."]).map((path) => resolveTargetPath(target, path));
   const missingPath = guardedSearchPaths.find((path) => !path.exists);
   if (missingPath) {

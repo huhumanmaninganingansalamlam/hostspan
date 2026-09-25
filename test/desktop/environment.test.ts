@@ -88,6 +88,8 @@ describe("desktop environment", () => {
     const inherited = ["/custom/bin", runtimeDir, "/usr/bin"].join(delimiter);
     const unit = buildSystemdServiceUnit("/tmp/hostspan config.yaml", "/tmp/hostspan cli.js", nodePath, inherited);
     expect(unit).toContain("\nKillMode=process\n");
+    expect(unit).not.toMatch(/^PrivateTmp=/m);
+    expect(unit).not.toMatch(/^NoNewPrivileges=/m);
     expect(unit).toContain(`Environment="PATH=${[runtimeDir, "/custom/bin", "/usr/bin"].join(delimiter)}"`);
   });
 });

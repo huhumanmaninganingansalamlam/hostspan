@@ -84,7 +84,6 @@ e('addWorkspace').onclick=()=>{resetWorkspaceDialog();e('workspaceDialog').showM
 e('cancelWorkspace').onclick=()=>e('workspaceDialog').close();
 e('workspaceDialog').addEventListener('close',resetWorkspaceDialog);
 e('browse').onclick=async()=>{try{const r=await window.hostspan.chooseWorkspace();if(!r.canceled&&r.path){e('wsPath').value=r.path;updateWorkspaceSuggestions(r.path)}}catch(err){setMessage(err.message||String(err),true)}};
-document.querySelector('[data-cap="terminal"]').onchange=ev=>{if(ev.target.checked)document.querySelector('[data-cap="exec"]').checked=true};
 e('saveWorkspace').onclick=async()=>{try{
   if(!e('wsPath').value){setMessage('Choose a workspace folder first.',true);return}
   const capabilities=[...document.querySelectorAll('[data-cap]:checked')].map(x=>x.dataset.cap);

@@ -1,5 +1,15 @@
 # HostSpan release notes
 
+## 0.7.1 release
+
+- Preserve the user's filesystem view and normal OS-authorized privilege transitions in generated systemd units by removing `PrivateTmp` and `NoNewPrivileges`. Existing Linux installations must regenerate the unit with the updated CLI (`hostspan service install --config <path>`) and restart the service after reviewing active work.
+- Unify native and PTY environment inheritance, preserving host variables and explicit caller overrides without per-command or environment allowlists. Do not implicitly pass Electron's internal `ELECTRON_RUN_AS_NODE` bootstrap flag to user programs.
+- Honor configured file exclusions instead of hiding directory names unconditionally. Allow valid blank-line and match-all searches within the existing result, deadline and concurrency budgets. Keep only the requested page of file-list result objects in memory.
+- Report workspace readiness against the running daemon's target snapshot; recover native processes even when PTY is disabled. Defer recovery and retention until runtime activation.
+- Preserve the active daemon's control socket/token when another instance starts; make status queries read-only and consolidate shutdown without masking termination errors. Audit-store construction no longer deletes history.
+- Save only explicitly selected workspace capabilities; selecting `terminal` no longer silently adds `exec`. Existing configs are not rewritten.
+- The public `hostspan-v3.1` 10-tool contract/hash and config/database schemas are unchanged. GUI computer use remains future scope.
+
 ## 0.7.0 release
 
 - The retired full-authority OAuth `hostspan` scope is no longer accepted. Existing clients using it must authorize again with one or more granular scopes; omitting `scope` grants `hostspan.read`.

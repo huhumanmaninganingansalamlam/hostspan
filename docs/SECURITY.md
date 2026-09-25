@@ -21,7 +21,9 @@ HostSpan therefore reports process results with:
 }
 ```
 
-Do not describe HostSpan as secure sandboxed execution. A future sandbox provider must enforce stronger policies rather than silently pretending native mode can enforce them.
+The generated systemd user service preserves the host filesystem view and normal OS privilege transitions: it does not set `PrivateTmp` or `NoNewPrivileges`. Targets under `/tmp` refer to the same directories seen by the user, and child programs remain subject to the user's existing OS permissions and authorization prompts. HostSpan does not grant elevation or bypass those prompts. It does not add per-target mount exceptions or an execution sandbox.
+
+The desktop renderer's Chromium sandbox is separate: it confines the management page, not the daemon or programs launched by the user. Keep renderer isolation and validated IPC because that page can request privileged local actions.
 
 ## File boundary
 

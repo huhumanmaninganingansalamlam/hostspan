@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
@@ -49,7 +48,7 @@ import { argumentHash, OperationsRepo } from "../state/operations-repo.js";
 import { OAuthRepo } from "../state/oauth-repo.js";
 import { ProcessesRepo } from "../state/processes-repo.js";
 import { TransactionsRepo } from "../state/transactions-repo.js";
-import { TargetRegistry } from "../targets/registry.js";
+import { targetConfigDigest, TargetRegistry } from "../targets/registry.js";
 import { PROTOCOL_VERSION, SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
 import { BoundedConcurrencyLimiter } from "./concurrency-limiter.js";
 
@@ -73,7 +72,7 @@ export interface HostSpanRuntime {
   oauth?: OAuthService;
   handlers: HostSpanToolHandlers;
   authorization: HostSpanToolAuthorization;
-  activateSessionOwnership(): number | null;
+  activate(): void;
   close(): Promise<void>;
 }
 
@@ -138,7 +137,7 @@ function cachedNodeModuleProbe(specifier: string, ttlMs = 5_000): () => boolean 
 
 export function createRuntime(
   configPath = defaultConfigPath(),
-  options: { deferSessionOwnership?: boolean } = {},
+  options: { deferActivation?: boolean } = {},
 ): HostSpanRuntime {
   const resolvedConfigPath = resolve(configPath);
   const config = loadConfig(resolvedConfigPath);
@@ -162,42 +161,10 @@ export function createRuntime(
     `${resolvedConfigPath}.bak`,
     oauthApprovalSecretPath(resolvedConfigPath),
   ]);
-  syncTargetSnapshots(
-    db,
-    targets.list().map((target) => ({
-      target_id: target.target_id,
-      config_digest: `sha256:${createHash("sha256").update(JSON.stringify(config.targets[target.target_id])).digest("hex")}`,
-      policy_epoch: config.policy_epoch,
-      provider: target.provider,
-      root_fingerprint: targets.fingerprint(target),
-      ready: target.ready,
-    })),
-  );
-  recoverPatchTransactions(targets, transactions);
-  const removedPatchJournals = cleanupTerminalPatchJournals(transactions);
-  if (removedPatchJournals.length) logger.info("patch.journals_cleaned", { count: removedPatchJournals.length });
   const terminal = config.terminal
     ? new PtySessionManager(config.server.data_dir, config.terminal, { requireOwnership: true, configPath: resolvedConfigPath })
     : undefined;
-  let sessionOwnershipActive = !terminal;
-  let runtimeGeneration: number | null = null;
-  const activateSessionOwnership = (): number | null => {
-    if (!terminal) return null;
-    if (sessionOwnershipActive) return runtimeGeneration;
-    const generation = claimRuntimeGeneration(db);
-    terminal.activateOwnership(generation);
-    runtimeGeneration = generation;
-    const recoveredProcesses = recoverProcesses(
-      processes,
-      operations,
-      terminal,
-      config.retention.completed_process_output_ttl_minutes,
-    );
-    for (const recovered of recoveredProcesses) logger.info("process.recovered", recovered);
-    sessionOwnershipActive = true;
-    return generation;
-  };
-  if (!options.deferSessionOwnership) activateSessionOwnership();
+  let runtimeActive = false;
   const runRetentionMaintenance = () => {
     const now = new Date().toISOString();
     const removedPatchJournals = cleanupTerminalPatchJournals(transactions);
@@ -238,6 +205,7 @@ export function createRuntime(
     }
   };
   const maintainRetentionSafely = () => {
+    if (!runtimeActive) return;
     try {
       runRetentionMaintenance();
     } catch (error) {
@@ -246,7 +214,35 @@ export function createRuntime(
       });
     }
   };
-  maintainRetentionSafely();
+  const activate = (): void => {
+    if (runtimeActive) return;
+    if (terminal) terminal.activateOwnership(claimRuntimeGeneration(db));
+    recoverPatchTransactions(targets, transactions);
+    const removedPatchJournals = cleanupTerminalPatchJournals(transactions);
+    if (removedPatchJournals.length) logger.info("patch.journals_cleaned", { count: removedPatchJournals.length });
+    syncTargetSnapshots(
+      db,
+      targets.list().map((target) => ({
+        target_id: target.target_id,
+        config_digest: targetConfigDigest(config.targets[target.target_id]),
+        policy_epoch: config.policy_epoch,
+        provider: target.provider,
+        root_fingerprint: targets.fingerprint(target),
+        ready: target.ready,
+      })),
+    );
+
+    const recoveredProcesses = recoverProcesses(
+      processes,
+      operations,
+      terminal,
+      config.retention.completed_process_output_ttl_minutes,
+    );
+    for (const recovered of recoveredProcesses) logger.info("process.recovered", recovered);
+    runtimeActive = true;
+    maintainRetentionSafely();
+  };
+  if (!options.deferActivation) activate();
 
   const patchService = new FilePatchService({ data_dir: config.server.data_dir, operations, transactions, policy });
   const supervisor = new ProcessSupervisor({ config, targets, policy, operations, processes, ...(terminal ? { terminal } : {}), logger });
@@ -254,7 +250,7 @@ export function createRuntime(
   let processMaintenanceInflight: Promise<void> | undefined;
   let closeRuntimePromise: Promise<void> | undefined;
   const processMaintenanceTimer = setInterval(() => {
-    if (closing || !sessionOwnershipActive || processMaintenanceInflight) return;
+    if (closing || !runtimeActive || processMaintenanceInflight) return;
     processMaintenanceInflight = supervisor
       .reconcileInteractiveProcesses()
       .catch((error) => {
@@ -421,7 +417,7 @@ export function createRuntime(
     ...(oauth ? { oauth } : {}),
     handlers,
     authorization,
-    activateSessionOwnership,
+    activate,
     close: () => {
       if (closeRuntimePromise) return closeRuntimePromise;
       closing = true;

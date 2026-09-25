@@ -1,3 +1,4 @@
+import { processEnvironment } from "./environment.js";
 import { randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -153,7 +154,7 @@ export class PtySessionManager implements InteractiveSessionManager {
         processId: input.processId,
         cwd: input.cwd,
         argv: input.argv,
-        env: input.env,
+        env: processEnvironment(input.env),
         columns: input.columns,
         rows: input.rows,
         deadlineAt: input.deadlineAt,
