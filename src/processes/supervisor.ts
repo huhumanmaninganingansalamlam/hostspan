@@ -644,15 +644,9 @@ export class ProcessSupervisor {
         }
         throw error;
       }
-    } else {
-      child.once("spawn", () => {
-        const pid = child.pid;
-        if (!pid) {
-          this.finalize(processId, "unknown", null, null, "spawn_receipt_missing_pid");
-          return;
-        }
-        markRunning(pid, pid);
-      });
+    } else if (child.pid) {
+      // spawn() already returned the OS PID; record it before wait_ms=0 can expose a cancellable process.
+      markRunning(child.pid, child.pid);
     }
 
     await this.waitForTerminal(processId, input.wait_ms);

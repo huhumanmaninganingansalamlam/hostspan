@@ -311,12 +311,12 @@ describe("durable interactive PTY process backend", () => {
       if (tty) track(terminal, first);
       await expect(supervisor.start(waitingInput, "capacity-full")).rejects.toMatchObject({ code: "SERVER_BUSY", retryable: true });
       expect((await supervisor.start(firstInput, "capacity-replay")).process_id).toBe(first.process_id);
-      await supervisor.cancel({ idempotency_key: uuidv7(), process_id: String(first.process_id), grace_ms: 50 });
+      expect((await supervisor.cancel({ idempotency_key: uuidv7(), process_id: String(first.process_id), grace_ms: 50 })).state).toBe("cancelled");
       const retried = await supervisor.start(waitingInput, "capacity-retry");
       if (tty) track(terminal, retried);
       expect(["launching", "running"]).toContain(retried.state);
       expect(retried.process_id).not.toBe(first.process_id);
-      await supervisor.cancel({ idempotency_key: uuidv7(), process_id: String(retried.process_id), grace_ms: 50 });
+      expect((await supervisor.cancel({ idempotency_key: uuidv7(), process_id: String(retried.process_id), grace_ms: 50 })).state).toBe("cancelled");
     } finally {
       await supervisor.shutdown();
     }
