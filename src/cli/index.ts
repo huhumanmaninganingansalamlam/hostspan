@@ -213,11 +213,13 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       requestShutdown = resolveShutdown;
     });
     const control = await (async () => {
+      let started: Awaited<ReturnType<typeof startDaemonControlServer>> | undefined;
       try {
-        const started = await startDaemonControlServer(configPath, requestShutdown);
+        started = await startDaemonControlServer(configPath, requestShutdown);
         runtime.activate();
         return started;
       } catch (error) {
+        await started?.close();
         await app.close().catch(() => undefined);
         await runtime.close();
         throw error;
