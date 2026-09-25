@@ -357,6 +357,19 @@ describe("file services", () => {
     expect(result).toMatchObject({ match_count: 0, matches: [], truncated: false, backend: "ripgrep" });
   });
 
+  it("returns bounded matches even when the full search output would overflow", async () => {
+    const { root, target } = fixture();
+    for (let index = 0; index < 80; index += 1) {
+      writeFileSync(join(root, `${index}.txt`), `needle-${"x".repeat(2000)}\n`);
+    }
+    const result = await fileSearch(target, {
+      query: "needle", paths: ["."], context_before: 0, context_after: 0,
+      max_matches: 1, max_bytes: 4096, deadline_ms: 5000,
+    });
+    expect(result).toMatchObject({ match_count: 1, truncated: true, truncation_reason: "max_matches" });
+    expect(result.returned_record_bytes).toBeLessThanOrEqual(4096);
+  });
+
   it("reports a missing search path as FILE_NOT_FOUND", async () => {
     const { target } = fixture();
     await expect(

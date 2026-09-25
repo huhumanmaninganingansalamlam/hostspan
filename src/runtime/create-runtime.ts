@@ -307,8 +307,15 @@ export function createRuntime(
       audit.append({
         request_id: requestId,
         event_type: "request.aborted",
-        metadata: { tool, stage: "handler", ...auditErrorDiagnostics(known), total_ms: Date.now() - started },
+        metadata: {
+          tool, stage: "handler", ...auditErrorDiagnostics(known), total_ms: Date.now() - started,
+          ...(known.code === "CURSOR_EXPIRED" ? {
+            stdout_cursor: inputRecord.stdout_cursor,
+            stderr_cursor: inputRecord.stderr_cursor,
+          } : {}),
+        },
         ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+        ...(typeof inputRecord.process_id === "string" ? { process_id: inputRecord.process_id } : {}),
       });
       throw error;
     }

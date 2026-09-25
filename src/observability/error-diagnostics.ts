@@ -36,5 +36,12 @@ export function auditErrorDiagnostics(error: HostSpanError): Record<string, unkn
   if (typeof reason === "string" && SAFE_ERROR_REASONS.has(reason)) metadata.error_reason = reason;
   const resource = error.details.resource;
   if (typeof resource === "string" && SAFE_ERROR_RESOURCES.has(resource)) metadata.error_resource = resource;
+  if (error.code === "CURSOR_EXPIRED") {
+    if (error.details.stream === "stdout" || error.details.stream === "stderr") metadata.error_stream = error.details.stream;
+    for (const key of ["earliest_cursor", "latest_cursor", "stdout_earliest_cursor", "stderr_earliest_cursor"]) {
+      const value = error.details[key];
+      if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) metadata[`error_${key}`] = value;
+    }
+  }
   return metadata;
 }
