@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createRuntime } from "../../src/runtime/create-runtime.js";
 import { HostSpanConfigSchema, type HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
+import { TOOLSET_VERSION } from "../../src/version.js";
 import { TOOL_NAMES, TOOLSET_HASH } from "../../src/mcp/registry.js";
 import { createHostSpanHttpServer, resolveAllowedHosts } from "../../src/mcp/server.js";
 
@@ -206,7 +207,7 @@ describe("user-managed reverse proxy", () => {
       const statusResult = status.result as { structuredContent?: Record<string, unknown> } | undefined;
       expect(statusResult?.structuredContent).toMatchObject({
         toolset_hash: TOOLSET_HASH,
-        toolset_version: "hostspan-v3.1",
+        toolset_version: TOOLSET_VERSION,
       });
 
       const hiddenDiagnostics = await fetch(`${proxy.origin}/healthz`);

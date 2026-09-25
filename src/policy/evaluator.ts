@@ -54,21 +54,11 @@ export class PolicyEvaluator {
     return profile;
   }
 
-  validateExec(target: TargetRuntime, argv: string[], deadlineMs: number, maxOutputBytes: number): ExecProfile {
+  validateExec(target: TargetRuntime, argv: string[]): ExecProfile {
     const profile = this.execProfile(target);
     const program = argv[0];
     if (!program) {
       throw new HostSpanError("SCOPE_DENIED", "Process argv must include a program.", false, { reason: "missing_program" });
-    }
-    if (deadlineMs > profile.max_deadline_ms) {
-      throw new HostSpanError("SCOPE_DENIED", "deadline_ms exceeds exec profile maximum.", false, {
-        reason: "deadline_exceeds_profile",
-      });
-    }
-    if (maxOutputBytes > profile.max_output_bytes) {
-      throw new HostSpanError("SCOPE_DENIED", "max_output_bytes exceeds exec profile maximum.", false, {
-        reason: "output_limit_exceeds_profile",
-      });
     }
     return profile;
   }

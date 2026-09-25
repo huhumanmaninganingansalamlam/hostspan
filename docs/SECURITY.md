@@ -4,7 +4,7 @@
 
 HostSpan treats model output and repository content as untrusted input. The local HostSpan configuration and policy are administrator-controlled authority. OpenAI Secure MCP Tunnel or a user-managed reverse proxy is transport only; neither replaces HostSpan target/file/exec authorization.
 
-Every tool call is revalidated against the configured `target_id`, target capability, canonical target-relative path, file policy, exec profile, deadlines/output limits, and idempotency ledger.
+Every tool call is revalidated against the configured `target_id`, target capability, canonical target-relative path, file policy, exec profile, explicit deadlines, capture budgets, and idempotency ledger.
 
 Tool annotations remain truthful: file/process mutation tools are not relabeled as read-only to bypass a client's action controls. A client may filter which advertised tools it injects into a conversation, but weakening annotations or wrapping writes in a deceptively generic tool would only hide risk from the user; it would not create a dependable server-side workaround.
 
@@ -39,14 +39,14 @@ The desktop renderer's Chromium sandbox is separate: it confines the management 
 ## Process and terminal boundary
 
 - `process_start` is the only general-purpose process spawn path.
-- Non-interactive commands are argv arrays with `shell=false`. The target must grant `exec`; deadline, output, and concurrency limits apply.
+- Non-interactive commands are argv arrays with `shell=false`. The target must grant `exec`; explicit deadlines, bounded output capture, and concurrency limits apply. Omitted deadlines do not impose a timeout; reaching the capture limit does not stop execution.
 - `tty=true` is a separate authority path: the target must explicitly grant the `terminal` capability and HostSpan launches a daemon-independent PTY session worker.
 - `process_write` is valid only for PTY-backed interactive processes. It can send text, selected control keys, and terminal resize updates. Every write requires its own UUIDv7 idempotency key; duplicate retries join/replay the original write, while an unprovable crash-boundary outcome becomes `PROCESS_UNKNOWN` and is never automatically retyped.
 - A writable PTY can host a shell, REPL, debugger, SSH client, or interpreter. The `terminal` capability grants native interactive terminal authority as the HostSpan OS user.
 - `target_id` still determines the initial working directory and the authorization decision, but once interactive terminal authority is granted it is not a filesystem sandbox. A shell can change directories or access anything available to the HostSpan OS user.
 - Side-effect submissions require a UUIDv7 idempotency key and are deduplicated in SQLite by argument hash.
 - A duplicate key with different arguments is rejected with `IDEMPOTENCY_CONFLICT`.
-- Linux process groups receive TERM then KILL for cancel/deadline/output-limit handling. Native Windows non-interactive processes are placed under a kill-on-close Job Object so descendants are controlled as one tree.
+- Linux process groups receive TERM then KILL for cancel/explicit-deadline handling. Native Windows non-interactive processes are placed under a kill-on-close Job Object so descendants are controlled as one tree.
 - Crash boundaries are never converted to success. HostSpan uses `unknown` when spawn/side-effect status cannot be proven and `orphaned` when a live process group survives but daemon stream ownership was lost.
 - PTY sessions intentionally survive HostSpan daemon shutdown/restart because the session worker owns the terminal outside the daemon lifetime. Startup reconciliation keeps a live worker `running`, records an exited session's exit status after output drain, or uses `unknown` if the durable worker reference no longer exists.
 - Human attach uses the same HostSpan PTY worker. `--read-only` is the safe observation mode. Writable human attach is deliberate shared ownership: human keystrokes bypass MCP idempotency and are not individually represented as MCP operations.
@@ -89,7 +89,7 @@ The recommended remote path remains outbound-only OpenAI Secure MCP Tunnel. If y
 - the retired full-authority `hostspan` scope is rejected; clients with grants using it must authorize again with granular scopes;
 - refresh without a requested scope preserves the grant, while an explicit refresh scope may only narrow it;
 - OAuth scope checks and HostSpan target policy are independent boundaries: a token must authorize the tool class and the selected target must separately grant the underlying capability;
-- the stable `hostspan-v3.1` tool list/schema/hash is unchanged by scope enforcement; tool authorization is checked at invocation time;
+- the stable `hostspan-v3.2` tool list/schema/hash is unchanged by scope enforcement; tool authorization is checked at invocation time;
 - HostSpan exposes the MCP-SDK-compatible root `/authorize`, `/token`, `/register`, and `/revoke` OAuth surface;
 - refresh tokens are issued and rotated for reconnects without requiring a separate `offline_access` scope;
 - rotating the approval secret revokes all outstanding access/refresh tokens;

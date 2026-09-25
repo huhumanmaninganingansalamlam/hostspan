@@ -86,7 +86,7 @@ export class OutputSpool {
     }
   }
 
-  append(stream: OutputStream, chunk: Buffer): { written: number; limit_exceeded: boolean } {
+  append(stream: OutputStream, chunk: Buffer): number {
     const remaining = Math.max(0, this.maxOutputBytes - this.totalBytes);
     const writtenBuffer = chunk.subarray(0, remaining);
     const path = streamPath(this.dataDir, this.processId, stream);
@@ -103,7 +103,7 @@ export class OutputSpool {
       }
       this.totalBytes += writtenBuffer.length;
     }
-    return { written: writtenBuffer.length, limit_exceeded: writtenBuffer.length < chunk.length };
+    return writtenBuffer.length;
   }
 
   read(stream: OutputStream, cursor: number, maxBytes: number): SpoolRead {

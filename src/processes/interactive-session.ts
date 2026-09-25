@@ -16,7 +16,7 @@ export interface StartInteractiveSessionInput {
   env: Record<string, string>;
   columns: number;
   rows: number;
-  deadlineAt: string;
+  deadlineAt: string | null;
   maxOutputBytes: number;
 }
 

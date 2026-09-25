@@ -36,5 +36,4 @@ export interface ProcessesStore {
   getByKey(key: string): ProcessRecord | undefined;
   active(): ProcessRecord[];
   activeInteractive(targetId?: string): ProcessRecord[];
-  activeCountForTargetBackend(targetId: string, backend: ProcessRecord["backend"]): number;
 }

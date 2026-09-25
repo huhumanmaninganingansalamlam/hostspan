@@ -73,7 +73,15 @@ export function createMcpServer(
     { name: "hostspan", version: SERVER_VERSION },
     {
       instructions:
-        "HostSpan operates on explicit persistent target_id values. File paths are target-relative. Side-effect tools require idempotency keys.",
+        "HostSpan operates on explicit persistent target_id values. File paths are target-relative. " +
+        "Generate a fresh random UUIDv7 idempotency key for each new side-effect operation. Keys are shared across all targets and sessions and remain reserved after completion. " +
+        "Reuse a key only to retry the identical operation with identical arguments; never reuse example keys or restart a counter in another session. " +
+        "For process_poll/process_write, copy next_stdout_cursor and next_stderr_cursor from that same process's previous response; cursors are independent byte offsets, not character counts. " +
+        "file_search.query is a ripgrep regular expression, not a shell command or glob. Escape regex metacharacters when searching literal code. " +
+        "process_start.wait_ms controls response waiting only; max_bytes bounds each response. " +
+        "There is no implicit process deadline. Set deadline_ms only when the task must be stopped after that duration, or use process_cancel. " +
+        "max_output_bytes caps retained output, not execution: once output_budget.remaining_bytes reaches zero, capture stops but the process continues. " +
+        "Poll the process for completion; human PTY attachments continue receiving live output after capture fills.",
     },
   );
   registerHostSpanTools(server, handlers, responseContext, authorization);

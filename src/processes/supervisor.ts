@@ -10,7 +10,7 @@ import type { HostSpanLogger } from "../observability/logger.js";
 import type { PolicyEvaluator } from "../policy/evaluator.js";
 import type { TargetRegistry } from "../targets/registry.js";
 import { resolveTargetPath } from "../targets/path.js";
-import type { ProcessesStore, ProcessState } from "./store.js";
+import type { ProcessesStore, ProcessState, ProcessRecord } from "./store.js";
 import { processEnvironment } from "./environment.js";
 import { OutputSpool, scanProcessSpools } from "./output-spool.js";
 import { processGroupAlive, signalProcessGroup } from "./recovery.js";
@@ -89,16 +89,9 @@ export interface ProcessSupervisorOptions {
 export class ProcessSupervisor {
   private readonly runtimes = new Map<string, RuntimeProcess>();
   private readonly writeInflight = new Map<string, Promise<Record<string, unknown>>>();
-  private readonly spoolReservations = new Map<string, number>();
   private readonly terminationInflight = new Map<string, Promise<ProcessState>>();
 
-  constructor(private readonly options: ProcessSupervisorOptions) {
-    for (const record of options.processes.active()) {
-      if (record.max_output_bytes && record.max_output_bytes > 0) {
-        this.spoolReservations.set(record.process_id, record.max_output_bytes);
-      }
-    }
-  }
+  constructor(private readonly options: ProcessSupervisorOptions) {}
 
   private expiresAt(): string {
     const ttlMs = this.options.config.retention.completed_process_output_ttl_minutes * 60_000;
@@ -111,18 +104,13 @@ export class ProcessSupervisor {
     return new OutputSpool(this.options.config.server.data_dir, processId, maxOutputBytes);
   }
 
-  private projectedSpoolBytes(): number {
+  private checkSpoolBudget(requestedBytes: number, active: ProcessRecord[]): void {
     const spoolUsage = scanProcessSpools(this.options.config.server.data_dir);
     let projected = spoolUsage.total;
-    for (const [processId, reserved] of this.spoolReservations) {
-      projected += Math.max(0, reserved - (spoolUsage.sizes.get(processId) ?? 0));
+    for (const record of active) {
+      projected += Math.max(0, (record.max_output_bytes ?? 0) - (spoolUsage.sizes.get(record.process_id) ?? 0));
     }
-    return projected;
-  }
-
-  private reserveSpoolBudget(processId: string, requestedBytes: number): number {
     const maximum = this.options.config.retention.max_total_spool_bytes;
-    const projected = this.projectedSpoolBytes();
     const remaining = maximum - projected;
     if (remaining < requestedBytes) {
       throw new HostSpanError("SERVER_BUSY", "Process output retention budget cannot satisfy the requested output cap; retry after retained output expires.", true, {
@@ -134,12 +122,6 @@ export class ProcessSupervisor {
         max_total_spool_bytes: maximum,
       });
     }
-    this.spoolReservations.set(processId, requestedBytes);
-    return requestedBytes;
-  }
-
-  private releaseSpoolReservation(processId: string): void {
-    this.spoolReservations.delete(processId);
   }
 
   private finalize(
@@ -155,7 +137,6 @@ export class ProcessSupervisor {
       if (runtime?.deadlineTimer) clearTimeout(runtime.deadlineTimer);
       runtime?.resolveTerminal();
       this.runtimes.delete(processId);
-      this.releaseSpoolReservation(processId);
       return;
     }
     const expiresAt = this.expiresAt();
@@ -182,7 +163,6 @@ export class ProcessSupervisor {
     if (runtime?.deadlineTimer) clearTimeout(runtime.deadlineTimer);
     runtime?.resolveTerminal();
     this.runtimes.delete(processId);
-    this.releaseSpoolReservation(processId);
   }
 
   async reconcileInteractiveProcesses(targetId?: string): Promise<void> {
@@ -336,7 +316,7 @@ export class ProcessSupervisor {
     const outputBudget =
       record.max_output_bytes !== null && record.max_output_bytes > 0
         ? {
-            scope: "process_lifetime",
+            scope: "retained_output",
             limit_bytes: record.max_output_bytes,
             used_bytes: outputBytes,
             remaining_bytes: Math.max(0, record.max_output_bytes - outputBytes),
@@ -401,10 +381,6 @@ export class ProcessSupervisor {
         this.finalize(processId, "timed_out", settled.exit_code, settled.signal, "deadline_exceeded");
         return;
       }
-      if (settled.reason === "output_limit") {
-        this.finalize(processId, "failed", settled.exit_code, settled.signal, "output_limit");
-        return;
-      }
       if (settled.reason === "cancel_requested") {
         this.finalize(processId, "cancelled", settled.exit_code, settled.signal, "cancel_requested");
         return;
@@ -425,10 +401,11 @@ export class ProcessSupervisor {
 
   async start(input: ProcessStartToolInput, requestId: string): Promise<Record<string, unknown>> {
     const interactive = input.tty ?? false;
+    const responseBytes = input.max_bytes ?? 131_072;
     const target = this.options.targets.get(input.target_id, interactive ? "terminal" : "exec");
     const cwd = resolveTargetPath(target, input.cwd);
     if (!cwd.exists) throw new HostSpanError("FILE_NOT_FOUND", `Process cwd does not exist: ${input.cwd}`);
-    const profile = interactive ? undefined : this.options.policy.validateExec(target, input.argv, input.deadline_ms, input.max_output_bytes);
+    const profile = interactive ? undefined : this.options.policy.validateExec(target, input.argv);
     if (interactive && this.options.terminal && this.options.config.terminal) {
       await this.reconcileInteractiveProcesses(input.target_id);
     }
@@ -441,70 +418,79 @@ export class ProcessSupervisor {
         throw new HostSpanError("PROCESS_UNKNOWN", "Durable operation exists but its process record is missing.");
       }
       if (resolution.kind === "unknown" || existing.state === "unknown") {
-        return this.snapshot(existing.process_id, 0, 0, Math.min(input.max_output_bytes, 131_072));
+        return this.snapshot(existing.process_id, 0, 0, responseBytes);
       }
       if (existing.backend === "pty") {
         await this.syncInteractiveState(existing.process_id);
       } else {
         await this.waitForTerminal(existing.process_id, input.wait_ms);
       }
-      return this.snapshot(existing.process_id, 0, 0, Math.min(input.max_output_bytes, 131_072));
+      return this.snapshot(existing.process_id, 0, 0, responseBytes);
     }
 
-    if (interactive) {
-      if (!this.options.terminal || !this.options.config.terminal) {
-        const error = new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "Interactive terminal support is not configured.", true);
-        this.options.operations.setState(input.idempotency_key, "failed", undefined, error);
-        throw error;
+    const sessionManager = interactive ? this.options.terminal : undefined;
+    const terminalConfig = this.options.config.terminal;
+    const backend = interactive ? "pty" : "native";
+    const processId = `proc_${uuidv7().replaceAll("-", "")}`;
+    const session = sessionManager?.sessionName(processId) ?? null;
+    const deadlineAt = input.deadline_ms === undefined ? null : new Date(Date.now() + input.deadline_ms).toISOString();
+    let effectiveMaxOutputBytes = input.max_output_bytes;
+    try {
+      let maxConcurrent: number;
+      let limitReason: string;
+      if (interactive) {
+        if (!sessionManager || !terminalConfig) {
+          throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "Interactive terminal support is not configured.", true);
+        }
+        maxConcurrent = terminalConfig.max_concurrent_sessions;
+        limitReason = "max_concurrent_terminal_sessions";
+        effectiveMaxOutputBytes = Math.min(effectiveMaxOutputBytes, terminalConfig.max_output_bytes);
+      } else {
+        if (!profile) throw new HostSpanError("POLICY_UNENFORCEABLE", "Missing native exec profile.");
+        maxConcurrent = profile.max_concurrent_processes;
+        limitReason = "max_concurrent_processes";
       }
-      if (this.options.processes.activeCountForTargetBackend(input.target_id, "pty") >= this.options.config.terminal.max_concurrent_sessions) {
-        const error = new HostSpanError("SCOPE_DENIED", `Target ${input.target_id} reached max_concurrent_terminal_sessions.`, false, {
-          reason: "max_concurrent_terminal_sessions",
+      const active = this.options.processes.active();
+      const activeForTarget = active.filter((record) => record.target_id === input.target_id && record.backend === backend).length;
+      if (activeForTarget >= maxConcurrent) {
+        throw new HostSpanError("SCOPE_DENIED", `Target ${input.target_id} reached ${limitReason}.`, false, {
+          reason: limitReason,
         });
-        this.options.operations.setState(input.idempotency_key, "failed", undefined, error);
-        throw error;
       }
-      const processId = `proc_${uuidv7().replaceAll("-", "")}`;
-      let effectiveMaxOutputBytes: number;
-      try {
-        effectiveMaxOutputBytes = this.reserveSpoolBudget(
-          processId,
-          Math.min(input.max_output_bytes, this.options.config.terminal.max_output_bytes),
-        );
-      } catch (error) {
-        this.options.operations.setState(input.idempotency_key, "failed", undefined, error);
-        throw error;
-      }
-      const session = this.options.terminal.sessionName(processId);
-      const deadlineAt = new Date(Date.now() + input.deadline_ms).toISOString();
-      try {
-        this.options.processes.create({
-          process_id: processId,
-          idempotency_key: input.idempotency_key,
-          target_id: input.target_id,
-          argv_digest: digestArgv(input.argv),
-          cwd_relative: cwd.relative,
-          backend: "pty",
-          backend_ref: session,
-          deadline_at: deadlineAt,
-          max_output_bytes: effectiveMaxOutputBytes,
-        });
-      } catch (error) {
-        this.releaseSpoolReservation(processId);
-        this.options.operations.setState(input.idempotency_key, "failed", undefined, error);
-        throw error;
-      }
-      this.options.operations.setState(input.idempotency_key, "launching", { state: "launching", process_id: processId, backend: "pty" });
-      this.options.logger?.info("process.launching", {
-        request_id: requestId,
+      // Admission and creation are synchronous: the durable row reserves capture
+      // capacity before either backend can yield during launch.
+      this.checkSpoolBudget(effectiveMaxOutputBytes, active);
+      this.options.processes.create({
         process_id: processId,
+        idempotency_key: input.idempotency_key,
         target_id: input.target_id,
         argv_digest: digestArgv(input.argv),
-        cwd: cwd.relative,
-        backend: "pty",
+        cwd_relative: cwd.relative,
+        backend,
+        backend_ref: session,
+        deadline_at: deadlineAt,
+        max_output_bytes: effectiveMaxOutputBytes,
       });
+    } catch (error) {
+      this.options.operations.setState(input.idempotency_key, "failed", undefined, error);
+      throw error;
+    }
+    this.options.operations.setState(input.idempotency_key, "launching", {
+      state: "launching", process_id: processId, ...(interactive ? { backend } : {}),
+    });
+    this.options.logger?.info("process.launching", {
+      request_id: requestId,
+      process_id: processId,
+      target_id: input.target_id,
+      argv_digest: digestArgv(input.argv),
+      cwd: cwd.relative,
+      ...(interactive ? { backend } : {}),
+    });
+
+    if (sessionManager && session) {
+      let started: { session: string; pid: number | null };
       try {
-        const started = await this.options.terminal.start({
+        started = await sessionManager.start({
           processId,
           cwd: cwd.absolute,
           argv: input.argv,
@@ -514,78 +500,33 @@ export class ProcessSupervisor {
           deadlineAt,
           maxOutputBytes: effectiveMaxOutputBytes,
         });
-        const launchState = await this.options.terminal.inspect(session);
-        if (!launchState.exists) {
-          this.finalize(processId, "unknown", null, null, "interactive_session_missing_after_launch");
-          return this.snapshot(processId, 0, 0, Math.min(input.max_output_bytes, 131_072));
-        }
-        if (launchState.dead) {
-          await this.syncInteractiveState(processId);
-          return this.snapshot(processId, 0, 0, Math.min(input.max_output_bytes, 131_072));
-        }
-        if (!this.options.processes.markRunning(processId, started.pid, null)) {
-          this.options.terminal.closeSync(session);
-          const current = this.options.processes.get(processId);
-          if (!current) throw new HostSpanError("PROCESS_UNKNOWN", "PTY process record disappeared during launch.");
-          return this.snapshot(processId, 0, 0, Math.min(input.max_output_bytes, 131_072));
-        }
-        this.options.operations.setState(input.idempotency_key, "running", { state: "running", process_id: processId, backend: "pty" });
-        this.options.logger?.info("process.started", { request_id: requestId, process_id: processId, pid: started.pid, backend: "pty", session });
-        const beforeBytes = this.options.terminal.outputBytes(processId);
-        await this.options.terminal.waitForActivity(session, processId, beforeBytes, input.wait_ms);
-        await this.syncInteractiveState(processId);
-        return this.snapshot(processId, 0, 0, Math.min(input.max_output_bytes, 131_072));
       } catch (error) {
-        this.releaseSpoolReservation(processId);
         this.options.processes.markTerminal(processId, "failed", null, null, "pty_start_failed", this.expiresAt());
         this.options.operations.setState(input.idempotency_key, "failed", { state: "failed", process_id: processId, reason: "pty_start_failed" }, error);
         throw error;
       }
+      const launchState = await sessionManager.inspect(session);
+      if (!launchState.exists) {
+        this.finalize(processId, "unknown", null, null, "interactive_session_missing_after_launch");
+        return this.snapshot(processId, 0, 0, responseBytes);
+      }
+      if (launchState.dead) {
+        await this.syncInteractiveState(processId);
+        return this.snapshot(processId, 0, 0, responseBytes);
+      }
+      if (!this.options.processes.markRunning(processId, started.pid, null)) {
+        sessionManager.closeSync(session);
+        const current = this.options.processes.get(processId);
+        if (!current) throw new HostSpanError("PROCESS_UNKNOWN", "PTY process record disappeared during launch.");
+        return this.snapshot(processId, 0, 0, responseBytes);
+      }
+      this.options.operations.setState(input.idempotency_key, "running", { state: "running", process_id: processId, backend: "pty" });
+      this.options.logger?.info("process.started", { request_id: requestId, process_id: processId, pid: started.pid, backend: "pty", session });
+      const beforeBytes = sessionManager.outputBytes(processId);
+      await sessionManager.waitForActivity(session, processId, beforeBytes, input.wait_ms);
+      await this.syncInteractiveState(processId);
+      return this.snapshot(processId, 0, 0, responseBytes);
     }
-
-    if (!profile) throw new HostSpanError("POLICY_UNENFORCEABLE", "Missing native exec profile.");
-    if (this.options.processes.activeCountForTargetBackend(input.target_id, "native") >= profile.max_concurrent_processes) {
-      const error = new HostSpanError("SCOPE_DENIED", `Target ${input.target_id} reached max_concurrent_processes.`, false, {
-        reason: "max_concurrent_processes",
-      });
-      this.options.operations.setState(input.idempotency_key, "failed", undefined, error);
-      throw error;
-    }
-
-    const processId = `proc_${uuidv7().replaceAll("-", "")}`;
-    let effectiveMaxOutputBytes: number;
-    try {
-      effectiveMaxOutputBytes = this.reserveSpoolBudget(processId, input.max_output_bytes);
-    } catch (error) {
-      this.options.operations.setState(input.idempotency_key, "failed", undefined, error);
-      throw error;
-    }
-    const deadlineAt = new Date(Date.now() + input.deadline_ms).toISOString();
-    try {
-      this.options.processes.create({
-        process_id: processId,
-        idempotency_key: input.idempotency_key,
-        target_id: input.target_id,
-        argv_digest: digestArgv(input.argv),
-        cwd_relative: cwd.relative,
-        backend: "native",
-        backend_ref: null,
-        deadline_at: deadlineAt,
-        max_output_bytes: effectiveMaxOutputBytes,
-      });
-    } catch (error) {
-      this.releaseSpoolReservation(processId);
-      this.options.operations.setState(input.idempotency_key, "failed", undefined, error);
-      throw error;
-    }
-    this.options.operations.setState(input.idempotency_key, "launching", { state: "launching", process_id: processId });
-    this.options.logger?.info("process.launching", {
-      request_id: requestId,
-      process_id: processId,
-      target_id: input.target_id,
-      argv_digest: digestArgv(input.argv),
-      cwd: cwd.relative,
-    });
 
     let child: SupervisedChild;
     let windowsReady: Promise<WindowsJobReceipt> | undefined;
@@ -613,7 +554,6 @@ export class ProcessSupervisor {
         });
       }
     } catch (error) {
-      this.releaseSpoolReservation(processId);
       this.options.processes.markTerminal(processId, "failed", null, null, "spawn_failed", this.expiresAt());
       this.options.operations.setState(input.idempotency_key, "failed", { state: "failed", process_id: processId, reason: "spawn_failed" }, error);
       throw error;
@@ -646,11 +586,8 @@ export class ProcessSupervisor {
       if (!runtime.acceptingOutput) return;
       const current = this.options.processes.get(processId);
       if (!current || TERMINAL_STATES.has(current.state)) return;
-      const appended = runtime.spool.append(stream, Buffer.from(chunk));
-      if (appended.written > 0) this.options.processes.addBytes(processId, stream, appended.written);
-      if (appended.limit_exceeded && !runtime.terminating) {
-        void this.terminate(processId, "failed", "output_limit", 250);
-      }
+      const written = runtime.spool.append(stream, chunk);
+      if (written > 0) this.options.processes.addBytes(processId, stream, written);
     };
     child.stdout.on("data", (chunk: Buffer) => onOutput("stdout", chunk));
     child.stderr.on("data", (chunk: Buffer) => onOutput("stderr", chunk));
@@ -661,10 +598,12 @@ export class ProcessSupervisor {
       if (!this.options.processes.markRunning(processId, pid, groupId)) return;
       this.options.operations.setState(input.idempotency_key, "running", { state: "running", process_id: processId });
       this.options.logger?.info("process.started", { request_id: requestId, process_id: processId, pid, pgid: groupId });
-      runtime.deadlineTimer = setTimeout(() => {
-        void this.terminate(processId, "timed_out", "deadline_exceeded", process.platform === "win32" ? 0 : 1_000);
-      }, input.deadline_ms);
-      runtime.deadlineTimer.unref();
+      if (input.deadline_ms !== undefined) {
+        runtime.deadlineTimer = setTimeout(() => {
+          void this.terminate(processId, "timed_out", "deadline_exceeded", process.platform === "win32" ? 0 : 1_000);
+        }, input.deadline_ms);
+        runtime.deadlineTimer.unref();
+      }
     };
 
     child.once("error", (error) => {
@@ -717,10 +656,10 @@ export class ProcessSupervisor {
 
     await this.waitForTerminal(processId, input.wait_ms);
     const afterWait = this.options.processes.get(processId);
-    if (afterWait && !TERMINAL_STATES.has(afterWait.state) && deadlineAt <= new Date().toISOString()) {
+    if (afterWait && !TERMINAL_STATES.has(afterWait.state) && deadlineAt !== null && deadlineAt <= new Date().toISOString()) {
       await this.terminate(processId, "timed_out", "deadline_exceeded", process.platform === "win32" ? 0 : 1_000);
     }
-    return this.snapshot(processId, 0, 0, Math.min(input.max_output_bytes, 131_072));
+    return this.snapshot(processId, 0, 0, responseBytes);
   }
 
   async poll(input: ProcessPollToolInput): Promise<Record<string, unknown>> {

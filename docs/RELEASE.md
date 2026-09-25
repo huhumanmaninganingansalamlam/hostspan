@@ -1,5 +1,15 @@
 # HostSpan release notes
 
+## 0.8.0 candidate
+
+- Share native/PTY admission and durable launch bookkeeping; derive reserved capture capacity from active process records instead of maintaining a second in-memory ledger. PTY response-observation failures no longer mark a live process as failed, so identical retries and cancellation retain the same durable execution.
+
+- Separate execution lifetime from response and capture budgets. `process_start` no longer supplies an implicit 30-second deadline; explicit `deadline_ms` and `process_cancel` still stop the process tree. New `process_start.max_bytes` bounds returned output independently of retained output.
+- Filling `max_output_bytes` stops storing output, not the native or PTY process. Retained output remains bounded and readable; live human PTY attachments continue receiving output. `output_budget.scope` is now `retained_output`.
+- Remove obsolete exec-profile fields: `default_deadline_ms`, `max_deadline_ms`, `default_output_bytes`, and `max_output_bytes`. Remove these four keys from existing `exec_profiles` before starting the new version; preserve target configuration and credentials. Do not remove the separate tool or terminal capture settings. No database migration is required.
+- Consume ripgrep search results incrementally and stop at the requested response budget instead of buffering the full search. Clarify durable idempotency keys and per-process byte cursors; audit failed cursor requests with bounded diagnostics.
+- Intentional public contract update to `hostspan-v3.2`, still exactly 10 tools; digest `sha256:026c4c60fbd4d556464fb867148c5dd190fd0e3d67b0787faa6c0a71b291c60f`. Refresh MCP client metadata after upgrading.
+
 ## 0.7.1 release
 
 - Preserve the user's filesystem view and normal OS-authorized privilege transitions in generated systemd units by removing `PrivateTmp` and `NoNewPrivileges`. Existing Linux installations must regenerate the unit with the updated CLI (`hostspan service install --config <path>`) and restart the service after reviewing active work.
