@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -71,10 +71,6 @@ function fixture(maxTotalSpoolBytes = 64 * 1024 * 1024) {
     exec_profiles: {
       "native-test": {
         mode: "native",
-        default_deadline_ms: 30_000,
-        max_deadline_ms: 60_000,
-        default_output_bytes: 1024 * 1024,
-        max_output_bytes: 8 * 1024 * 1024,
         max_concurrent_processes: 4,
       },
     },
@@ -92,7 +88,7 @@ function fixture(maxTotalSpoolBytes = 64 * 1024 * 1024) {
     processes,
   });
   supervisors.push(supervisor);
-  return { supervisor, processes, db, config };
+  return { supervisor, processes, db, config, targetRoot };
 }
 
 function startInput(overrides: Partial<Parameters<ProcessSupervisor["start"]>[0]> = {}) {
@@ -157,7 +153,7 @@ describe("process supervisor", () => {
     expect(result.state).toBe("succeeded");
     expect(result.stdout).toBe("ok");
     expect(result.output_budget).toEqual({
-      scope: "process_lifetime",
+      scope: "retained_output",
       limit_bytes: 1024 * 1024,
       used_bytes: 2,
       remaining_bytes: 1024 * 1024 - 2,
@@ -365,8 +361,8 @@ describe("process supervisor", () => {
     expect(processGroupAlive(record?.pgid ?? null)).toBe(false);
   });
 
-  it("enforces hard deadlines and output caps", async () => {
-    const { supervisor } = fixture();
+  it("enforces explicit deadlines but only caps capture for verbose work", async () => {
+    const { supervisor, targetRoot } = fixture();
     const timed = await supervisor.start(
       startInput({ argv: ["node", "-e", "setTimeout(()=>{},60000)"], wait_ms: 400, deadline_ms: 80 }),
       "req_timeout",
@@ -374,17 +370,24 @@ describe("process supervisor", () => {
     expect(timed.state).toBe("timed_out");
 
     const capped = await supervisor.start(
-      startInput({ argv: ["node", "-e", "process.stdout.write('x'.repeat(10000))"], wait_ms: 1_000, max_output_bytes: 128 }),
+      startInput({
+        argv: ["node", "-e", "process.stdout.write('x'.repeat(10000),()=>setTimeout(()=>require('node:fs').writeFileSync('done','ok'),100))"],
+        deadline_ms: undefined,
+        wait_ms: 1_000,
+        max_output_bytes: 128,
+        max_bytes: 16,
+      }),
       "req_cap",
     );
-    expect(capped.state).toBe("failed");
-    expect(capped.reason).toBe("output_limit");
+    expect(capped.state).toBe("succeeded");
+    expect(capped.deadline_at).toBeNull();
+    expect(readFileSync(join(targetRoot, "done"), "utf8")).toBe("ok");
     expect(capped.output_budget).toEqual({
-      scope: "process_lifetime",
+      scope: "retained_output",
       limit_bytes: 128,
       used_bytes: 128,
       remaining_bytes: 0,
     });
-    expect(Buffer.byteLength(String(capped.stdout))).toBeLessThanOrEqual(128);
+    expect(Buffer.byteLength(String(capped.stdout))).toBeLessThanOrEqual(16);
   });
 });

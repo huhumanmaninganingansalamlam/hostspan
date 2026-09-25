@@ -82,7 +82,7 @@ function summarizeTerminalEvents(events: PerformanceAuditEvent[]) {
     else aborted += 1;
     const duration = finiteNumber(event.metadata.total_ms);
     if (duration !== null) latency.push(duration);
-    if (event.metadata.output_limited === true || event.metadata.error_code === "OUTPUT_LIMIT" || event.metadata.error_reason === "output_limit_exceeds_profile") {
+    if (event.metadata.output_limited === true || event.metadata.error_code === "OUTPUT_LIMIT") {
       outputLimited += 1;
     }
     if (event.event_type !== "request.aborted") continue;

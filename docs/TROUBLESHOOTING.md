@@ -20,7 +20,7 @@ Run:
 hostspan print-toolset
 ```
 
-HostSpan `hostspan-v3.1` must advertise exactly 10 tools. Target permissions never remove a tool from `tools/list`; a disallowed call returns `SCOPE_DENIED`. If ChatGPT still shows older cached tool metadata after upgrading, Refresh the app before debugging the server.
+HostSpan `hostspan-v3.2` must advertise exactly 10 tools. Target permissions never remove a tool from `tools/list`; a disallowed call returns `SCOPE_DENIED`. If ChatGPT still shows older cached tool metadata after upgrading, Refresh the app before debugging the server.
 
 ## Only read-only tools appear in one ChatGPT conversation
 
@@ -129,10 +129,14 @@ An idempotency key identifies one exact side-effect request across all targets a
 
 Use each process response's `next_stdout_cursor` and `next_stderr_cursor` for that same process and stream. They are byte offsets, not string lengths. `CURSOR_EXPIRED` can mean either expired output or a cursor beyond the available stream. Its details identify the available cursor bounds; failed polls now retain their process ID and requested cursor offsets in the audit trail without recording command/output contents.
 
-Exec profile limit errors include the requested and allowed deadline/output values. Correct the request using those values; these errors do not indicate a per-command allowlist.
-
 ## Bounded search results
 
 `file_search.query` is a ripgrep regular expression. Escape metacharacters for literal source text; it is not a shell command or a file glob. The backend now consumes results incrementally and stops when the requested match/response-byte limit is reached, returning `truncated` results instead of failing because the full workspace's output exceeded a collection buffer. A single oversized backend record remains bounded, and a search that cannot reach its requested result limit before its deadline can still time out.
 
-`process_start.wait_ms` controls how long one response waits. `deadline_ms` controls the actual process lifetime, and `max_output_bytes` covers all retained output over that lifetime. A small response is requested with `process_poll.max_bytes`; reducing the lifetime output budget can terminate a verbose process. The current MCP schema defaults the lifetime to 30 seconds and total output to 4 MiB. Config `default_deadline_ms`/`default_output_bytes` do not currently override those schema defaults; use explicit request values. Removing that discrepancy requires a deliberate change to the fixed public input defaults, rather than silently interpreting an explicitly requested 30-second deadline differently.
+## Response budgets and process lifetime
+
+`process_start.wait_ms` only limits response waiting. `max_bytes` limits output in that response (default 128 KiB); poll/write have their own response budgets. Neither stops the process. With `deadline_ms` omitted, the process has no implicit deadline; supply it only to request termination after that duration. `process_cancel` still stops the process tree.
+
+`max_output_bytes` bounds retained stdout/stderr (default 4 MiB, further bounded by available spool storage and the PTY capture setting). When `output_budget.remaining_bytes` reaches zero, HostSpan keeps draining output but stops storing it. The command continues and can still complete or be cancelled; poll for its final state. The retained prefix remains readable, later output is not available through MCP, and connected human PTY attachments continue receiving live output. Redirect a command's full output to a target file when it must be retained beyond that budget.
+
+Before upgrading to 0.8.0, remove `default_deadline_ms`, `max_deadline_ms`, `default_output_bytes`, and `max_output_bytes` from each `exec_profiles` entry. These obsolete profile fields are rejected, not silently ignored. Keep `mode` and `max_concurrent_processes`; the tool request's `max_output_bytes` and `terminal.max_output_bytes` remain valid. Refresh MCP metadata for the new `hostspan-v3.2` contract (still 10 tools).

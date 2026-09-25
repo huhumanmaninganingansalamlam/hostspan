@@ -70,10 +70,6 @@ export const TerminalConfigSchema = z
 export const ExecProfileSchema = z
   .object({
     mode: z.literal("native"),
-    default_deadline_ms: z.number().int().positive().default(30_000),
-    max_deadline_ms: z.number().int().positive().default(600_000),
-    default_output_bytes: z.number().int().positive().default(4_194_304),
-    max_output_bytes: z.number().int().positive().default(67_108_864),
     max_concurrent_processes: z.number().int().positive().max(64).default(4),
   })
   .strict();

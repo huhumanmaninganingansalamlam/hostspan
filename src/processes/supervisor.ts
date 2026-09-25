@@ -336,7 +336,7 @@ export class ProcessSupervisor {
     const outputBudget =
       record.max_output_bytes !== null && record.max_output_bytes > 0
         ? {
-            scope: "process_lifetime",
+            scope: "retained_output",
             limit_bytes: record.max_output_bytes,
             used_bytes: outputBytes,
             remaining_bytes: Math.max(0, record.max_output_bytes - outputBytes),
@@ -401,10 +401,6 @@ export class ProcessSupervisor {
         this.finalize(processId, "timed_out", settled.exit_code, settled.signal, "deadline_exceeded");
         return;
       }
-      if (settled.reason === "output_limit") {
-        this.finalize(processId, "failed", settled.exit_code, settled.signal, "output_limit");
-        return;
-      }
       if (settled.reason === "cancel_requested") {
         this.finalize(processId, "cancelled", settled.exit_code, settled.signal, "cancel_requested");
         return;
@@ -425,10 +421,11 @@ export class ProcessSupervisor {
 
   async start(input: ProcessStartToolInput, requestId: string): Promise<Record<string, unknown>> {
     const interactive = input.tty ?? false;
+    const responseBytes = input.max_bytes ?? 131_072;
     const target = this.options.targets.get(input.target_id, interactive ? "terminal" : "exec");
     const cwd = resolveTargetPath(target, input.cwd);
     if (!cwd.exists) throw new HostSpanError("FILE_NOT_FOUND", `Process cwd does not exist: ${input.cwd}`);
-    const profile = interactive ? undefined : this.options.policy.validateExec(target, input.argv, input.deadline_ms, input.max_output_bytes);
+    const profile = interactive ? undefined : this.options.policy.validateExec(target, input.argv);
     if (interactive && this.options.terminal && this.options.config.terminal) {
       await this.reconcileInteractiveProcesses(input.target_id);
     }
@@ -441,14 +438,14 @@ export class ProcessSupervisor {
         throw new HostSpanError("PROCESS_UNKNOWN", "Durable operation exists but its process record is missing.");
       }
       if (resolution.kind === "unknown" || existing.state === "unknown") {
-        return this.snapshot(existing.process_id, 0, 0, Math.min(input.max_output_bytes, 131_072));
+        return this.snapshot(existing.process_id, 0, 0, responseBytes);
       }
       if (existing.backend === "pty") {
         await this.syncInteractiveState(existing.process_id);
       } else {
         await this.waitForTerminal(existing.process_id, input.wait_ms);
       }
-      return this.snapshot(existing.process_id, 0, 0, Math.min(input.max_output_bytes, 131_072));
+      return this.snapshot(existing.process_id, 0, 0, responseBytes);
     }
 
     if (interactive) {
@@ -476,7 +473,7 @@ export class ProcessSupervisor {
         throw error;
       }
       const session = this.options.terminal.sessionName(processId);
-      const deadlineAt = new Date(Date.now() + input.deadline_ms).toISOString();
+      const deadlineAt = input.deadline_ms === undefined ? null : new Date(Date.now() + input.deadline_ms).toISOString();
       try {
         this.options.processes.create({
           process_id: processId,
@@ -517,24 +514,24 @@ export class ProcessSupervisor {
         const launchState = await this.options.terminal.inspect(session);
         if (!launchState.exists) {
           this.finalize(processId, "unknown", null, null, "interactive_session_missing_after_launch");
-          return this.snapshot(processId, 0, 0, Math.min(input.max_output_bytes, 131_072));
+          return this.snapshot(processId, 0, 0, responseBytes);
         }
         if (launchState.dead) {
           await this.syncInteractiveState(processId);
-          return this.snapshot(processId, 0, 0, Math.min(input.max_output_bytes, 131_072));
+          return this.snapshot(processId, 0, 0, responseBytes);
         }
         if (!this.options.processes.markRunning(processId, started.pid, null)) {
           this.options.terminal.closeSync(session);
           const current = this.options.processes.get(processId);
           if (!current) throw new HostSpanError("PROCESS_UNKNOWN", "PTY process record disappeared during launch.");
-          return this.snapshot(processId, 0, 0, Math.min(input.max_output_bytes, 131_072));
+          return this.snapshot(processId, 0, 0, responseBytes);
         }
         this.options.operations.setState(input.idempotency_key, "running", { state: "running", process_id: processId, backend: "pty" });
         this.options.logger?.info("process.started", { request_id: requestId, process_id: processId, pid: started.pid, backend: "pty", session });
         const beforeBytes = this.options.terminal.outputBytes(processId);
         await this.options.terminal.waitForActivity(session, processId, beforeBytes, input.wait_ms);
         await this.syncInteractiveState(processId);
-        return this.snapshot(processId, 0, 0, Math.min(input.max_output_bytes, 131_072));
+        return this.snapshot(processId, 0, 0, responseBytes);
       } catch (error) {
         this.releaseSpoolReservation(processId);
         this.options.processes.markTerminal(processId, "failed", null, null, "pty_start_failed", this.expiresAt());
@@ -560,7 +557,7 @@ export class ProcessSupervisor {
       this.options.operations.setState(input.idempotency_key, "failed", undefined, error);
       throw error;
     }
-    const deadlineAt = new Date(Date.now() + input.deadline_ms).toISOString();
+    const deadlineAt = input.deadline_ms === undefined ? null : new Date(Date.now() + input.deadline_ms).toISOString();
     try {
       this.options.processes.create({
         process_id: processId,
@@ -646,11 +643,8 @@ export class ProcessSupervisor {
       if (!runtime.acceptingOutput) return;
       const current = this.options.processes.get(processId);
       if (!current || TERMINAL_STATES.has(current.state)) return;
-      const appended = runtime.spool.append(stream, Buffer.from(chunk));
-      if (appended.written > 0) this.options.processes.addBytes(processId, stream, appended.written);
-      if (appended.limit_exceeded && !runtime.terminating) {
-        void this.terminate(processId, "failed", "output_limit", 250);
-      }
+      const written = runtime.spool.append(stream, chunk);
+      if (written > 0) this.options.processes.addBytes(processId, stream, written);
     };
     child.stdout.on("data", (chunk: Buffer) => onOutput("stdout", chunk));
     child.stderr.on("data", (chunk: Buffer) => onOutput("stderr", chunk));
@@ -661,10 +655,12 @@ export class ProcessSupervisor {
       if (!this.options.processes.markRunning(processId, pid, groupId)) return;
       this.options.operations.setState(input.idempotency_key, "running", { state: "running", process_id: processId });
       this.options.logger?.info("process.started", { request_id: requestId, process_id: processId, pid, pgid: groupId });
-      runtime.deadlineTimer = setTimeout(() => {
-        void this.terminate(processId, "timed_out", "deadline_exceeded", process.platform === "win32" ? 0 : 1_000);
-      }, input.deadline_ms);
-      runtime.deadlineTimer.unref();
+      if (input.deadline_ms !== undefined) {
+        runtime.deadlineTimer = setTimeout(() => {
+          void this.terminate(processId, "timed_out", "deadline_exceeded", process.platform === "win32" ? 0 : 1_000);
+        }, input.deadline_ms);
+        runtime.deadlineTimer.unref();
+      }
     };
 
     child.once("error", (error) => {
@@ -717,10 +713,10 @@ export class ProcessSupervisor {
 
     await this.waitForTerminal(processId, input.wait_ms);
     const afterWait = this.options.processes.get(processId);
-    if (afterWait && !TERMINAL_STATES.has(afterWait.state) && deadlineAt <= new Date().toISOString()) {
+    if (afterWait && !TERMINAL_STATES.has(afterWait.state) && deadlineAt !== null && deadlineAt <= new Date().toISOString()) {
       await this.terminate(processId, "timed_out", "deadline_exceeded", process.platform === "win32" ? 0 : 1_000);
     }
-    return this.snapshot(processId, 0, 0, Math.min(input.max_output_bytes, 131_072));
+    return this.snapshot(processId, 0, 0, responseBytes);
   }
 
   async poll(input: ProcessPollToolInput): Promise<Record<string, unknown>> {

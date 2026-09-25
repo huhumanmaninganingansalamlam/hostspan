@@ -8,7 +8,7 @@
 [![Desktop release](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/release.yml/badge.svg)](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/release.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
-HostSpan is a terminal-first MCP execution gateway for ChatGPT Web Developer Mode. It exposes a fixed `hostspan-v3.1` toolset for approved local targets and keeps file/process side effects verifiable and recoverable across reconnects.
+HostSpan is a terminal-first MCP execution gateway for ChatGPT Web Developer Mode. It exposes a fixed `hostspan-v3.2` toolset for approved local targets and keeps file/process side effects verifiable and recoverable across reconnects.
 
 The HostSpan mark represents an MCP gateway spanning two local endpoints through a central protocol-routing hub. The tray uses a separate simplified bridge/hub glyph so it stays legible at 16–32 px instead of shrinking the full application artwork.
 
@@ -16,7 +16,7 @@ HostSpan has native Linux x64, Windows x64, and macOS x64 core paths. **Native e
 
 ## Current scope
 
-The MCP tool registry is immutable for `hostspan-v3.1`:
+The MCP tool registry is immutable for `hostspan-v3.2`:
 
 `system_status`, `target_list`, `file_list`, `file_read`, `file_search`, `file_patch`, `process_start`, `process_poll`, `process_write`, `process_cancel`.
 
@@ -88,6 +88,8 @@ Readiness http://127.0.0.1:39393/readyz
 ```
 
 The default bind is loopback-only, but `server.listen_host` is configurable for LAN/container/reverse-proxy deployments. Host header validation remains enabled for every bind. **Any non-loopback HostSpan server additionally requires built-in OAuth and fails closed when OAuth is missing.** `readyz` represents server/database readiness; missing ripgrep is reported as degraded so non-search tools stay usable, while `file_search` returns `SEARCH_BACKEND_UNAVAILABLE`.
+
+Process response budgets and execution lifetime are separate. `wait_ms` bounds response waiting and `max_bytes` bounds returned output. Omit `deadline_ms` to run without an implicit deadline, set it for an explicit timeout, or use `process_cancel`. `max_output_bytes` caps retained output; filling it stops capture, never the process. `output_budget` reports the retained bytes and remaining capacity. Later output is drained but not retained; human PTY attachments still receive live output. Redirect full logs to a target file when needed.
 
 HostSpan also applies local overload and retention boundaries so several agents cannot amplify one burst into unbounded host work. Defaults are 128 in-flight MCP requests and 8 concurrent ripgrep searches with 16 queued; the search queue times out after 1 second. Search overflow returns retryable `SERVER_BUSY`; process execution is independently bounded by each exec profile's `max_concurrent_processes`. Durable audit history is bounded by both `audit_days` and `max_audit_events` (500,000 by default). Completed process output expires after 60 minutes by default, the retained spool budget defaults to 1 GiB, and old operation response payloads are compacted after 14 days without deleting their idempotency-key tombstones. Once those payloads and retained output are gone, redundant completed process/patch detail rows are also pruned while the operation tombstone remains.
 
@@ -280,7 +282,7 @@ hostspan doctor
 hostspan smoke --target local-app
 ```
 
-The contract suite pins the approved hash for the fixed 10-tool `hostspan-v3.1` registry. Acceptance coverage exercises the MCP request/response flow; process coverage exercises PTY input, resize, polling, cancellation, and recovery. Windows also checks Job Object process-tree control and native path security.
+The contract suite pins the approved hash for the fixed 10-tool `hostspan-v3.2` registry. Acceptance coverage exercises the MCP request/response flow; process coverage exercises PTY input, resize, polling, cancellation, and recovery. Windows also checks Job Object process-tree control and native path security.
 
 ## Security and support
 

@@ -1,12 +1,12 @@
 # HostSpan MCP v4 contract design
 
-Status: design target for the next breaking MCP contract. This document does not change the active `hostspan-v3.1` contract.
+Status: design target for the next breaking MCP contract. This document does not change the active `hostspan-v3.2` contract.
 
 ## Goals
 
 The v4 contract should make tool selection and result handling easier for models without expanding HostSpan's authority surface. It should add explicit output schemas, clearer titles and selection-oriented descriptions, a stable error vocabulary, and names that match the behavior they describe.
 
-The active v3.1 contract remains immutable while v4 is implemented behind a new toolset version. Existing v3.1 names, input schemas, annotations, and toolset hash must not be edited in place.
+The active v3.2 contract remains immutable while v4 is implemented behind a new toolset version. Existing v3.2 names, input schemas, annotations, and toolset hash must not be edited in place.
 
 ## Contract versioning and hash
 
@@ -308,7 +308,7 @@ A future v4 implementation should be one deliberate breaking-contract change:
 6. Add model-facing tool-selection regression fixtures.
 7. Run the complete existing safety/recovery/idempotency suite plus the new v4 contract suite before switching any default client guidance.
 
-Do not silently migrate an existing `hostspan-v3.1` endpoint to these schemas. A release that serves v4 must identify the new contract explicitly and document the compatibility boundary.
+Do not silently migrate an existing `hostspan-v3.2` endpoint to these schemas. A release that serves v4 must identify the new contract explicitly and document the compatibility boundary.
 
 ## Acceptance criteria
 
@@ -322,4 +322,4 @@ The design is implemented only when all of the following are true:
 - Errors have stable code/retryability/safe-reason semantics with no unreviewed detail leakage.
 - The public tool count remains 10.
 - Model-facing regressions catch unnecessary calls, duplicate side effects, and authority-escalation attempts.
-- The active v3.1 contract and hash remain unchanged until a separately reviewed v4 implementation is intentionally selected.
+- The active v3.2 contract and hash remain unchanged until a separately reviewed v4 implementation is intentionally selected.

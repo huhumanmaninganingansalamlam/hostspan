@@ -78,9 +78,10 @@ export function createMcpServer(
         "Reuse a key only to retry the identical operation with identical arguments; never reuse example keys or restart a counter in another session. " +
         "For process_poll/process_write, copy next_stdout_cursor and next_stderr_cursor from that same process's previous response; cursors are independent byte offsets, not character counts. " +
         "file_search.query is a ripgrep regular expression, not a shell command or glob. Escape regex metacharacters when searching literal code. " +
-        "process_start.wait_ms only controls response waiting; deadline_ms is the process lifetime and max_output_bytes is its total retained output budget, not a response size. " +
-        "For long jobs choose an appropriate lifetime explicitly and use process_poll with a bounded max_bytes to read small responses. " +
-        "If execution exceeds an exec profile limit, use the allowed maximum reported in the error details.",
+        "process_start.wait_ms controls response waiting only; max_bytes bounds each response. " +
+        "There is no implicit process deadline. Set deadline_ms only when the task must be stopped after that duration, or use process_cancel. " +
+        "max_output_bytes caps retained output, not execution: once output_budget.remaining_bytes reaches zero, capture stops but the process continues. " +
+        "Poll the process for completion; human PTY attachments continue receiving live output after capture fills.",
     },
   );
   registerHostSpanTools(server, handlers, responseContext, authorization);

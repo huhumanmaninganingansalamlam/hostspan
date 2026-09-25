@@ -97,10 +97,6 @@ function fixture(terminalCapability = true, maxConcurrentSessions = 2, requireOw
     exec_profiles: {
       "native-test": {
         mode: "native",
-        default_deadline_ms: 30_000,
-        max_deadline_ms: 60_000,
-        default_output_bytes: 1024 * 1024,
-        max_output_bytes: 8 * 1024 * 1024,
         max_concurrent_processes: 4,
       },
     },
@@ -323,7 +319,7 @@ describe("durable interactive PTY process backend", () => {
     expect(String(started.human_attach_read_only_command)).toContain(`--config '${configPath}'`);
     expect(String(started.human_attach_read_only_command)).toContain("--read-only");
     const startedBudget = started.output_budget as Record<string, unknown>;
-    expect(startedBudget.scope).toBe("process_lifetime");
+    expect(startedBudget.scope).toBe("retained_output");
     expect(startedBudget.limit_bytes).toBe(1024 * 1024);
     expect(Number(startedBudget.used_bytes)).toBeGreaterThan(0);
     expect(startedBudget.remaining_bytes).toBe(1024 * 1024 - Number(startedBudget.used_bytes));
@@ -361,11 +357,40 @@ describe("durable interactive PTY process backend", () => {
     expect(transcript).toContain("HELLO world");
     expect(current.state).toBe("succeeded");
     const completedBudget = current.output_budget as Record<string, unknown>;
-    expect(completedBudget.scope).toBe("process_lifetime");
+    expect(completedBudget.scope).toBe("retained_output");
     expect(completedBudget.limit_bytes).toBe(1024 * 1024);
     expect(Number(completedBudget.used_bytes)).toBeGreaterThanOrEqual(Number(startedBudget.used_bytes));
     expect(completedBudget.remaining_bytes).toBe(1024 * 1024 - Number(completedBudget.used_bytes));
     db.close();
+  });
+
+  it("keeps a PTY running after response wait and capture fill without an implicit deadline", async () => {
+    const { supervisor, terminal, root } = fixture();
+    const started = await supervisor.start({
+      ...ttyInput("process.stdout.write('x'.repeat(10000));process.stdin.once('data',()=>{require('node:fs').writeFileSync('done','ok');console.log('DONE');process.exit(0)})"),
+      deadline_ms: undefined,
+      max_output_bytes: 128,
+      max_bytes: 16,
+    }, "req_pty_capture");
+    track(terminal, started);
+    expect(started.state).toBe("running");
+    expect(started.deadline_at).toBeNull();
+    expect(Buffer.byteLength(String(started.stdout))).toBeLessThanOrEqual(16);
+    await expect.poll(async () => {
+      const current = await supervisor.poll({ process_id: String(started.process_id), stdout_cursor: 0, stderr_cursor: 0, wait_ms: 100, max_bytes: 16 });
+      expect(current.state).toBe("running");
+      return current.output_budget;
+    }).toMatchObject({ used_bytes: 128, remaining_bytes: 0 });
+    const observer = await openRawAttachment(join(root, "state"), String(started.terminal_session), true);
+    await supervisor.write({
+      idempotency_key: uuidv7(), process_id: String(started.process_id), chars: "go",
+      control_keys: ["Enter"], stdout_cursor: 0, wait_ms: 1_000, max_bytes: 16,
+    });
+    await expect.poll(async () => (await supervisor.poll({
+      process_id: String(started.process_id), stdout_cursor: 0, stderr_cursor: 0, wait_ms: 100, max_bytes: 16,
+    })).state).toBe("succeeded");
+    expect(readFileSync(join(root, "target", "done"), "utf8")).toBe("ok");
+    expect(observer.output()).toContain("DONE");
   });
 
   it("does not advertise or mark an already-exited PTY launch as running", async () => {

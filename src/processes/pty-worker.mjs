@@ -161,9 +161,8 @@ function appendOutput(data) {
       attached.delete(socket);
       continue;
     }
-    socket.write(chunk);
+    socket.write(bytes);
   }
-  if (chunk.length < bytes.length && !terminationReason) terminate("output_limit", 0);
 }
 
 function controlBytes(keys) {
@@ -334,7 +333,7 @@ async function main() {
   }
 
   if (!exitObserved) {
-    const deadlineDelay = new Date(spec.deadlineAt).getTime() - Date.now();
+    const deadlineDelay = spec.deadlineAt === null ? Number.NaN : new Date(spec.deadlineAt).getTime() - Date.now();
     if (Number.isFinite(deadlineDelay) && deadlineDelay <= 0) {
       terminate("deadline_exceeded", 0);
     } else if (!terminationReason) {

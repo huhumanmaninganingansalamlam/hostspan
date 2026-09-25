@@ -47,10 +47,6 @@ function fixture() {
     exec_profiles: {
       "native-test": {
         mode: "native",
-        default_deadline_ms: 30_000,
-        max_deadline_ms: 60_000,
-        default_output_bytes: 1024 * 1024,
-        max_output_bytes: 8 * 1024 * 1024,
         max_concurrent_processes: 4,
       },
     },

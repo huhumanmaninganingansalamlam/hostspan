@@ -59,10 +59,6 @@ function fixture() {
     exec_profiles: {
       native: {
         mode: "native",
-        default_deadline_ms: 30_000,
-        max_deadline_ms: 60_000,
-        default_output_bytes: 1024 * 1024,
-        max_output_bytes: 8 * 1024 * 1024,
         max_concurrent_processes: 4,
       },
     },
@@ -309,6 +305,7 @@ describe("local admin snapshot", () => {
     const workspace = join(root, "another-workspace");
     mkdirSync(workspace, { recursive: true });
 
+    const originalProfiles = loadConfig(configPath).exec_profiles;
     const added = addLocalWorkspace(configPath, {
       target_id: "another-workspace",
       label: "Another workspace",
@@ -329,8 +326,7 @@ describe("local admin snapshot", () => {
     });
     expect(afterAdd.targets["another-workspace"]).not.toHaveProperty("exec_profile");
     expect(afterAdd.targets.local?.exec_profile).toBe("native");
-    expect(afterAdd.exec_profiles.native?.max_deadline_ms).toBe(60_000);
-    expect(Object.keys(afterAdd.exec_profiles)).toEqual(["native"]);
+    expect(afterAdd.exec_profiles).toEqual(originalProfiles);
 
     const removed = removeLocalWorkspace(configPath, "another-workspace");
     expect(removed).toMatchObject({ ok: true, target_id: "another-workspace", restart_required: true });

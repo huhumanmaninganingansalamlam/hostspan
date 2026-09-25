@@ -97,7 +97,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "process_start" as const,
     description:
-      "Start one durable process through HostSpan and optionally wait briefly; set tty=true for a durable interactive terminal on targets with terminal capability.",
+      "Start one durable process with no implicit deadline; wait_ms and max_bytes bound the response, max_output_bytes bounds capture without stopping execution. Set deadline_ms for an explicit lifetime or tty=true for an interactive terminal on targets with terminal capability.",
     inputSchema: ProcessStartInputSchema,
     annotations: processAnnotations,
   },
