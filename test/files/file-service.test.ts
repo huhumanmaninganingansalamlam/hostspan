@@ -302,9 +302,9 @@ describe("file services", () => {
     expect(result.matches.some((match) => match.path === ".env-secret")).toBe(false);
   });
 
-  it("bounds search response records by max_bytes", async () => {
+  it.each([[400, "max_bytes"], [512 * 1024, "backend_output"]] as const)("preserves bounded search results before an oversized line (%i bytes)", async (lineBytes, reason) => {
     const { root, target } = fixture();
-    writeFileSync(join(root, "many.txt"), Array.from({ length: 20 }, () => `needle-${"x".repeat(80)}`).join("\n"));
+    writeFileSync(join(root, "many.txt"), `needle-first\nneedle-${"x".repeat(lineBytes)}\n`);
     const result = await fileSearch(target, {
       query: "needle",
       paths: ["."],
@@ -316,8 +316,10 @@ describe("file services", () => {
     });
     expect(result).toMatchObject({
       truncated: true,
-      truncation_reason: "max_bytes",
+      truncation_reason: reason,
+      match_count: 1,
     });
+    expect(result.matches[0]).toMatchObject({ text: "needle-first" });
     expect(result.returned_record_bytes).toBeLessThanOrEqual(300);
     expect(Buffer.byteLength(JSON.stringify(result.matches), "utf8")).toBeLessThanOrEqual(320);
   });
@@ -342,7 +344,7 @@ describe("file services", () => {
     expect(result.returned_record_bytes).toBeGreaterThan(0);
   });
 
-  it("returns an empty result when ripgrep finds no matches", async () => {
+  it.each([1, 4096])("returns a complete empty search with a %i-byte budget", async (maxBytes) => {
     const { root, target } = fixture();
     writeFileSync(join(root, "a.txt"), "alpha\n");
     const result = await fileSearch(target, {
@@ -351,7 +353,7 @@ describe("file services", () => {
       context_before: 0,
       context_after: 0,
       max_matches: 10,
-      max_bytes: 4096,
+      max_bytes: maxBytes,
       deadline_ms: 1000,
     });
     expect(result).toMatchObject({ match_count: 0, matches: [], truncated: false, backend: "ripgrep" });

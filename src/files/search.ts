@@ -57,6 +57,12 @@ export async function fileSearch(target: TargetRuntime, input: FileSearchInput) 
   let truncationReason: "max_bytes" | "max_matches" | "backend_output" | undefined;
   const consume = (line: string) => {
     if (!line) return;
+    // Bound backend records independently of the bytes returned to the caller.
+    if (Buffer.byteLength(line) > input.max_bytes + 64 * 1024) {
+      responseTruncated = true;
+      truncationReason = "backend_output";
+      return;
+    }
     const event = JSON.parse(line) as RipgrepEvent;
     if (!event.data || !["match", "context"].includes(event.type)) return;
     const pathText = event.data.path?.text as string | undefined;
@@ -90,7 +96,6 @@ export async function fileSearch(target: TargetRuntime, input: FileSearchInput) 
       return;
     }
   };
-  let backendBytes = 0;
   await new Promise<void>((resolveSearch, rejectSearch) => {
     const child = spawn(ripgrepExecutable(), args, { cwd: target.root_real, stdio: ["ignore", "pipe", "pipe"] });
     let pending = "";
@@ -108,7 +113,6 @@ export async function fileSearch(target: TargetRuntime, input: FileSearchInput) 
     child.stderr.on("data", (chunk: string) => { stderr = (stderr + chunk).slice(0, 64 * 1024); });
     child.stdout.on("data", (chunk: string) => {
       if (failure || responseTruncated) return;
-      backendBytes += Buffer.byteLength(chunk);
       pending += chunk;
       try {
         let newline = pending.indexOf("\n");
@@ -122,12 +126,10 @@ export async function fileSearch(target: TargetRuntime, input: FileSearchInput) 
           }
           newline = pending.indexOf("\n");
         }
-        // Bound a single unfinished JSON record as well as the returned records.
         if (Buffer.byteLength(pending) > input.max_bytes + 64 * 1024) {
-          stop(new HostSpanError("SEARCH_SCOPE_TOO_BROAD", "Search output record exceeded max_bytes; narrow the scope.", false, {
-            resource: "file_search", reason: "output_limit", limit_bytes: input.max_bytes,
-            backend_limit_bytes: input.max_bytes + 64 * 1024,
-          }));
+          consume(pending);
+          clearTimeout(timer);
+          stop();
         }
       } catch (error) { stop(error); }
     });
@@ -159,13 +161,11 @@ export async function fileSearch(target: TargetRuntime, input: FileSearchInput) 
       } catch (error) { rejectSearch(error); }
     });
   });
-  const backendOutputTruncated = backendBytes > input.max_bytes;
-  if (!truncationReason && backendOutputTruncated) truncationReason = "backend_output";
   return {
     matches: records,
     match_count: matches,
     returned_record_bytes: returnedBytes,
-    truncated: responseTruncated || backendOutputTruncated,
+    truncated: responseTruncated,
     ...(truncationReason ? { truncation_reason: truncationReason } : {}),
     backend: "ripgrep",
     binary: "ignored",

@@ -50,7 +50,7 @@ Before restarting, review the tray warning. Active ordinary native processes are
 
 HostSpan requires ripgrep for search. `hostspan doctor` reports whether `rg` is available. If missing, the server remains available in degraded mode but `file_search` returns `SEARCH_BACKEND_UNAVAILABLE`.
 
-Broad/match-all searches are intentionally rejected or capped with `SEARCH_SCOPE_TOO_BROAD`.
+Broad and match-all searches are supported. When a result budget is reached, search returns the collected records with `truncated: true` and a `truncation_reason`. An oversized ripgrep record also returns the collected results with `backend_output` truncation instead of discarding them. Backend metadata alone does not make a complete result truncated.
 
 ## `STALE_CONTENT`
 
