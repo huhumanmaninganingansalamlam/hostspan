@@ -1,6 +1,13 @@
 # HostSpan release notes
 
-## 0.8.0 candidate
+## 0.8.1 release
+
+- Preserve collected search results when a single ripgrep JSON record exceeds the bounded reader buffer; report partial results with `truncation_reason: backend_output` instead of failing the entire search. Apply the same record boundary regardless of pipe chunking.
+- Determine search truncation from omitted results, not total backend metadata bytes. Complete empty searches remain complete even with a small response budget.
+- Keep ordinary branch CI free of CLI/desktop packaging; PRs check native packaged runtimes and release workflows build installers.
+- Public MCP `hostspan-v3.2` 10-tool contract/hash, configuration and database schemas are unchanged.
+
+## 0.8.0 release
 
 - Share native/PTY admission and durable launch bookkeeping; derive reserved capture capacity from active process records instead of maintaining a second in-memory ledger. PTY response-observation failures no longer mark a live process as failed, so identical retries and cancellation retain the same durable execution.
 
