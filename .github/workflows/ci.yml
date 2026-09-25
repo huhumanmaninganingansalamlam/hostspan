@@ -2,6 +2,7 @@ name: ci
 
 on:
   push:
+    branches: ["**"]
   pull_request:
 
 permissions:
@@ -49,38 +50,13 @@ jobs:
       - name: Audit all dependencies
         run: pnpm audit:all
       - name: Smoke installed CLI package
+        if: github.event_name == 'pull_request'
         run: pnpm package:smoke
       - name: Build unpacked desktop runtime
+        if: github.event_name == 'pull_request'
         run: pnpm desktop:dir
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
       - name: Smoke unpacked desktop runtime
+        if: github.event_name == 'pull_request'
         run: pnpm desktop:smoke
-
-  desktop-package-linux:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    needs: core
-    steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/setup@v2
-        with:
-          version: 12.4.2
-          runtime: node@22
-          cache: true
-          install: false
-      - name: Install packaging dependencies
-        run: sudo apt-get update && sudo apt-get install -y fakeroot dpkg
-      - name: Install
-        run: pnpm install --frozen-lockfile
-      - name: Package Linux desktop app
-        run: pnpm desktop:make
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      - name: Smoke packaged CLI and native SQLite
-        run: pnpm desktop:smoke
-      - name: Verify artifacts
-        run: |
-          test -n "$(find out -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
-          test -n "$(find out -maxdepth 1 -type f -name '*.deb' -print -quit)"
-          find out -maxdepth 1 -type f -printf '%f\n' | sort
