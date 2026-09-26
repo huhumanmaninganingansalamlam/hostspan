@@ -83,7 +83,7 @@
     "@electron/asar": "3.4.1",
     "@types/better-sqlite3": "7.6.13",
     "@types/node": "24.7.2",
-    "electron": "^44.4.1",
+    "electron": "^44.4.4",
     "electron-builder": "^26.15.3",
     "fast-check": "4.3.0",
     "png2icons": "^2.0.1",
