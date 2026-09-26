@@ -85,7 +85,7 @@
     "@types/node": "24.7.2",
     "electron": "^44.4.1",
     "electron-builder": "^26.15.3",
-    "fast-check": "4.3.0",
+    "fast-check": "4.10.2",
     "png2icons": "^2.0.1",
     "sharp": "^0.35.4",
     "typescript": "5.9.3",
