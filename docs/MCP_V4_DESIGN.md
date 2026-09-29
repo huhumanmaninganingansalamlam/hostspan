@@ -1,6 +1,6 @@
 # HostSpan MCP v4 contract design
 
-Status: design target for the next breaking MCP contract. This document does not change the active `hostspan-v3.2` contract.
+Status: design target for the next breaking MCP contract. This document does not change the active `hostspan-v3.3` contract.
 
 ## Goals
 
@@ -308,7 +308,7 @@ A future v4 implementation should be one deliberate breaking-contract change:
 6. Add model-facing tool-selection regression fixtures.
 7. Run the complete existing safety/recovery/idempotency suite plus the new v4 contract suite before switching any default client guidance.
 
-Do not silently migrate an existing `hostspan-v3.2` endpoint to these schemas. A release that serves v4 must identify the new contract explicitly and document the compatibility boundary.
+Do not silently migrate an existing `hostspan-v3.3` endpoint to these schemas. A release that serves v4 must identify the new contract explicitly and document the compatibility boundary.
 
 ## Acceptance criteria
 

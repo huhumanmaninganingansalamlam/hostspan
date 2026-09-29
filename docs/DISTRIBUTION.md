@@ -44,6 +44,8 @@ On Linux, Windows, and macOS, the packaged Electron executable can also run the 
 
 On first launch, the desktop app creates the normal HostSpan default config when it does not already exist. Existing config is never overwritten. This makes a fresh installer immediately able to render its tray/dashboard and lets the user add a workspace without first running `hostspan init` in a terminal.
 
+The tray’s **Start at login** option registers the app for the current user and starts the configured daemon once when launched at login. Opening the tray manually does not restart a stopped daemon, and refreshing status never restarts it. Linux uses an installed systemd user service when available. Explicit Linux Ozone platform selection is preserved in the login entry; no platform is forced globally.
+
 After creating an unpacked or distributable package, verify the package rather than only the source tree:
 
 ```bash

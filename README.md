@@ -8,7 +8,7 @@
 [![Desktop release](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/release.yml/badge.svg)](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/release.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
-HostSpan is a terminal-first MCP execution gateway for ChatGPT Web Developer Mode. It exposes a fixed `hostspan-v3.2` toolset for approved local targets and keeps file/process side effects verifiable and recoverable across reconnects.
+HostSpan is a terminal-first MCP execution gateway for ChatGPT Web Developer Mode. It exposes a fixed `hostspan-v3.3` toolset for approved local targets and keeps file/process side effects verifiable and recoverable across reconnects.
 
 The HostSpan mark represents an MCP gateway spanning two local endpoints through a central protocol-routing hub. The tray uses a separate simplified bridge/hub glyph so it stays legible at 16–32 px instead of shrinking the full application artwork.
 
@@ -16,7 +16,7 @@ HostSpan has native Linux x64, Windows x64, macOS x64, and macOS arm64 core path
 
 ## Current scope
 
-The MCP tool registry is immutable for `hostspan-v3.2`:
+The MCP tool registry is immutable for `hostspan-v3.3`:
 
 `system_status`, `target_list`, `file_list`, `file_read`, `file_search`, `file_patch`, `process_start`, `process_poll`, `process_write`, `process_cancel`.
 
@@ -282,7 +282,7 @@ hostspan doctor
 hostspan smoke --target local-app
 ```
 
-The contract suite pins the approved hash for the fixed 10-tool `hostspan-v3.2` registry. Acceptance coverage exercises the MCP request/response flow; process coverage exercises PTY input, resize, polling, cancellation, and recovery. Windows also checks Job Object process-tree control and native path security.
+The contract suite pins the approved hash for the fixed 10-tool `hostspan-v3.3` registry. Acceptance coverage exercises the MCP request/response flow; process coverage exercises PTY input, resize, polling, cancellation, and recovery. Windows also checks Job Object process-tree control and native path security.
 
 ## Security and support
 

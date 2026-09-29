@@ -39,13 +39,21 @@ export function desktopLaunchSpec(input: {
   mainPath: string;
   appImage?: string;
   linuxDevelopmentExecPath?: string;
+  login?: boolean;
+  ozonePlatform?: string;
 }): DesktopLaunchSpec {
+  const args = input.login && input.platform !== "darwin" ? ["--hostspan-login"] : [];
+  if (input.platform === "linux" && input.ozonePlatform) args.unshift(`--ozone-platform=${input.ozonePlatform}`);
   const appImage = input.appImage?.trim();
-  if (input.platform === "linux" && input.isPackaged && appImage) return { path: appImage, args: [] };
-  if (input.isPackaged) return { path: input.execPath, args: [] };
+  if (input.platform === "linux" && input.isPackaged && appImage) return { path: appImage, args };
+  if (input.isPackaged) return { path: input.execPath, args };
   const execPath =
     input.platform === "linux" && input.linuxDevelopmentExecPath ? input.linuxDevelopmentExecPath : input.execPath;
-  return { path: execPath, args: ["--no-sandbox", input.mainPath] };
+  return { path: execPath, args: ["--no-sandbox", input.mainPath, ...args] };
+}
+
+export function isDesktopLoginLaunch(platform: NodeJS.Platform, argv: string[], wasOpenedAtLogin: boolean): boolean {
+  return platform === "darwin" ? wasOpenedAtLogin : argv.includes("--hostspan-login");
 }
 
 function desktopExecQuote(value: string): string {

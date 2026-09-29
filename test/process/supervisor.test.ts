@@ -1,11 +1,12 @@
 import { readFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { v7 as uuidv7 } from "uuid";
 import type { HostSpanConfig } from "../../src/config/schema.js";
 import { createRuntime } from "../../src/runtime/create-runtime.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
+import type { InteractiveSessionManager } from "../../src/processes/interactive-session.js";
 import { ProcessSupervisor } from "../../src/processes/supervisor.js";
 import { processGroupAlive } from "../../src/processes/recovery.js";
 import { cleanupExpiredProcessSpools } from "../../src/processes/output-spool.js";
@@ -41,7 +42,7 @@ afterEach(async () => {
   }
 });
 
-function fixture(maxTotalSpoolBytes = 64 * 1024 * 1024) {
+function fixture(maxTotalSpoolBytes = 64 * 1024 * 1024, terminal?: InteractiveSessionManager) {
   const root = mkdtempSync(join(tmpdir(), "hostspan-process-"));
   roots.push(root);
   const targetRoot = join(root, "target");
@@ -62,7 +63,7 @@ function fixture(maxTotalSpoolBytes = 64 * 1024 * 1024) {
         label: "Test",
         provider: "local",
         root: targetRoot,
-        capabilities: ["read", "write", "exec"],
+        capabilities: ["read", "write", "exec", ...(terminal ? ["terminal" as const] : [])],
         exec_profile: "native-test",
         deny_globs: [],
         ignore_globs: [],
@@ -86,9 +87,10 @@ function fixture(maxTotalSpoolBytes = 64 * 1024 * 1024) {
     policy: new PolicyEvaluator(config),
     operations,
     processes,
+    ...(terminal ? { terminal } : {}),
   });
   supervisors.push(supervisor);
-  return { supervisor, processes, db, config, targetRoot };
+  return { supervisor, processes, operations, db, config, targetRoot };
 }
 
 function startInput(overrides: Partial<Parameters<ProcessSupervisor["start"]>[0]> = {}) {
@@ -127,6 +129,71 @@ async function pollUntilTerminal(
 }
 
 describe("process supervisor", () => {
+  it("replays a proven pre-dispatch write failure without delivering input", async () => {
+    const failure = new Error("output unavailable before dispatch");
+    const terminal = { outputBytes: vi.fn(() => { throw failure; }), write: vi.fn() } as unknown as InteractiveSessionManager;
+    const { supervisor, processes, operations } = fixture(undefined, terminal);
+    processes.create({ process_id: "preflight", idempotency_key: uuidv7(), target_id: "test", argv_digest: "sha256:test", cwd_relative: ".", backend: "pty", backend_ref: "session" });
+    processes.markRunning("preflight", null, null);
+    const input = { process_id: "preflight", idempotency_key: uuidv7(), chars: "once", control_keys: [], stdout_cursor: 0, max_bytes: 1024, wait_ms: 0 };
+    await expect(supervisor.write(input)).rejects.toThrow(failure.message);
+    expect(operations.resolve(input.idempotency_key, "process_write", input, "test")).toMatchObject({ kind: "replay", state: "failed", result: { input_delivered: false } });
+    await expect(supervisor.write(input)).rejects.toThrow(failure.message);
+    expect(terminal.write).not.toHaveBeenCalled();
+  });
+
+  it("retains confirmed cancellation when final output observation fails", async () => {
+    const terminal = {
+      close: vi.fn(async () => {}),
+      waitForExitStatus: vi.fn(async () => ({ exists: true, dead: true, exit_code: 0, signal: null })),
+      waitForOutputDrain: vi.fn(async () => { throw new Error("output unavailable after termination"); }),
+      humanAttachCommand: () => "attach",
+    } as unknown as InteractiveSessionManager;
+    const { supervisor, processes, operations } = fixture(undefined, terminal);
+    processes.create({ process_id: "cancelled", idempotency_key: uuidv7(), target_id: "test", argv_digest: "sha256:test", cwd_relative: ".", backend: "pty", backend_ref: "session" });
+    processes.markRunning("cancelled", null, null);
+    const input = { process_id: "cancelled", idempotency_key: uuidv7(), grace_ms: 0 };
+    await expect(supervisor.cancel(input)).rejects.toThrow("output unavailable after termination");
+    expect(processes.get("cancelled")?.state).toBe("cancelled");
+    expect(operations.getState(input.idempotency_key)).toBe("succeeded");
+    await expect(supervisor.cancel(input)).resolves.toMatchObject({ state: "cancelled", process_id: "cancelled" });
+    expect(terminal.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not resend cancellation with an unconfirmed outcome", async () => {
+    const terminal = { close: vi.fn(async () => { throw new Error("termination ACK lost"); }) } as unknown as InteractiveSessionManager;
+    const { supervisor, processes, operations } = fixture(undefined, terminal);
+    processes.create({ process_id: "uncertain", idempotency_key: uuidv7(), target_id: "test", argv_digest: "sha256:test", cwd_relative: ".", backend: "pty", backend_ref: "session" });
+    processes.markRunning("uncertain", null, null);
+    const input = { process_id: "uncertain", idempotency_key: uuidv7(), grace_ms: 0 };
+    await expect(supervisor.cancel(input)).rejects.toThrow("termination ACK lost");
+    expect(operations.getState(input.idempotency_key)).toBe("unknown");
+    await expect(supervisor.cancel(input)).resolves.toMatchObject({ state: "unknown" });
+    expect(terminal.close).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["stdout", "stderr"] as const)("returns unread native %s immediately", async (stream) => {
+    const { supervisor, processes } = fixture();
+    const started = await supervisor.start(startInput({ argv: ["node", "-e", `process.${stream}.write('ready');setInterval(()=>{},1000)`], wait_ms: 0 }), "req_ready_output");
+    const processId = String(started.process_id);
+    await expect.poll(() => processes.get(processId)?.[`${stream}_bytes`]).toBe(5);
+    const before = Date.now();
+    const result = await supervisor.poll({ process_id: processId, stdout_cursor: 0, stderr_cursor: 0, max_bytes: 1024, wait_ms: 2_000 });
+    expect(result[stream]).toBe("ready");
+    expect(Date.now() - before).toBeLessThan(1_000);
+  });
+
+  it("waits when native output contains only an incomplete UTF-8 character", async () => {
+    const { supervisor, processes } = fixture();
+    const started = await supervisor.start(startInput({ argv: ["node", "-e", "process.stdout.write(Buffer.from([0xe2]));setInterval(()=>{},1000)"], wait_ms: 0 }), "req_partial_output");
+    const processId = String(started.process_id);
+    await expect.poll(() => processes.get(processId)?.stdout_bytes).toBe(1);
+    const before = Date.now();
+    const result = await supervisor.poll({ process_id: processId, stdout_cursor: 0, stderr_cursor: 0, max_bytes: 1024, wait_ms: 150 });
+    expect(result.next_stdout_cursor).toBe(0);
+    expect(Date.now() - before).toBeGreaterThanOrEqual(125);
+  });
+
   it("recovers native crash-boundary records after activation with PTY disabled", async () => {
     const { config, processes, db } = fixture();
     const configPath = join(config.server.data_dir, "config.yaml");
@@ -371,7 +438,7 @@ describe("process supervisor", () => {
 
     const capped = await supervisor.start(
       startInput({
-        argv: ["node", "-e", "process.stdout.write('x'.repeat(10000),()=>setTimeout(()=>require('node:fs').writeFileSync('done','ok'),100))"],
+        argv: ["node", "-e", "process.stdout.write('0123456789abcdef'.repeat(625),()=>setTimeout(()=>require('node:fs').writeFileSync('done','ok'),100))"],
         deadline_ms: undefined,
         wait_ms: 1_000,
         max_output_bytes: 128,
@@ -388,6 +455,8 @@ describe("process supervisor", () => {
       used_bytes: 128,
       remaining_bytes: 0,
     });
-    expect(Buffer.byteLength(String(capped.stdout))).toBeLessThanOrEqual(16);
+    expect(capped.stdout).toBe("01234567");
+    expect(capped.stdout_dropped_bytes).toBe(9_872);
+    expect(capped.stdout_earliest_cursor).toBe(9_872);
   });
 });

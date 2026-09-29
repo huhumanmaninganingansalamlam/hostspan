@@ -1,6 +1,6 @@
 {
   "name": "hostspan",
-  "version": "0.8.2",
+  "version": "0.9.0",
   "productName": "HostSpan",
   "desktopName": "HostSpan",
   "description": "Terminal-first MCP execution gateway for approved local targets",
@@ -56,7 +56,7 @@
     "test": "vitest run",
     "test:contract": "vitest run test/contract test/acceptance",
     "test:path": "vitest run test/files/path-security.test.ts",
-    "check:workers": "node --check src/processes/windows-command.mjs && node --check src/processes/pty-worker.mjs && node --check src/processes/windows-job-worker.mjs",
+    "check:workers": "node --check src/processes/output-spool-store.mjs && node --check src/processes/windows-command.mjs && node --check src/processes/pty-worker.mjs && node --check src/processes/windows-job-worker.mjs",
     "doctor": "node dist/src/cli/index.js doctor",
     "smoke": "node dist/src/cli/index.js smoke",
     "perf:baseline": "pnpm build && node scripts/performance-baseline.mjs",

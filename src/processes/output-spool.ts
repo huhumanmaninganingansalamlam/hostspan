@@ -1,16 +1,12 @@
-import {
-  closeSync,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
 import { HostSpanError } from "../errors.js";
+import { OutputSpoolStore } from "./output-spool-store.mjs";
+
+export {
+  cleanupExpiredProcessSpools,
+  processOutputActivity,
+  removeProcessSpool,
+  scanProcessSpools,
+} from "./output-spool-store.mjs";
 
 export type OutputStream = "stdout" | "stderr";
 
@@ -19,14 +15,10 @@ export interface SpoolRead {
   next_cursor: number;
   earliest_cursor: number;
   bytes_returned: number;
-}
-
-function streamPath(dataDir: string, processId: string, stream: OutputStream): string {
-  return join(dataDir, "spools", "processes", processId, `${stream}.bin`);
+  dropped_bytes: number;
 }
 
 function stripAnsi(value: string): string {
-  // Keep model previews deterministic without embedding control characters in source regexes.
   let output = "";
   for (let index = 0; index < value.length; index += 1) {
     if (value.charCodeAt(index) !== 27) {
@@ -56,10 +48,9 @@ function utf8SafePrefixLength(buffer: Buffer): number {
       new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, index));
       return index;
     } catch {
-      // A valid UTF-8 code point is at most four bytes; keep an incomplete tail for the next poll.
+      // Keep an incomplete UTF-8 tail for the next poll.
     }
   }
-  // Non-UTF-8 process output is still observable. Decode with replacement rather than stalling forever.
   return buffer.length;
 }
 
@@ -72,172 +63,68 @@ function utf8SequenceLength(firstByte: number | undefined): number {
 }
 
 export class OutputSpool {
-  private totalBytes = 0;
-  private directoryReady = false;
+  private readonly store: InstanceType<typeof OutputSpoolStore>;
+  private writerReady = false;
 
-  constructor(
-    private readonly dataDir: string,
-    readonly processId: string,
-    readonly maxOutputBytes: number,
-  ) {
-    for (const stream of ["stdout", "stderr"] as const) {
-      const path = streamPath(dataDir, processId, stream);
-      if (existsSync(path)) this.totalBytes += statSync(path).size;
-    }
+  constructor(dataDir: string, readonly processId: string, readonly maxOutputBytes: number) {
+    this.store = new OutputSpoolStore(dataDir, processId, maxOutputBytes);
+  }
+
+  get retainedBytes(): number {
+    return this.store.retainedBytes;
+  }
+
+  highWater(stream: OutputStream): number {
+    return this.store.highWater(stream);
   }
 
   append(stream: OutputStream, chunk: Buffer): number {
-    const remaining = Math.max(0, this.maxOutputBytes - this.totalBytes);
-    const writtenBuffer = chunk.subarray(0, remaining);
-    const path = streamPath(this.dataDir, this.processId, stream);
-    if (writtenBuffer.length > 0) {
-      if (!this.directoryReady) {
-        mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-        this.directoryReady = true;
-      }
-      const fd = openSync(path, "a", 0o600);
-      try {
-        writeSync(fd, writtenBuffer);
-      } finally {
-        closeSync(fd);
-      }
-      this.totalBytes += writtenBuffer.length;
+    if (!this.writerReady) {
+      this.store.recover();
+      this.writerReady = true;
     }
-    return writtenBuffer.length;
+    return this.store.append(stream, chunk);
   }
 
   read(stream: OutputStream, cursor: number, maxBytes: number): SpoolRead {
-    const path = streamPath(this.dataDir, this.processId, stream);
-    if (!existsSync(path)) {
-      if (cursor > 0) {
-        throw new HostSpanError("CURSOR_EXPIRED", "Requested output cursor is no longer retained.", false, {
-          stream,
-          earliest_cursor: 0,
-        });
-      }
-      return { text: "", next_cursor: 0, earliest_cursor: 0, bytes_returned: 0 };
-    }
-    const size = statSync(path).size;
-    if (cursor > size) {
-      throw new HostSpanError("CURSOR_EXPIRED", "Requested output cursor is beyond the retained output.", false, {
+    const result = this.store.read(stream, cursor, maxBytes);
+    if (result.error) {
+      throw new HostSpanError("CURSOR_EXPIRED", "Requested process output cursor is outside the available output range.", false, {
         stream,
-        earliest_cursor: 0,
-        latest_cursor: size,
+        earliest_cursor: result.earliestCursor,
+        latest_cursor: result.latestCursor,
       });
     }
-    // Read up to three look-ahead bytes so a cursor cannot stall forever when
-    // maxBytes lands inside a four-byte UTF-8 code point.
-    const count = Math.min(maxBytes + 3, size - cursor);
-    if (count <= 0) return { text: "", next_cursor: cursor, earliest_cursor: 0, bytes_returned: 0 };
-    const buffer = Buffer.allocUnsafe(count);
-    const fd = openSync(path, "r");
-    let bytes = 0;
-    try {
-      bytes = readSync(fd, buffer, 0, count, cursor);
-    } finally {
-      closeSync(fd);
+    if (!result.buffer || result.droppedBytes === undefined || result.earliestCursor === undefined || result.cursorStart === undefined) {
+      throw new Error("Process output spool returned an invalid read result.");
     }
-    const slice = buffer.subarray(0, bytes);
-    const requested = slice.subarray(0, Math.min(maxBytes, slice.length));
+    const raw: Buffer = result.buffer;
+    let leadingBytes = 0;
+    if (result.droppedBytes > 0) {
+      while (leadingBytes < Math.min(3, raw.length) && ((raw[leadingBytes] ?? 0) & 0xc0) === 0x80) leadingBytes += 1;
+    }
+    const buffer = raw.subarray(leadingBytes);
+    const requested = buffer.subarray(0, Math.min(maxBytes, buffer.length));
     let safeLength = utf8SafePrefixLength(requested);
-    if (safeLength === 0 && slice.length > 0) {
-      const sequenceLength = utf8SequenceLength(slice[0]);
-      if (sequenceLength <= slice.length) {
-        const firstCodePoint = slice.subarray(0, sequenceLength);
+    if (safeLength === 0 && buffer.length > 0) {
+      const sequenceLength = utf8SequenceLength(buffer[0]);
+      if (sequenceLength <= buffer.length) {
+        const firstCodePoint = buffer.subarray(0, sequenceLength);
         try {
           new TextDecoder("utf-8", { fatal: true }).decode(firstCodePoint);
           safeLength = sequenceLength;
         } catch {
-          safeLength = Math.min(1, slice.length);
+          safeLength = Math.min(1, buffer.length);
         }
       }
     }
-    const safe = slice.subarray(0, safeLength);
+    const safe = buffer.subarray(0, safeLength);
     return {
       text: stripAnsi(new TextDecoder("utf-8", { fatal: false }).decode(safe)),
-      next_cursor: cursor + safeLength,
-      earliest_cursor: 0,
+      next_cursor: result.cursorStart + leadingBytes + safeLength,
+      earliest_cursor: result.earliestCursor,
       bytes_returned: safeLength,
+      dropped_bytes: result.droppedBytes + leadingBytes,
     };
   }
-}
-
-export function removeProcessSpool(dataDir: string, processId: string): void {
-  rmSync(join(dataDir, "spools", "processes", processId), { recursive: true, force: true });
-}
-
-export function scanProcessSpools(dataDir: string): { total: number; sizes: Map<string, number> } {
-  const root = join(dataDir, "spools", "processes");
-  const sizes = new Map<string, number>();
-  if (!existsSync(root)) return { total: 0, sizes };
-  let total = 0;
-  for (const processId of readdirSync(root)) {
-    const dir = join(root, processId);
-    if (!statSync(dir).isDirectory()) continue;
-    let bytes = 0;
-    for (const stream of ["stdout.bin", "stderr.bin"]) {
-      const path = join(dir, stream);
-      if (existsSync(path)) bytes += statSync(path).size;
-    }
-    total += bytes;
-    sizes.set(processId, bytes);
-  }
-  return { total, sizes };
-}
-
-export function processOutputActivity(
-  dataDir: string,
-  processId: string,
-): { output_bytes: number; last_output_at: string | null } {
-  const dir = join(dataDir, "spools", "processes", processId);
-  if (!existsSync(dir) || !statSync(dir).isDirectory()) return { output_bytes: 0, last_output_at: null };
-  let total = 0;
-  let latestMtimeMs = 0;
-  for (const stream of ["stdout.bin", "stderr.bin"]) {
-    const path = join(dir, stream);
-    if (!existsSync(path)) continue;
-    const stat = statSync(path);
-    total += stat.size;
-    if (stat.size > 0) latestMtimeMs = Math.max(latestMtimeMs, stat.mtimeMs);
-  }
-  return {
-    output_bytes: total,
-    last_output_at: latestMtimeMs > 0 ? new Date(latestMtimeMs).toISOString() : null,
-  };
-}
-
-export function cleanupExpiredProcessSpools(
-  dataDir: string,
-  expiredProcessIds: string[],
-  maxTotalBytes: number,
-  quotaCandidates: string[] = [],
-): { removed: string[]; evicted: string[]; total_bytes: number; over_quota: boolean } {
-  const root = join(dataDir, "spools", "processes");
-  const removed = new Set<string>();
-  const evicted: string[] = [];
-  const removeArtifacts = (processId: string) => {
-    const path = join(root, processId);
-    if (existsSync(path)) rmSync(path, { recursive: true, force: true });
-    rmSync(join(dataDir, "sessions", processId), { recursive: true, force: true });
-  };
-  for (const processId of expiredProcessIds) {
-    const path = join(root, processId);
-    const sessionPath = join(dataDir, "sessions", processId);
-    if (!existsSync(path) && !existsSync(sessionPath)) continue;
-    removeArtifacts(processId);
-    removed.add(processId);
-  }
-  const spoolUsage = scanProcessSpools(dataDir);
-  let total = spoolUsage.total;
-  for (const processId of quotaCandidates) {
-    if (total <= maxTotalBytes) break;
-    if (removed.has(processId)) continue;
-    const bytes = spoolUsage.sizes.get(processId) ?? 0;
-    if (bytes <= 0) continue;
-    removeArtifacts(processId);
-    spoolUsage.sizes.delete(processId);
-    total = Math.max(0, total - bytes);
-    evicted.push(processId);
-  }
-  return { removed: [...removed], evicted, total_bytes: total, over_quota: total > maxTotalBytes };
 }

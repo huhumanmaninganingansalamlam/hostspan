@@ -359,13 +359,20 @@ describe("durable interactive PTY process backend", () => {
     expect(String(started.human_attach_command)).toContain(`--config '${configPath}'`);
     expect(String(started.human_attach_read_only_command)).toContain(`--config '${configPath}'`);
     expect(String(started.human_attach_read_only_command)).toContain("--read-only");
-    const startedBudget = started.output_budget as Record<string, unknown>;
+    let ready = started;
+    await expect.poll(async () => {
+      if (!String(ready.stdout).includes("READY")) {
+        ready = await supervisor.poll({ process_id: String(started.process_id), stdout_cursor: 0, stderr_cursor: 0, wait_ms: 100, max_bytes: 64 * 1024 });
+      }
+      return String(ready.stdout).includes("READY");
+    }, { timeout: 5_000 }).toBe(true);
+    const startedBudget = ready.output_budget as Record<string, unknown>;
     expect(startedBudget.scope).toBe("retained_output");
     expect(startedBudget.limit_bytes).toBe(1024 * 1024);
     expect(Number(startedBudget.used_bytes)).toBeGreaterThan(0);
     expect(startedBudget.remaining_bytes).toBe(1024 * 1024 - Number(startedBudget.used_bytes));
 
-    const cursor = Number(started.next_stdout_cursor ?? 0);
+    const cursor = Number(ready.next_stdout_cursor ?? 0);
     const writeInput: ProcessWriteToolInput = {
       idempotency_key: uuidv7(),
       process_id: String(started.process_id),
@@ -405,10 +412,70 @@ describe("durable interactive PTY process backend", () => {
     db.close();
   });
 
+  it("does not replay acknowledged PTY input when output observation fails", async () => {
+    const { root, supervisor, terminal } = fixture();
+    const countFile = join(root, "target", "input-count");
+    const script = [
+      "const fs=require('node:fs');",
+      "const readline=require('node:readline');",
+      "let count=0;",
+      "const rl=readline.createInterface({input:process.stdin});",
+      `rl.on('line',()=>{count++;fs.writeFileSync(${JSON.stringify(countFile)},String(count));process.stdout.write('COUNT:'+count+'\\n')});`,
+      "setTimeout(()=>{},60000);",
+    ].join("");
+    const started = await supervisor.start(ttyInput(script), "req_pty_write_observation_start");
+    const session = track(terminal, started);
+    const waitForActivity = terminal.waitForActivity.bind(terminal);
+    let failObservation = false;
+    vi.spyOn(terminal, "waitForActivity").mockImplementation(async (...args) => {
+      if (failObservation) {
+        failObservation = false;
+        throw new Error("PTY output observation failed");
+      }
+      return waitForActivity(...args);
+    });
+    const input: ProcessWriteToolInput = {
+      idempotency_key: uuidv7(),
+      process_id: String(started.process_id),
+      chars: "once",
+      control_keys: ["Enter"],
+      stdout_cursor: Number(started.next_stdout_cursor ?? 0),
+      wait_ms: 500,
+      max_bytes: 256,
+    };
+    failObservation = true;
+    await expect(supervisor.write(input)).rejects.toMatchObject({
+      details: { input_delivered: true, phase: "output_observation" },
+    });
+    await expect.poll(() => (existsSync(countFile) ? readFileSync(countFile, "utf8") : undefined)).toBe("1");
+
+    const retried = await supervisor.write(input);
+    expect(retried.input_delivered).toBe(true);
+    await sleep(100);
+    expect(readFileSync(countFile, "utf8")).toBe("1");
+
+    let current = retried;
+    let transcript = String(retried.stdout ?? "");
+    let cursor = Number(retried.next_stdout_cursor ?? input.stdout_cursor);
+    for (let attempt = 0; attempt < 8 && !transcript.includes("COUNT:1"); attempt += 1) {
+      current = await supervisor.poll({
+        process_id: input.process_id,
+        stdout_cursor: cursor,
+        stderr_cursor: 0,
+        wait_ms: 250,
+        max_bytes: input.max_bytes,
+      });
+      transcript += String(current.stdout ?? "");
+      cursor = Number(current.next_stdout_cursor ?? cursor);
+    }
+    expect(transcript).toContain("COUNT:1");
+    expect(terminal.inspectSync(session)).toMatchObject({ exists: true, dead: false });
+  });
+
   it("keeps a PTY running after response wait and capture fill without an implicit deadline", async () => {
     const { supervisor, terminal, root } = fixture();
     const started = await supervisor.start({
-      ...ttyInput("process.stdout.write('x'.repeat(10000));process.stdin.once('data',()=>{require('node:fs').writeFileSync('done','ok');console.log('DONE');process.exit(0)})"),
+      ...ttyInput("process.stdout.write('0123456789abcdef'.repeat(625));process.stdin.once('data',()=>{require('node:fs').writeFileSync('done','ok');console.log('DONE');process.exit(0)})"),
       deadline_ms: undefined,
       max_output_bytes: 128,
       max_bytes: 16,
@@ -416,20 +483,33 @@ describe("durable interactive PTY process backend", () => {
     track(terminal, started);
     expect(started.state).toBe("running");
     expect(started.deadline_at).toBeNull();
-    expect(Buffer.byteLength(String(started.stdout))).toBeLessThanOrEqual(16);
+    let current = started;
     await expect.poll(async () => {
-      const current = await supervisor.poll({ process_id: String(started.process_id), stdout_cursor: 0, stderr_cursor: 0, wait_ms: 100, max_bytes: 16 });
+      current = await supervisor.poll({ process_id: String(started.process_id), stdout_cursor: 0, stderr_cursor: 0, wait_ms: 100, max_bytes: 128 });
       expect(current.state).toBe("running");
-      return current.output_budget;
-    }).toMatchObject({ used_bytes: 128, remaining_bytes: 0 });
+      return Number(current.next_stdout_cursor);
+    }).toBe(10_000);
+    expect(("0123456789abcdef".repeat(625)).endsWith(String(current.stdout))).toBe(true);
+    expect(current.stdout_dropped_bytes).toBeGreaterThan(0);
+    expect(current.stdout_earliest_cursor).toBeGreaterThan(0);
+    expect(Number((current.output_budget as Record<string, unknown>).used_bytes)).toBeLessThanOrEqual(128);
     const observer = await openRawAttachment(join(root, "state"), String(started.terminal_session), true);
-    await supervisor.write({
+    const cursor = Number(current.next_stdout_cursor ?? 0);
+    current = await supervisor.write({
       idempotency_key: uuidv7(), process_id: String(started.process_id), chars: "go",
-      control_keys: ["Enter"], stdout_cursor: 0, wait_ms: 1_000, max_bytes: 16,
+      control_keys: ["Enter"], stdout_cursor: cursor, wait_ms: 1_000, max_bytes: 16,
     });
-    await expect.poll(async () => (await supervisor.poll({
-      process_id: String(started.process_id), stdout_cursor: 0, stderr_cursor: 0, wait_ms: 100, max_bytes: 16,
-    })).state).toBe("succeeded");
+    let transcript = String(current.stdout ?? "");
+    let nextCursor = Number(current.next_stdout_cursor ?? cursor);
+    for (let attempt = 0; attempt < 8 && (current.state === "running" || !transcript.includes("DONE")); attempt += 1) {
+      current = await supervisor.poll({
+        process_id: String(started.process_id), stdout_cursor: nextCursor, stderr_cursor: 0, wait_ms: 250, max_bytes: 16,
+      });
+      transcript += String(current.stdout ?? "");
+      nextCursor = Number(current.next_stdout_cursor ?? nextCursor);
+    }
+    expect(current.state).toBe("succeeded");
+    expect(transcript).toContain("DONE");
     expect(readFileSync(join(root, "target", "done"), "utf8")).toBe("ok");
     expect(observer.output()).toContain("DONE");
   });
@@ -486,9 +566,24 @@ describe("durable interactive PTY process backend", () => {
 
   it("keeps a live PTY process recoverable across HostSpan daemon restart", async () => {
     const first = fixture();
-    const started = await first.supervisor.start(ttyInput("console.log('LIVE');setTimeout(()=>{},60000)"), "req_pty_persist_start");
+    const started = await first.supervisor.start({
+      ...ttyInput("process.stdout.write('0123456789abcdef'.repeat(256));process.stdin.once('data',()=>process.stdout.write('RECOVERED\\n'))"),
+      max_output_bytes: 128,
+      max_bytes: 128,
+    }, "req_pty_persist_start");
     const session = track(first.terminal, started);
     expect(started.state).toBe("running");
+    let retained = started;
+    await expect.poll(async () => {
+      retained = await first.supervisor.poll({
+        process_id: String(started.process_id), stdout_cursor: 0, stderr_cursor: 0, wait_ms: 100, max_bytes: 128,
+      });
+      return Number(retained.next_stdout_cursor);
+    }).toBe(4_096);
+    expect(Number((retained.output_budget as Record<string, unknown>).used_bytes)).toBeGreaterThan(0);
+    expect(Number((retained.output_budget as Record<string, unknown>).used_bytes)).toBeLessThanOrEqual(128);
+    expect(Number(retained.stdout_dropped_bytes)).toBeGreaterThan(0);
+    expect(("0123456789abcdef".repeat(256)).endsWith(String(retained.stdout))).toBe(true);
     const processId = String(started.process_id);
     first.db.close();
 
@@ -507,8 +602,21 @@ describe("durable interactive PTY process backend", () => {
       processes,
       terminal: first.terminal,
     });
-    const polled = await supervisor.poll({ process_id: processId, stdout_cursor: 0, stderr_cursor: 0, wait_ms: 0, max_bytes: 64 * 1024 });
+    const cursor = Number(retained.next_stdout_cursor ?? 0);
+    const writeInput: ProcessWriteToolInput = {
+      idempotency_key: uuidv7(), process_id: processId, chars: "resume", control_keys: ["Enter"],
+      stdout_cursor: cursor, wait_ms: 500, max_bytes: 32,
+    };
+    let polled = await supervisor.write(writeInput);
     expect(polled.state).toBe("running");
+    let transcript = String(polled.stdout ?? "");
+    let nextCursor = Number(polled.next_stdout_cursor ?? cursor);
+    for (let attempt = 0; attempt < 8 && !transcript.includes("RECOVERED"); attempt += 1) {
+      polled = await supervisor.poll({ process_id: processId, stdout_cursor: nextCursor, stderr_cursor: 0, wait_ms: 250, max_bytes: 32 });
+      transcript += String(polled.stdout ?? "");
+      nextCursor = Number(polled.next_stdout_cursor ?? nextCursor);
+    }
+    expect(transcript).toContain("RECOVERED");
     const cancelled = await supervisor.cancel({ idempotency_key: uuidv7(), process_id: processId, grace_ms: 200 });
     expect(cancelled.state).toBe("cancelled");
     expect(first.terminal.inspectSync(session)).toMatchObject({ exists: true, dead: true, reason: "cancel_requested" });
@@ -603,8 +711,8 @@ describe("durable interactive PTY process backend", () => {
     await expect(secondTerminal.write(session, { chars: "fresh", control_keys: ["Enter"] })).resolves.toBeUndefined();
     const exited = await secondTerminal.waitForExitStatus(session, process.platform === "win32" ? 5_000 : 2_000);
     expect(exited).toMatchObject({ exists: true, dead: true });
-    const stdout = readFileSync(join(first.config.server.data_dir, "spools", "processes", String(started.process_id), "stdout.bin"), "utf8");
-    expect(stdout).toContain("GOT:fresh");
+    const observed = await first.supervisor.poll({ process_id: String(started.process_id), stdout_cursor: 0, stderr_cursor: 0, wait_ms: 0, max_bytes: 64 * 1024 });
+    expect(observed.stdout).toContain("GOT:fresh");
     first.db.close();
   });
 
@@ -643,10 +751,8 @@ describe("durable interactive PTY process backend", () => {
     for (let attempt = 0; attempt < 20 && !readOnly.output().includes("GOT:fresh"); attempt += 1) await sleep(25);
     expect(readOnly.output()).toContain("GOT:fresh");
 
-    const stdout = readFileSync(
-      join(first.config.server.data_dir, "spools", "processes", String(started.process_id), "stdout.bin"),
-      "utf8",
-    );
+    const observed = await first.supervisor.poll({ process_id: String(started.process_id), stdout_cursor: 0, stderr_cursor: 0, wait_ms: 0, max_bytes: 64 * 1024 });
+    const stdout = String(observed.stdout ?? "");
     expect(stdout).not.toContain("GOT:stale");
     expect(stdout).toContain("GOT:fresh");
     first.db.close();

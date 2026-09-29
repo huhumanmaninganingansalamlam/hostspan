@@ -97,7 +97,7 @@ describe("hash-guarded patch transaction", () => {
         files: [{ path: "a.txt", expected_sha256: hash("a\nb\n"), unified_diff: "@@ -1,2 +1,2 @@\n x\n-b\n+c\n" }],
         validators: [],
       }),
-    ).toThrowError(expect.objectContaining<Partial<HostSpanError>>({ code: "PATCH_REJECTED" }));
+    ).toThrowError(expect.objectContaining<Partial<HostSpanError>>({ code: "PATCH_REJECTED", details: expect.objectContaining({ reason: "patch_context_mismatch" }) }));
     expect(readFileSync(join(root, "a.txt"), "utf8")).toBe("a\nb\n");
 
     writeFileSync(join(root, "data.json"), "{\"ok\":true}\n");
@@ -197,7 +197,7 @@ describe("hash-guarded patch transaction", () => {
         ],
         validators: [],
       }),
-    ).toThrowError(expect.objectContaining<Partial<HostSpanError>>({ code: "PATCH_REJECTED" }));
+    ).toThrowError(expect.objectContaining<Partial<HostSpanError>>({ code: "PATCH_REJECTED", details: expect.objectContaining({ reason: "patch_malformed" }) }));
     expect(readFileSync(join(root, "a.txt"), "utf8")).toBe(before);
     db.close();
   });

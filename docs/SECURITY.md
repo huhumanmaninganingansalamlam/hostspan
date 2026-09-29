@@ -89,7 +89,7 @@ The recommended remote path remains outbound-only OpenAI Secure MCP Tunnel. If y
 - the retired full-authority `hostspan` scope is rejected; clients with grants using it must authorize again with granular scopes;
 - refresh without a requested scope preserves the grant, while an explicit refresh scope may only narrow it;
 - OAuth scope checks and HostSpan target policy are independent boundaries: a token must authorize the tool class and the selected target must separately grant the underlying capability;
-- the stable `hostspan-v3.2` tool list/schema/hash is unchanged by scope enforcement; tool authorization is checked at invocation time;
+- the stable `hostspan-v3.3` tool list/schema/hash is unchanged by scope enforcement; tool authorization is checked at invocation time;
 - HostSpan exposes the MCP-SDK-compatible root `/authorize`, `/token`, `/register`, and `/revoke` OAuth surface;
 - refresh tokens are issued and rotated for reconnects without requiring a separate `offline_access` scope;
 - rotating the approval secret revokes all outstanding access/refresh tokens;

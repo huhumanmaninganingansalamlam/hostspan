@@ -97,19 +97,19 @@ export const TOOL_DEFINITIONS = [
   {
     name: "process_start" as const,
     description:
-      "Start one durable process with no implicit deadline; wait_ms and max_bytes bound the response, max_output_bytes bounds capture without stopping execution. Set deadline_ms for an explicit lifetime or tty=true for an interactive terminal on targets with terminal capability.",
+      "Start one durable process with no implicit deadline; wait_ms and max_bytes bound the response, max_output_bytes bounds rolling output retention without stopping execution. Set deadline_ms for an explicit lifetime or tty=true for an interactive terminal on targets with terminal capability.",
     inputSchema: ProcessStartInputSchema,
     annotations: processAnnotations,
   },
   {
     name: "process_poll" as const,
-    description: "Read incremental stdout/stderr bytes and durable terminal state for a previously started process.",
+    description: "Read incremental stdout/stderr bytes and durable terminal state; expired cursors resume at retained output with explicit loss metadata.",
     inputSchema: ProcessPollInputSchema,
     annotations: readOnlyAnnotations,
   },
   {
     name: "process_write" as const,
-    description: "Write characters, control keys, or terminal resize updates to a durable interactive process and return incremental output.",
+    description: "Idempotently deliver characters, control keys, or resize updates to an interactive process, then observe incremental output; observation failure does not resend delivered input.",
     inputSchema: ProcessWriteInputSchema,
     annotations: processAnnotations,
   },

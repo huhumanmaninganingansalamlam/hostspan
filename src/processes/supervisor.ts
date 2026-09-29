@@ -3,7 +3,7 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 import { v7 as uuidv7 } from "uuid";
 import type { HostSpanConfig } from "../config/schema.js";
-import { HostSpanError } from "../errors.js";
+import { asHostSpanError, HostSpanError } from "../errors.js";
 import type { ProcessCancelToolInput, ProcessPollToolInput, ProcessStartToolInput, ProcessWriteToolInput } from "../tools/schemas.js";
 import type { OperationsStore } from "../operations/store.js";
 import type { HostSpanLogger } from "../observability/logger.js";
@@ -34,6 +34,17 @@ interface RuntimeProcess {
   closedObserved: boolean;
   exitCode: number | null;
   exitSignal: NodeJS.Signals | null;
+}
+
+function writeObservationError(error: unknown, input: ProcessWriteToolInput): HostSpanError {
+  const cause = asHostSpanError(error);
+  return new HostSpanError(cause.code, cause.message, cause.retryable, {
+    ...cause.details,
+    process_id: input.process_id,
+    idempotency_key: input.idempotency_key,
+    input_delivered: true,
+    phase: "output_observation",
+  });
 }
 
 function digestArgv(argv: string[]): string {
@@ -89,6 +100,7 @@ export interface ProcessSupervisorOptions {
 export class ProcessSupervisor {
   private readonly runtimes = new Map<string, RuntimeProcess>();
   private readonly writeInflight = new Map<string, Promise<Record<string, unknown>>>();
+  private readonly cancelInflight = new Map<string, Promise<Record<string, unknown>>>();
   private readonly terminationInflight = new Map<string, Promise<ProcessState>>();
 
   constructor(private readonly options: ProcessSupervisorOptions) {}
@@ -184,12 +196,6 @@ export class ProcessSupervisor {
       return "unknown";
     }
     await this.options.terminal.close(record.backend_ref, graceMs);
-    const drained = await this.options.terminal.waitForOutputDrain(processId);
-    this.options.processes.setBytes(processId, "stdout", drained.bytes);
-    if (!drained.drained) {
-      this.finalize(processId, "unknown", record.exit_code, record.term_signal, "interactive_output_drain_unconfirmed");
-      return "unknown";
-    }
     const settled = await this.options.terminal.waitForExitStatus(record.backend_ref, 250);
     if (!settled.exists) {
       this.finalize(processId, "unknown", record.exit_code, record.term_signal, "interactive_session_missing_after_terminate");
@@ -200,6 +206,9 @@ export class ProcessSupervisor {
       return "unknown";
     }
     this.finalize(processId, state, settled.exit_code, settled.signal, reason);
+    // Confirmed process death survives a failure to observe the final output.
+    const drained = await this.options.terminal.waitForOutputDrain(processId);
+    this.options.processes.setBytes(processId, "stdout", drained.bytes);
     return state;
   }
 
@@ -296,23 +305,27 @@ export class ProcessSupervisor {
   private snapshot(processId: string, stdoutCursor: number, stderrCursor: number, maxBytes: number): Record<string, unknown> {
     const record = this.options.processes.get(processId);
     if (!record) throw new HostSpanError("PROCESS_NOT_FOUND", `Unknown process_id: ${processId}`);
-    if (record.output_expires_at && record.output_expires_at <= new Date().toISOString()) {
-      const unread = stdoutCursor < record.stdout_bytes || stderrCursor < record.stderr_bytes;
-      if (unread) {
-        throw new HostSpanError("CURSOR_EXPIRED", "Process output has expired from retention storage.", false, {
-          stdout_earliest_cursor: record.stdout_bytes,
-          stderr_earliest_cursor: record.stderr_bytes,
-        });
-      }
-    }
+    const outputExpired = Boolean(record.output_expires_at && record.output_expires_at <= new Date().toISOString());
     const interactive = record.backend === "pty";
     const perStream = interactive ? maxBytes : Math.max(1, Math.floor(maxBytes / 2));
     const spool = this.spool(processId, record.max_output_bytes ?? Number.MAX_SAFE_INTEGER);
-    const stdout = spool.read("stdout", stdoutCursor, perStream);
+    const expiredRead = (stream: "stdout" | "stderr", cursor: number, latest: number) => {
+      if (cursor > latest) {
+        throw new HostSpanError("CURSOR_EXPIRED", "Requested process output cursor is beyond the available output.", false, {
+          stream,
+          earliest_cursor: latest,
+          latest_cursor: latest,
+        });
+      }
+      return { text: "", next_cursor: latest, earliest_cursor: latest, bytes_returned: 0, dropped_bytes: Math.max(0, latest - cursor) };
+    };
+    const stdout = outputExpired ? expiredRead("stdout", stdoutCursor, record.stdout_bytes) : spool.read("stdout", stdoutCursor, perStream);
     const stderr = interactive
-      ? { text: "", next_cursor: stderrCursor, earliest_cursor: 0, bytes_returned: 0 }
-      : spool.read("stderr", stderrCursor, perStream);
-    const outputBytes = record.stdout_bytes + record.stderr_bytes;
+      ? { text: "", next_cursor: stderrCursor, earliest_cursor: 0, bytes_returned: 0, dropped_bytes: 0 }
+      : outputExpired
+        ? expiredRead("stderr", stderrCursor, record.stderr_bytes)
+        : spool.read("stderr", stderrCursor, perStream);
+    const outputBytes = outputExpired ? 0 : spool.retainedBytes;
     const outputBudget =
       record.max_output_bytes !== null && record.max_output_bytes > 0
         ? {
@@ -329,6 +342,10 @@ export class ProcessSupervisor {
       stderr: stderr.text,
       next_stdout_cursor: stdout.next_cursor,
       next_stderr_cursor: stderr.next_cursor,
+      stdout_dropped_bytes: stdout.dropped_bytes,
+      stderr_dropped_bytes: stderr.dropped_bytes,
+      stdout_earliest_cursor: stdout.earliest_cursor,
+      stderr_earliest_cursor: stderr.earliest_cursor,
       exit_code: record.exit_code,
       signal: record.term_signal,
       reason: record.reason,
@@ -668,6 +685,10 @@ export class ProcessSupervisor {
       }
       await this.syncInteractiveState(input.process_id);
     } else {
+      const current = this.snapshot(input.process_id, input.stdout_cursor, input.stderr_cursor, input.max_bytes);
+      if (TERMINAL_STATES.has(record.state) || Number(current.next_stdout_cursor) > input.stdout_cursor || Number(current.next_stderr_cursor) > input.stderr_cursor) {
+        return current;
+      }
       await this.waitForTerminal(input.process_id, input.wait_ms);
     }
     return this.snapshot(input.process_id, input.stdout_cursor, input.stderr_cursor, input.max_bytes);
@@ -683,7 +704,22 @@ export class ProcessSupervisor {
     if (!this.options.terminal) throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "PTY terminal backend is unavailable.", true);
     const resolution = this.options.operations.resolve(input.idempotency_key, "process_write", input, record.target_id);
     if (resolution.kind === "replay") {
-      return (resolution.result as Record<string, unknown> | null) ?? this.snapshot(input.process_id, input.stdout_cursor, 0, input.max_bytes);
+      const observing = this.writeInflight.get(input.idempotency_key);
+      if (observing) return observing;
+      if (resolution.error) throw resolution.error;
+      const saved = resolution.result as Record<string, unknown> | null;
+      if (saved && "next_stdout_cursor" in saved) return saved;
+      // A delivery receipt survives observation failure and daemon restart.
+      // Reconstruct only the observation; never send the input again.
+      try {
+        await this.syncInteractiveState(input.process_id);
+        return {
+          ...this.snapshot(input.process_id, input.stdout_cursor, 0, input.max_bytes),
+          ...(saved?.input_delivered === true ? { input_delivered: true } : {}),
+        };
+      } catch (error) {
+        throw saved?.input_delivered === true ? writeObservationError(error, input) : error;
+      }
     }
     if (resolution.kind === "unknown") {
       throw new HostSpanError("PROCESS_UNKNOWN", "Interactive input outcome is unknown; do not replay it automatically.", false, {
@@ -715,16 +751,28 @@ export class ProcessSupervisor {
   }
 
   private async performWrite(input: ProcessWriteToolInput, session: string): Promise<Record<string, unknown>> {
-    if (!this.options.terminal) throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "PTY terminal backend is unavailable.", true);
-    await this.syncInteractiveState(input.process_id);
-    const refreshed = this.options.processes.get(input.process_id);
-    if (!refreshed || TERMINAL_STATES.has(refreshed.state)) {
-      const result = this.snapshot(input.process_id, input.stdout_cursor, 0, input.max_bytes);
-      this.options.operations.setState(input.idempotency_key, "succeeded", result);
-      return result;
+    let previousBytes: number;
+    try {
+      if (!this.options.terminal) throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "PTY terminal backend is unavailable.", true);
+      await this.syncInteractiveState(input.process_id);
+      const refreshed = this.options.processes.get(input.process_id);
+      if (!refreshed || TERMINAL_STATES.has(refreshed.state)) {
+        const result = this.snapshot(input.process_id, input.stdout_cursor, 0, input.max_bytes);
+        this.options.operations.setState(input.idempotency_key, "succeeded", result);
+        return result;
+      }
+      previousBytes = this.options.terminal.outputBytes(input.process_id);
+      if (input.stdout_cursor > previousBytes) {
+        throw new HostSpanError("CURSOR_EXPIRED", "Requested process output cursor is beyond the available output.", false, {
+          stream: "stdout",
+          latest_cursor: previousBytes,
+        });
+      }
+    } catch (error) {
+      this.options.operations.setState(input.idempotency_key, "failed", { process_id: input.process_id, input_delivered: false }, error);
+      throw error;
     }
     this.options.operations.setState(input.idempotency_key, "running", { state: "writing", process_id: input.process_id });
-    const previousBytes = this.options.terminal.outputBytes(input.process_id);
     try {
       await this.options.terminal.write(session, {
         chars: input.chars,
@@ -732,22 +780,31 @@ export class ProcessSupervisor {
         ...(input.columns !== undefined ? { columns: input.columns } : {}),
         ...(input.rows !== undefined ? { rows: input.rows } : {}),
       });
-      await this.options.terminal.waitForActivity(session, input.process_id, previousBytes, input.wait_ms);
-      await this.syncInteractiveState(input.process_id);
-      const result = this.snapshot(input.process_id, input.stdout_cursor, 0, input.max_bytes);
-      this.options.operations.setState(input.idempotency_key, "succeeded", result);
-      return result;
+      // ACK proves delivery to the PTY, not application execution success.
+      // Persist that fact before any output wait, read, or decoding can fail.
+      this.options.operations.setState(input.idempotency_key, "succeeded", {
+        process_id: input.process_id,
+        input_delivered: true,
+      });
     } catch (error) {
-      const unknown = {
+      this.options.operations.setState(input.idempotency_key, "unknown", {
         state: "unknown",
         process_id: input.process_id,
         reason: "interactive_write_outcome_unknown",
-      };
-      this.options.operations.setState(input.idempotency_key, "unknown", unknown, error);
+      }, error);
       throw new HostSpanError("PROCESS_UNKNOWN", "Interactive input outcome could not be proven; it was not replayed.", false, {
         process_id: input.process_id,
         idempotency_key: input.idempotency_key,
       });
+    }
+    try {
+      await this.options.terminal.waitForActivity(session, input.process_id, previousBytes, input.wait_ms);
+      await this.syncInteractiveState(input.process_id);
+      const result = { ...this.snapshot(input.process_id, input.stdout_cursor, 0, input.max_bytes), input_delivered: true };
+      this.options.operations.setState(input.idempotency_key, "succeeded", result);
+      return result;
+    } catch (error) {
+      throw writeObservationError(error, input);
     }
   }
 
@@ -755,9 +812,54 @@ export class ProcessSupervisor {
     const record = this.options.processes.get(input.process_id);
     if (!record) throw new HostSpanError("PROCESS_NOT_FOUND", `Unknown process_id: ${input.process_id}`);
     const resolution = this.options.operations.resolve(input.idempotency_key, "process_cancel", input, record.target_id);
-    if (resolution.kind === "replay" || resolution.kind === "unknown") {
-      return (resolution.result as Record<string, unknown> | null) ?? this.snapshot(input.process_id, 0, 0, 131_072);
+    if (resolution.kind === "replay") {
+      const observing = this.cancelInflight.get(input.idempotency_key);
+      if (observing) return observing;
+      if (resolution.error) throw resolution.error;
+      const saved = resolution.result as Record<string, unknown> | null;
+      return saved && "next_stdout_cursor" in saved ? saved : this.snapshot(input.process_id, 0, 0, 131_072);
     }
+    if (resolution.kind === "unknown") {
+      return (resolution.result as Record<string, unknown> | null) ?? { state: "unknown", process_id: input.process_id };
+    }
+    if (resolution.kind === "join") {
+      const joined = this.cancelInflight.get(input.idempotency_key);
+      if (joined) return joined;
+      const result = { state: "unknown", process_id: input.process_id, reason: "cancel_restart_boundary" };
+      this.options.operations.setState(input.idempotency_key, "unknown", result);
+      return result;
+    }
+    const operation = this.performCancel(input, record);
+    this.cancelInflight.set(input.idempotency_key, operation);
+    try {
+      return await operation;
+    } finally {
+      this.cancelInflight.delete(input.idempotency_key);
+    }
+  }
+
+  private async performCancel(input: ProcessCancelToolInput, record: ProcessRecord): Promise<Record<string, unknown>> {
+    let state: ProcessState;
+    try {
+      state = await this.cancelProcess(input, record);
+    } catch (error) {
+      const current = this.options.processes.get(input.process_id);
+      // Final output reads can fail after termination has already been confirmed.
+      const settled = current && TERMINAL_STATES.has(current.state) && current.state !== "unknown" && current.state !== "orphaned";
+      this.options.operations.setState(input.idempotency_key, settled ? "succeeded" : "unknown", {
+        state: settled ? current.state : "unknown",
+        process_id: input.process_id,
+      });
+      throw error;
+    }
+    const operationState = state === "unknown" || state === "orphaned" ? "unknown" : "succeeded";
+    this.options.operations.setState(input.idempotency_key, operationState, { state, process_id: input.process_id });
+    const result = this.snapshot(input.process_id, 0, 0, 131_072);
+    this.options.operations.setState(input.idempotency_key, operationState, result);
+    return result;
+  }
+
+  private async cancelProcess(input: ProcessCancelToolInput, record: ProcessRecord): Promise<ProcessState> {
     if (record.state === "orphaned" && processGroupAlive(record.pgid)) {
       safeKillGroup(record.pgid, "SIGTERM");
       let gone = record.pgid ? await waitForGroupGone(record.pgid, input.grace_ms) : true;
@@ -767,26 +869,13 @@ export class ProcessSupervisor {
       }
       const state: ProcessState = gone ? "cancelled" : "orphaned";
       this.options.processes.markTerminal(record.process_id, state, record.exit_code, record.term_signal, gone ? "cancel_requested_after_recovery" : "orphaned_process_group_still_alive", this.expiresAt());
-      const result = this.snapshot(input.process_id, 0, 0, 131_072);
-      this.options.operations.setState(input.idempotency_key, gone ? "succeeded" : "unknown", result);
-      return result;
+      return state;
     }
-    if (TERMINAL_STATES.has(record.state)) {
-      const result = this.snapshot(input.process_id, 0, 0, 131_072);
-      this.options.operations.setState(input.idempotency_key, "succeeded", result);
-      return result;
-    }
+    if (TERMINAL_STATES.has(record.state)) return record.state;
     this.options.operations.setState(input.idempotency_key, "running", { state: "cancelling", process_id: input.process_id });
-    if (record.backend === "pty") {
-      const terminalState = await this.terminateInteractive(input.process_id, "cancelled", "cancel_requested", input.grace_ms);
-      const result = this.snapshot(input.process_id, 0, 0, 131_072);
-      this.options.operations.setState(input.idempotency_key, terminalState === "unknown" ? "unknown" : "succeeded", result);
-      return result;
-    }
-    const terminalState = await this.terminate(input.process_id, "cancelled", "cancel_requested", input.grace_ms);
-    const result = this.snapshot(input.process_id, 0, 0, 131_072);
-    this.options.operations.setState(input.idempotency_key, terminalState === "orphaned" ? "unknown" : "succeeded", result);
-    return result;
+    return record.backend === "pty"
+      ? this.terminateInteractive(input.process_id, "cancelled", "cancel_requested", input.grace_ms)
+      : this.terminate(input.process_id, "cancelled", "cancel_requested", input.grace_ms);
   }
 
   async shutdown(): Promise<void> {
@@ -804,7 +893,7 @@ export class ProcessSupervisor {
   }
 
   async settleForRuntimeClose(): Promise<void> {
-    await Promise.allSettled([...this.terminationInflight.values(), ...this.writeInflight.values()]);
+    await Promise.allSettled([...this.terminationInflight.values(), ...this.writeInflight.values(), ...this.cancelInflight.values()]);
     if (this.runtimes.size > 0) {
       throw new Error(
         `Cannot close HostSpan runtime while ${this.runtimes.size} native process runtime(s) are still active; shut down the supervisor first.`,

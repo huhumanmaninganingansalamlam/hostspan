@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,7 +18,7 @@ import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath } from "../config/paths.js";
 import { PtySessionManager } from "../processes/pty-session.js";
 import { protectWindowsFile, protectWindowsTree } from "../security/windows-acl.js";
-import { desktopLaunchSpec, linuxAutoStartContents, prepareDesktopEnvironment } from "./environment.js";
+import { desktopLaunchSpec, isDesktopLoginLaunch, linuxAutoStartContents, prepareDesktopEnvironment } from "./environment.js";
 import {
   installDashboardNavigationGuards,
   isTrustedDashboardIpc,
@@ -122,6 +122,10 @@ function openAttach(processId: string, readOnly: boolean): void {
 }
 
 function launchSpec(): { path: string; args: string[] } {
+  let ozonePlatform = app.commandLine.getSwitchValue("ozone-platform");
+  if (process.platform === "linux" && !ozonePlatform && existsSync(linuxAutoStartPath())) {
+    ozonePlatform = readFileSync(linuxAutoStartPath(), "utf8").match(/^Exec=.*"--ozone-platform=([a-zA-Z0-9_-]+)"/m)?.[1] ?? "";
+  }
   return desktopLaunchSpec({
     platform: process.platform,
     isPackaged: app.isPackaged,
@@ -129,6 +133,8 @@ function launchSpec(): { path: string; args: string[] } {
     mainPath,
     ...(process.env.APPIMAGE ? { appImage: process.env.APPIMAGE } : {}),
     linuxDevelopmentExecPath: linuxDevelopmentElectronPath,
+    login: true,
+    ozonePlatform,
   });
 }
 
@@ -372,6 +378,19 @@ void app.whenReady().then(async () => {
         w.focus();
       }
     });
+    const loginLaunch = isDesktopLoginLaunch(
+      process.platform,
+      process.argv,
+      process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin,
+    );
+    if (loginLaunch) {
+      try {
+        const result = await daemonAction("start");
+        if ("running" in result && !result.running) throw new Error("HostSpan daemon did not start within five seconds.");
+      } catch (error) {
+        dialog.showErrorBox("HostSpan daemon could not start", error instanceof Error ? error.message : String(error));
+      }
+    }
     await refreshUi();
     refreshTimer = setInterval(() => void refreshUi().catch(() => undefined), 2_000);
     refreshTimer.unref();
