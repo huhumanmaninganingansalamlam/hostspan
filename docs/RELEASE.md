@@ -2,7 +2,12 @@
 
 Entries below describe the behavior of their named release. The latest release is listed first.
 
-## 0.9.1
+## 0.9.2
+
+- Include the 0.9.1 changes below. Both earlier immutable candidates remain unpublished.
+- Compute the isolated CLI fixture's exact tarball build allowance from the OS-canonical install directory, matching pnpm's identifier when Windows uses a short path alias. Only that reviewed HostSpan artifact and the existing native dependencies are allowed.
+
+## 0.9.1 (unpublished candidate)
 
 - Include the 0.9.0 changes below. The immutable `v0.9.0` candidate was not published because Windows installed-CLI qualification rejected HostSpan's new postinstall script.
 - Drain pending Unix PTY bytes through actual nonblocking reads before cleanup; confirm output completion only after a kernel 0-byte read or EIO. Keep the original forced-cleanup timeout and final-output assertion.
