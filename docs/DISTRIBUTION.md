@@ -76,7 +76,7 @@ The `--platform`, `--arch`, and `--out-dir` overrides are for static package val
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs the complete core gate and dependency audit on branch pushes and pull requests across Linux x64, Windows x64, macOS Apple Silicon, and macOS Intel. Pull requests additionally run fresh CLI package smoke, unpacked Electron packaging, and packaged-runtime smoke on all four platforms, so native package regressions fail before merge. Ordinary branch pushes do not package the CLI or desktop app. Pull-request installer jobs additionally build Windows x64 NSIS and macOS arm64/x64 DMGs and run installed-runtime smoke in `RUNNER_TEMP` without publishing; the release workflow builds and validates all release artifacts before publication, and tag pushes do not trigger ordinary CI.
+`.github/workflows/ci.yml` runs the complete core gate and dependency audit on branch pushes and pull requests across Linux x64, Windows x64, macOS Apple Silicon, and macOS Intel. Pull requests additionally run fresh CLI package smoke, unpacked Electron packaging, and packaged-runtime smoke on all four platforms, so native package regressions fail before merge. Direct `dev` pushes additionally run Windows fresh-prefix CLI package smoke before release promotion; other branch pushes and desktop packaging retain their existing conditions. Pull-request installer jobs additionally build Windows x64 NSIS and macOS arm64/x64 DMGs and run installed-runtime smoke in `RUNNER_TEMP` without publishing; the release workflow builds and validates all release artifacts before publication, and tag pushes do not trigger ordinary CI.
 
 `.github/workflows/release.yml` runs on a `v*` tag or manual dispatch for an existing tag. It:
 
