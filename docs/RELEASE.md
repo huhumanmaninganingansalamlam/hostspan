@@ -5,6 +5,7 @@ Entries below describe the behavior of their named release. The latest release i
 ## 0.9.1
 
 - Include the 0.9.0 changes below. The immutable `v0.9.0` candidate was not published because Windows installed-CLI qualification rejected HostSpan's new postinstall script.
+- Drain pending Unix PTY bytes through actual nonblocking reads before cleanup; confirm output completion only after a kernel 0-byte read or EIO. Keep the original forced-cleanup timeout and final-output assertion.
 - Permit only the reviewed HostSpan postinstall alongside the existing native dependencies in the isolated CLI qualification prefix; other dependency scripts remain subject to explicit approval.
 
 ## 0.9.0 (unpublished candidate)

@@ -1,16 +1,78 @@
 diff --git a/lib/unixTerminal.js b/lib/unixTerminal.js
-index af2d24c39deb60e77ad16e6b864f37a7ef58881c..f66bab2e8e734aae96ca3667e996dd9e31233f93 100644
 --- a/lib/unixTerminal.js
 +++ b/lib/unixTerminal.js
-@@ -78,7 +78,10 @@ var UnixTerminal = /** @class */ (function (_super) {
+@@ -78,7 +78,8 @@
                  var timeout_1 = setTimeout(function () {
                      timeout_1 = null;
                      // Destroying the socket now will cause the close event to fire
 -                    _this._socket.destroy();
-+                    // Timers may run after poll; yield through the next poll phase before forced close.
-+                    setImmediate(function () {
-+                        setImmediate(function () { _this._socket.destroy(); });
-+                    });
++                    forceClose = true;
++                    if (!drainQueued) drain();
                  }, DESTROY_SOCKET_TIMEOUT_MS);
                  _this.once('close', function () {
                      if (timeout_1 !== null) {
+@@ -92,13 +93,63 @@
+         };
+         // fork
+         var term = pty.fork(file, args, parsedEnv, cwd, _this._cols, _this._rows, uid, gid, (encoding === 'utf8'), helperPath, onexit);
+-        _this._socket = new tty.ReadStream(term.fd);
++        // libuv can report EOF on POLLHUP after a short PTY read, with bytes still pending.
++        // Drain the nonblocking fd before returning to libuv or forcing cleanup.
++        _this._outputDrained = false;
++        var readBuffer = Buffer.alloc(64 * 1024);
++        var forceClose = false;
++        var drainQueued = false;
++        function drain() {
++            for (var reads = 0; reads < 32 && !_this._outputDrained; reads++) {
++                var size;
++                try {
++                    size = fs.readSync(term.fd, readBuffer, 0, readBuffer.length, null);
++                } catch (err) {
++                    if (err.code === 'EAGAIN' || err.code === 'EWOULDBLOCK') {
++                        if (forceClose) _this._socket.destroy();
++                        return true;
++                    }
++                    if (err.code !== 'EIO') throw err;
++                    size = 0;
++                }
++                if (size === 0) {
++                    _this._outputDrained = true;
++                    _this._socket.push(null);
++                    return false;
++                }
++                _this._socket.push(Buffer.from(readBuffer.subarray(0, size)));
++            }
++            if (!_this._outputDrained && !drainQueued) {
++                _this._socket.pause();
++                drainQueued = true;
++                setImmediate(function () {
++                    drainQueued = false;
++                    if (_this._socket.destroyed) return;
++                    _this._socket.resume();
++                    drain();
++                });
++            }
++            return false;
++        }
++        _this._socket = new tty.ReadStream(term.fd, {
++            onread: {
++                buffer: readBuffer,
++                callback: function (size, buffer) {
++                    _this._socket.push(Buffer.from(buffer.subarray(0, size)));
++                    return drain();
++                }
++            }
++        });
+         if (encoding !== null) {
+             _this._socket.setEncoding(encoding);
+         }
+         _this._writeStream = new CustomWriteStream(term.fd, (encoding || undefined));
+         // setup
++        _this._socket.on('end', function () {
++            if (!_this._outputDrained) drain();
++        });
+         _this._socket.on('error', function (err) {
++            if (err.code === 'EIO') _this._outputDrained = true;
+             // NOTE: fs.ReadStream gets EAGAIN twice at first:
+             if (err.code) {
+                 if (~err.code.indexOf('EAGAIN')) {

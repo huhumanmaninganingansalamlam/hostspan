@@ -296,7 +296,10 @@ async function main() {
     exitObserved = true;
     const settle = setTimeout(() => {
       finished = true;
-      writeFileSync(drainPath, "", { mode: 0o600 });
+      // Unix forced cleanup is not proof that the PTY reached kernel EOF.
+      if (process.platform === "win32" || ptyProcess._outputDrained === true) {
+        writeFileSync(drainPath, "", { mode: 0o600 });
+      }
       writeStatus({
         status: "exited",
         exit_code: Number.isInteger(exitCode) ? exitCode : null,
