@@ -167,6 +167,7 @@ overrides:
 
 patchedDependencies:
   global-agent@4.1.3: 186d11bcb0cc1da718a0447dd21b273d39f716213d28941b1bac609e04bc040c
+  node-pty@1.2.0-beta.14: 078a08172903e217accf59d6c15f3c2116ac0daf9480e316a75be43f7b589e46
 
 importers:
 
@@ -198,7 +199,7 @@ importers:
         version: 3.2.1
       node-pty:
         specifier: 1.2.0-beta.14
-        version: 1.2.0-beta.14
+        version: 1.2.0-beta.14(patch_hash=078a08172903e217accf59d6c15f3c2116ac0daf9480e316a75be43f7b589e46)
       pino:
         specifier: 9.9.5
         version: 9.9.5
@@ -3911,7 +3912,7 @@ snapshots:
 
   node-int64@0.4.0: {}
 
-  node-pty@1.2.0-beta.14:
+  node-pty@1.2.0-beta.14(patch_hash=078a08172903e217accf59d6c15f3c2116ac0daf9480e316a75be43f7b589e46):
     dependencies:
       node-addon-api: 7.1.1
 
