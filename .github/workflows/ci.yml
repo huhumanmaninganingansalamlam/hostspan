@@ -50,7 +50,7 @@ jobs:
       - name: Audit all dependencies
         run: pnpm audit:all
       - name: Smoke installed CLI package
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || (github.ref == 'refs/heads/dev' && runner.os == 'Windows')
         run: pnpm package:smoke
       - name: Build unpacked desktop runtime
         if: github.event_name == 'pull_request'
