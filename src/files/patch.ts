@@ -250,13 +250,13 @@ function prepareFiles(target: TargetRuntime, input: FilePatchToolInput, policy: 
     let before: Buffer;
     try {
       stat = fstatSync(opened.fd);
-      if (!stat.isFile()) throw new HostSpanError("PATCH_REJECTED", `Patch target is not a regular file: ${requested.path}`);
+      if (!stat.isFile()) throw new HostSpanError("PATCH_REJECTED", `Patch target is not a regular file: ${requested.path}`, false, { reason: "patch_target_not_regular" });
       before = readFileSync(opened.fd);
     } finally {
       closeSync(opened.fd);
     }
     policy.assertFileAllowed(target, guarded.relative, guarded.absolute, true);
-    if (seen.has(guarded.relative)) throw new HostSpanError("PATCH_REJECTED", `Duplicate path in patch batch: ${guarded.relative}`);
+    if (seen.has(guarded.relative)) throw new HostSpanError("PATCH_REJECTED", `Duplicate path in patch batch: ${guarded.relative}`, false, { reason: "patch_duplicate_path" });
     seen.add(guarded.relative);
     const beforeHash = sha256(before);
     if (beforeHash !== requested.expected_sha256.toLowerCase()) {
@@ -270,13 +270,13 @@ function prepareFiles(target: TargetRuntime, input: FilePatchToolInput, policy: 
     let patched: string | false;
     try {
       patched = applyPatch(text, requested.unified_diff, { autoConvertLineEndings: true });
-    } catch (error) {
+    } catch {
       throw new HostSpanError("PATCH_REJECTED", `Unified diff is malformed for ${guarded.relative}.`, false, {
         path: guarded.relative,
-        reason: error instanceof Error ? error.message : String(error),
+        reason: "patch_malformed",
       });
     }
-    if (patched === false) throw new HostSpanError("PATCH_REJECTED", `Unified diff does not apply cleanly: ${guarded.relative}`, false, { path: guarded.relative });
+    if (patched === false) throw new HostSpanError("PATCH_REJECTED", `Unified diff does not apply cleanly: ${guarded.relative}`, false, { path: guarded.relative, reason: "patch_context_mismatch" });
     const after = Buffer.from(patched, "utf8");
     prepared.push({
       path: guarded.relative,
@@ -371,7 +371,7 @@ export class FilePatchService {
           if (currentHash !== file.before_sha256) throw new HostSpanError("STALE_CONTENT", `File changed during patch commit: ${file.path}`);
           atomicReplace(target, file.path, file.after, file.mode);
           const afterHash = sha256File(target, file.path);
-          if (afterHash !== file.after_sha256) throw new HostSpanError("PATCH_REJECTED", `Postcondition hash mismatch after writing ${file.path}.`);
+          if (afterHash !== file.after_sha256) throw new HostSpanError("PATCH_REJECTED", `Postcondition hash mismatch after writing ${file.path}.`, false, { reason: "patch_postcondition_mismatch" });
           journal.committed_count = index + 1;
           writeJsonAtomic(journalPath, journal);
         }
@@ -401,7 +401,7 @@ export class FilePatchService {
           if (removeTerminalJournal(journalPath)) this.options.transactions.clearJournalPath(transactionId);
           throw error;
         }
-        const unknown = new HostSpanError("PATCH_REJECTED", "Patch commit outcome is unknown after rollback failure.", false, { transaction_id: transactionId });
+        const unknown = new HostSpanError("PATCH_REJECTED", "Patch commit outcome is unknown after rollback failure.", false, { transaction_id: transactionId, reason: "patch_rollback_failed" });
         this.options.transactions.setOutcome(
           transactionId,
           "unknown",

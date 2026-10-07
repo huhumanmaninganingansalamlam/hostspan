@@ -4,10 +4,10 @@ HostSpan keeps the MCP server/tool contract separate from the optional Electron 
 
 ## Brand assets
 
-The editable source assets are:
+The sole editable geometry source is `assets/brand/hostspan-mark.svg` (the controlled-span mark). The generator derives the checked-in previews:
 
-- `assets/brand/hostspan.svg` — full application icon;
-- `assets/brand/hostspan-tray.svg` — monochrome tray/menu-bar mark.
+- `assets/brand/hostspan.svg` — white mark on a `#2558D9` rounded tile;
+- `assets/brand/hostspan-tray.svg` — the same path with `viewBox="8 8 48 48"`, black on transparency.
 
 Generate derived assets with:
 
@@ -15,7 +15,16 @@ Generate derived assets with:
 pnpm icons
 ```
 
-The generator writes platform PNG, ICO, and ICNS files under `assets/icons/`. Derived icons are intentionally ignored by Git because CI regenerates them from the reviewed SVG sources.
+The generator writes platform PNG, ICO, and ICNS files under `assets/icons/`. These binary derivatives are ignored by Git because CI regenerates them from the reviewed canonical SVG.
+
+| Surface | Generated assets and selection |
+| --- | --- |
+| Application / installer | `app.png`, `app-16.png` through `app-512.png`, `app.ico`, `app.icns`; Electron Builder uses PNG on Linux, ICO on Windows, ICNS on macOS. |
+| macOS menu bar | `hostspanTemplate.png` (16 px), `hostspanTemplate@2x.png` (32 px), black with `setTemplateImage(true)`; the OS supplies tint. |
+| Windows tray | `tray-on-light.png` (`#151C2A`) and `tray-on-dark.png` (`#FFFFFF`), 32 px with 64 px `@2x` companions; `nativeTheme.shouldUseDarkColorsForSystemIntegratedUI` selects the system/taskbar theme, and `updated` refreshes the image. |
+| Linux tray | `tray.png` (32 px), `tray@2x.png` (64 px), the same blue app tile. Electron's tray image path does not provide symbolic tint or a reliable panel theme signal. |
+
+All variants preserve the canonical path. Missing or invalid tray assets produce an explicit startup error rather than an unrelated placeholder. Regeneration does not update installed apps or OS icon caches; installation and release are separate actions.
 
 ## Local packaging
 
@@ -44,6 +53,8 @@ On Linux, Windows, and macOS, the packaged Electron executable can also run the 
 
 On first launch, the desktop app creates the normal HostSpan default config when it does not already exist. Existing config is never overwritten. This makes a fresh installer immediately able to render its tray/dashboard and lets the user add a workspace without first running `hostspan init` in a terminal.
 
+The tray’s **Start at login** option registers the app for the current user and starts the configured daemon once when launched at login. Opening the tray manually does not restart a stopped daemon, and refreshing status never restarts it. Linux uses an installed systemd user service when available. Explicit Linux Ozone platform selection is preserved in the login entry; no platform is forced globally.
+
 After creating an unpacked or distributable package, verify the package rather than only the source tree:
 
 ```bash
@@ -65,7 +76,7 @@ The `--platform`, `--arch`, and `--out-dir` overrides are for static package val
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs the complete core gate and dependency audit on branch pushes and pull requests across Linux x64, Windows x64, macOS Apple Silicon, and macOS Intel. Pull requests additionally run fresh CLI package smoke, unpacked Electron packaging, and packaged-runtime smoke on all four platforms, so native package regressions fail before merge. Ordinary branch pushes do not package the CLI or desktop app. Distributable installers are built only by the release workflow; tag pushes do not trigger ordinary CI.
+`.github/workflows/ci.yml` runs the complete core gate and dependency audit on branch pushes and pull requests across Linux x64, Windows x64, macOS Apple Silicon, and macOS Intel. Pull requests additionally run fresh CLI package smoke, unpacked Electron packaging, and packaged-runtime smoke on all four platforms, so native package regressions fail before merge. Ordinary branch pushes do not package the CLI or desktop app. Pull-request installer jobs additionally build Windows x64 NSIS and macOS arm64/x64 DMGs and run installed-runtime smoke in `RUNNER_TEMP` without publishing; the release workflow builds and validates all release artifacts before publication, and tag pushes do not trigger ordinary CI.
 
 `.github/workflows/release.yml` runs on a `v*` tag or manual dispatch for an existing tag. It:
 
@@ -109,6 +120,6 @@ Packaging and native-core support are separate claims:
 | WSL2 | uses the Linux core; not native Windows qualification |
 | Windows x64 | native core; ConPTY + Job Objects + private HostSpan DACL/state-path guard; full test/build, NSIS install, installed doctor/full smoke, packaged PTY lifecycle |
 | macOS x64 | native core; full test/build, installed CLI doctor/full smoke, packaged PTY lifecycle, DMG/app runtime smoke |
-| macOS arm64 | native core qualified on the matching GitHub macOS arm64 runner with the same core/package/runtime gate |
+| macOS arm64 | native core qualified on the matching GitHub runner; installed app workflow and PTY smoke also passed on a separate native Mac |
 
 Packaging success must not be described as native-core security or process-recovery qualification.

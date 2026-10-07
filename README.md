@@ -1,28 +1,28 @@
 # HostSpan
 
 <p align="center">
-  <img src="assets/brand/hostspan.svg" width="128" height="128" alt="HostSpan gateway icon">
+  <img src="assets/brand/hostspan.svg" width="128" height="128" alt="HostSpan controlled span icon">
 </p>
 
 [![CI](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/ci.yml/badge.svg)](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/ci.yml)
 [![Desktop release](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/release.yml/badge.svg)](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/release.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
-HostSpan is a terminal-first MCP execution gateway for ChatGPT Web Developer Mode. It exposes a fixed `hostspan-v3.2` toolset for approved local targets and keeps file/process side effects verifiable and recoverable across reconnects.
+HostSpan is a terminal-first MCP execution gateway for ChatGPT Web Developer Mode. It exposes a fixed `hostspan-v3.3` toolset for approved local targets and keeps file/process side effects verifiable and recoverable across reconnects.
 
-The HostSpan mark represents an MCP gateway spanning two local endpoints through a central protocol-routing hub. The tray uses a separate simplified bridge/hub glyph so it stays legible at 16–32 px instead of shrinking the full application artwork.
+The HostSpan controlled-span mark uses the same geometry for the application and tray. The app places the white mark on a blue rounded tile; the tray uses a tightly framed monochrome mark, or the same blue tile when panel tint is unavailable.
 
-HostSpan has native Linux x64, Windows x64, and macOS x64 core paths. **Native execution is not an OS sandbox**: a child process runs with the permissions of the user running HostSpan. See [Security](SECURITY.md) before enabling `exec` on a target.
+HostSpan has native Linux x64, Windows x64, macOS x64, and macOS arm64 core paths. **Native execution is not an OS sandbox**: a child process runs with the permissions of the user running HostSpan. See [Security](SECURITY.md) before enabling `exec` on a target.
 
 ## Current scope
 
-The MCP tool registry is immutable for `hostspan-v3.2`:
+The MCP tool registry is immutable for `hostspan-v3.3`:
 
 `system_status`, `target_list`, `file_list`, `file_read`, `file_search`, `file_patch`, `process_start`, `process_poll`, `process_write`, `process_cancel`.
 
 Every file/process request names a persistent `target_id`; no ChatGPT session ID or temporary workspace handle is product state. File mutation uses expected SHA-256 values, dry-run/staging, per-file atomic replacement, a durable transaction journal, and postcondition hashes. Non-interactive commands use the durable native process supervisor. Interactive commands use the same `process_id` lifecycle through a HostSpan-owned, daemon-independent PTY session worker: start with `tty=true`, read through `process_poll`, write/resize through `process_write`, and close through `process_cancel`.
 
-Linux x64 and macOS x64 use Unix PTYs and POSIX process groups. Native Windows x64 uses ConPTY plus a Job Object-backed process-tree controller. WSL2 remains a Linux runtime and is not counted as Windows qualification. Linux x64, native Windows x64, and native macOS x64 have passed the full core gate, installed CLI smoke, and packaged-runtime verification. macOS arm64 remains release-runner qualified rather than locally hardware-qualified. GUI/browser computer-use, multi-host routing, LSP/CodeGraph, and claims of sandboxed execution remain out of scope.
+Linux x64 and both macOS architectures use Unix PTYs and POSIX process groups. Native Windows x64 uses ConPTY plus a Job Object-backed process-tree controller. WSL2 remains a Linux runtime and is not counted as Windows qualification. Linux x64, native Windows x64, and both native macOS architectures have passed the full core gate, installed CLI smoke, and packaged-runtime verification. The installed macOS arm64 app was also smoked on a separate native Mac. GUI/browser computer-use, multi-host routing, LSP/CodeGraph, and claims of sandboxed execution remain out of scope.
 
 ## Requirements
 
@@ -91,7 +91,7 @@ The default bind is loopback-only, but `server.listen_host` is configurable for 
 
 Process response budgets and execution lifetime are separate. `wait_ms` bounds response waiting and `max_bytes` bounds returned output. Omit `deadline_ms` to run without an implicit deadline, set it for an explicit timeout, or use `process_cancel`. `max_output_bytes` caps retained output; filling it stops capture, never the process. `output_budget` reports the retained bytes and remaining capacity. Later output is drained but not retained; human PTY attachments still receive live output. Redirect full logs to a target file when needed.
 
-HostSpan also applies local overload and retention boundaries so several agents cannot amplify one burst into unbounded host work. Defaults are 128 in-flight MCP requests and 8 concurrent ripgrep searches with 16 queued; the search queue times out after 1 second. Search overflow returns retryable `SERVER_BUSY`; process execution is independently bounded by each exec profile's `max_concurrent_processes`. Durable audit history is bounded by both `audit_days` and `max_audit_events` (500,000 by default). Completed process output expires after 60 minutes by default, the retained spool budget defaults to 1 GiB, and old operation response payloads are compacted after 14 days without deleting their idempotency-key tombstones. Once those payloads and retained output are gone, redundant completed process/patch detail rows are also pruned while the operation tombstone remains.
+HostSpan also applies local overload and retention boundaries so several agents cannot amplify one burst into unbounded host work. Defaults are 128 in-flight MCP requests and 8 concurrent ripgrep searches with 16 queued; the search queue times out after 1 second. Search overflow returns retryable `SERVER_BUSY`. Native execution and PTY sessions each default to 16 concurrent processes per target; reaching capacity also returns retryable `SERVER_BUSY`. Existing configurations with explicit limits retain those values until changed and the daemon is restarted. Durable audit history is bounded by both `audit_days` and `max_audit_events` (500,000 by default). Completed process output expires after 60 minutes by default, the retained spool budget defaults to 1 GiB, and old operation response payloads are compacted after 14 days without deleting their idempotency-key tombstones. Once those payloads and retained output are gone, redundant completed process/patch detail rows are also pruned while the operation tombstone remains.
 
 ```yaml
 server:
@@ -109,7 +109,7 @@ retention:
 
 terminal:
   backend: pty
-  max_concurrent_sessions: 4
+  max_concurrent_sessions: 16
   attach_history_bytes: 65536
   max_output_bytes: 16777216
 ```
@@ -154,7 +154,7 @@ The optional tray companion is intentionally small: server start/stop/restart, v
 pnpm desktop
 ```
 
-The original HostSpan icon is generated from the checked-in SVG sources in `assets/brand`; platform PNG, ICO, and ICNS files are generated deterministically by `pnpm icons`. Electron supplies the tray/menu-bar surface on macOS, Windows, and Linux. Linux x64, native Windows x64, and native macOS x64 run the HostSpan core directly; the Windows desktop does not delegate core operations to WSL2. The macOS x64 app has been installed and launched from `~/Applications/HostSpan.app`, including a live menu-bar status item.
+`assets/brand/hostspan-mark.svg` is the shared canonical geometry. `pnpm icons` generates the app/tray SVG previews and platform PNG, ICO, and ICNS files. macOS uses black 16/32 px Template images with OS tint; Windows selects dark or white artwork using the system UI theme and updates it when the theme changes. Linux uses the same logo on a small blue app tile because Electron does not expose panel tint. See [Brand assets](docs/DISTRIBUTION.md#brand-assets) for generated paths. Linux x64, native Windows x64, and native macOS x64 run the HostSpan core directly; the Windows desktop does not delegate core operations to WSL2. The macOS x64 app has been installed and launched from `~/Applications/HostSpan.app`, including a live menu-bar status item.
 
 Create native desktop artifacts for the current operating system with:
 
@@ -282,7 +282,7 @@ hostspan doctor
 hostspan smoke --target local-app
 ```
 
-The contract suite pins the approved hash for the fixed 10-tool `hostspan-v3.2` registry. Acceptance coverage exercises the MCP request/response flow; process coverage exercises PTY input, resize, polling, cancellation, and recovery. Windows also checks Job Object process-tree control and native path security.
+The contract suite pins the approved hash for the fixed 10-tool `hostspan-v3.3` registry. Acceptance coverage exercises the MCP request/response flow; process coverage exercises PTY input, resize, polling, cancellation, and recovery. Windows also checks Job Object process-tree control and native path security.
 
 ## Security and support
 

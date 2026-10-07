@@ -1,11 +1,23 @@
 # HostSpan release notes
 
+Entries below describe the behavior of their named release. The latest release is listed first.
+
+## 0.9.0
+
+- Keep recent native/PTY output in a shared bounded rolling spool; report retention gaps while preserving cumulative stream cursors and independent readers. Output capture continues after the retained payload budget fills.
+- Record acknowledged PTY input delivery separately from output observation so observation failures do not cause input replay. Finalize proven pre-delivery failures and persist confirmed cancellation independently of output observation.
+- Return available native process output without an unnecessary wait; preserve independent cursors and UTF-8 boundaries.
+- Start the configured daemon once on tray login launch and preserve explicit Linux Ozone launch selection. Manual tray opening and status refresh respect a stopped daemon.
+- Classify patch rejections with bounded diagnostic reasons without recording patch contents.
+- Existing live workers retain their original output policy; new processes use rolling retention. Previously discarded output cannot be recovered.
+- Identify the changed retention behavior as `hostspan-v3.3`, still exactly 10 tools; digest `sha256:c0d02387bccf2dd9aad5ab92ba4bf93574484a8662d99ddc6fc0593c07da3a7f`. Refresh MCP client metadata after upgrading.
+
 ## 0.8.2 release
 
 - Align native and PTY per-target concurrency defaults at 16 from one shared default. Update example configurations; existing explicit settings must be updated and the daemon restarted to change live capacity.
 - Check new process capacity before accepting an idempotency key. Saturation returns retryable `SERVER_BUSY` without permanently recording an unstarted operation as failed; identical retries can start once capacity frees. Existing accepted operations still replay while capacity is full.
 - Record the native OS PID before a nonblocking start returns, so immediate cancellation stops the process instead of losing its launch identity.
-- The shared admission path covers native execution, PTY sessions, and retained-output capacity. Public tool schemas/hash and database schema are unchanged.
+- The shared admission path covers native execution, PTY sessions, and retained-output capacity. The active `hostspan-v3.2` contract still has exactly 10 tools and the same hash; the database schema is unchanged.
 
 ## 0.8.1 release
 

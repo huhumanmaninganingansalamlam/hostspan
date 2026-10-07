@@ -7,9 +7,12 @@ import sharp from "sharp";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const brandDir = resolve(root, "assets", "brand");
 const outputDir = resolve(root, "assets", "icons");
-const appSvg = await readFile(resolve(brandDir, "hostspan.svg"));
-const traySvg = await readFile(resolve(brandDir, "hostspan-tray.svg"));
-const trayColorSvg = Buffer.from(traySvg.toString("utf8").replaceAll("#000000", "#38BDF8"));
+const markSvg = await readFile(resolve(brandDir, "hostspan-mark.svg"), "utf8");
+const appSvg = Buffer.from(markSvg.replace("<path", '<rect x="2" y="2" width="60" height="60" rx="14" fill="#2558D9"/><path'));
+const traySvg = markSvg.replace('viewBox="0 0 64 64"', 'viewBox="8 8 48 48"');
+// These checked-in previews are derived; edit only hostspan-mark.svg.
+await writeFile(resolve(brandDir, "hostspan.svg"), appSvg);
+await writeFile(resolve(brandDir, "hostspan-tray.svg"), traySvg.replace("#FFFFFF", "#000000"));
 
 await mkdir(outputDir, { recursive: true });
 
@@ -26,9 +29,14 @@ if (!ico || !icns) throw new Error("Failed to generate native application icons.
 await writeFile(resolve(outputDir, "app.ico"), ico);
 await writeFile(resolve(outputDir, "app.icns"), icns);
 
-await sharp(trayColorSvg).resize(32, 32).png().toFile(resolve(outputDir, "tray.png"));
-await sharp(trayColorSvg).resize(64, 64).png().toFile(resolve(outputDir, "tray@2x.png"));
-await sharp(traySvg).resize(16, 16).png().toFile(resolve(outputDir, "hostspanTemplate.png"));
-await sharp(traySvg).resize(32, 32).png().toFile(resolve(outputDir, "hostspanTemplate@2x.png"));
+for (const [name, svg, size] of [
+  ["tray", appSvg, 32], // Linux panel tint is not exposed by Electron: use the blue app tile.
+  ["tray-on-light", Buffer.from(traySvg.replace("#FFFFFF", "#151C2A")), 32],
+  ["tray-on-dark", Buffer.from(traySvg), 32],
+  ["hostspanTemplate", Buffer.from(traySvg.replace("#FFFFFF", "#000000")), 16],
+]) {
+  await sharp(svg).resize(size, size).png().toFile(resolve(outputDir, `${name}.png`));
+  await sharp(svg).resize(size * 2, size * 2).png().toFile(resolve(outputDir, `${name}@2x.png`));
+}
 
 console.log(`Generated HostSpan icons in ${outputDir}`);

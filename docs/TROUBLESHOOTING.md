@@ -20,7 +20,7 @@ Run:
 hostspan print-toolset
 ```
 
-HostSpan `hostspan-v3.2` must advertise exactly 10 tools. Target permissions never remove a tool from `tools/list`; a disallowed call returns `SCOPE_DENIED`. If ChatGPT still shows older cached tool metadata after upgrading, Refresh the app before debugging the server.
+HostSpan `hostspan-v3.3` must advertise exactly 10 tools. Target permissions never remove a tool from `tools/list`; a disallowed call returns `SCOPE_DENIED`. If ChatGPT still shows older cached tool metadata after upgrading, Refresh the app before debugging the server.
 
 ## Only read-only tools appear in one ChatGPT conversation
 
@@ -127,7 +127,7 @@ While a daemon is running, CLI/dashboard target readiness requires its recorded 
 
 An idempotency key identifies one exact side-effect request across all targets and client sessions. Generate a fresh random UUIDv7 for each new operation; reuse it only for an identical retry, including the original arguments. Example UUIDs and counters restarted in a new conversation can collide with completed operations. `IDEMPOTENCY_CONFLICT` does not mean that the new command ran; do not delete the operation ledger to work around it.
 
-Use each process response's `next_stdout_cursor` and `next_stderr_cursor` for that same process and stream. They are byte offsets, not string lengths. `CURSOR_EXPIRED` can mean either expired output or a cursor beyond the available stream. Its details identify the available cursor bounds; failed polls now retain their process ID and requested cursor offsets in the audit trail without recording command/output contents.
+Use each process response's `next_stdout_cursor` and `next_stderr_cursor` for that same process and stream. They are byte offsets, not string lengths. Cursors remain cumulative raw byte offsets after old output is evicted. A cursor behind retention resumes at the earliest retained bytes: `stdout_earliest_cursor` and `stderr_earliest_cursor` report the retained starts, and `stdout_dropped_bytes` and `stderr_dropped_bytes` report bytes skipped before this response; it does not jump to the newest end. A cursor beyond the available stream is rejected. Failed polls retain their process ID and requested cursor offsets in the audit trail without recording command/output contents.
 
 ## Bounded search results
 
@@ -137,7 +137,11 @@ Use each process response's `next_stdout_cursor` and `next_stderr_cursor` for th
 
 `process_start.wait_ms` only limits response waiting. `max_bytes` limits output in that response (default 128 KiB); poll/write have their own response budgets. Neither stops the process. With `deadline_ms` omitted, the process has no implicit deadline; supply it only to request termination after that duration. `process_cancel` still stops the process tree.
 
-`max_output_bytes` bounds retained stdout/stderr (default 4 MiB, further bounded by available spool storage and the PTY capture setting). When `output_budget.remaining_bytes` reaches zero, HostSpan keeps draining output but stops storing it. The command continues and can still complete or be cancelled; poll for its final state. The retained prefix remains readable, later output is not available through MCP, and connected human PTY attachments continue receiving live output. Redirect a command's full output to a target file when it must be retained beyond that budget.
+`max_output_bytes` bounds the combined retained stdout/stderr payload (default 4 MiB, further bounded by available spool storage and the PTY capture setting). HostSpan removes older output segments to keep recording recent output without stopping execution. Segment eviction may leave some budget unused; filesystem metadata overhead is separate from the payload budget. `output_budget` reports currently retained bytes, not cumulative output or response size. Each reader keeps its own cursor; reading never consumes another reader's history. Human PTY attachments replay recent retained history and continue receiving live output. Redirect a command's full output to a target file when its complete history must be retained.
+
+Existing output from older `stdout.bin`/`stderr.bin` spools remains readable. A surviving PTY worker from an older installation keeps its original capture policy; restarting only the daemon does not replace that worker. New processes use rolling retention. Finish or explicitly cancel an old session and start a new one to adopt the new policy; upgrades do not forcibly restart active sessions.
+
+`process_write` records acknowledged PTY input delivery before observing output. A successful delivered write reports `input_delivered: true`; a later observation error carries the same flag in its details. Retry the identical request with the same idempotency key or use `process_poll` to observe output. Do not generate a new key to resend input merely because observation failed. An ACK confirms delivery to the PTY, not that the program completed the command. If delivery cannot be proven across a crash/connection boundary, HostSpan does not automatically resend it.
 
 Before upgrading to 0.8.0, remove `default_deadline_ms`, `max_deadline_ms`, `default_output_bytes`, and `max_output_bytes` from each `exec_profiles` entry. These obsolete profile fields are rejected, not silently ignored. Keep `mode` and `max_concurrent_processes`; the tool request's `max_output_bytes` and `terminal.max_output_bytes` remain valid. Refresh MCP metadata for the new `hostspan-v3.2` contract (still 10 tools).
 

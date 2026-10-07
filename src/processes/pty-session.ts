@@ -1,7 +1,7 @@
 import { processEnvironment } from "./environment.js";
 import { randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,7 @@ import type {
   StartInteractiveSessionInput,
 } from "./interactive-session.js";
 import { ptySocketPath } from "./pty-ipc.js";
+import { OutputSpool } from "./output-spool.js";
 
 interface WorkerStatus {
   schema_version: 1;
@@ -299,8 +300,7 @@ export class PtySessionManager implements InteractiveSessionManager {
   }
 
   outputBytes(processId: string): number {
-    const path = this.outputPath(processId);
-    return existsSync(path) ? statSync(path).size : 0;
+    return new OutputSpool(this.dataDir, processId, this.config.max_output_bytes).highWater("stdout");
   }
 
   outputDrained(processId: string): boolean {
@@ -544,7 +544,4 @@ export class PtySessionManager implements InteractiveSessionManager {
     return join(this.sessionDir(this.sessionName(processId)), "output-drained");
   }
 
-  private outputPath(processId: string): string {
-    return join(this.dataDir, "spools", "processes", processId, "stdout.bin");
-  }
 }

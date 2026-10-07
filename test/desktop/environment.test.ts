@@ -6,6 +6,7 @@ import { buildSystemdServiceUnit, serviceExecutionPath, systemdServiceInstalled 
 import {
   desktopLaunchSpec,
   extractMarkedPath,
+  isDesktopLoginLaunch,
   linuxAutoStartContents,
   mergePathValues,
 } from "../../src/desktop/environment.js";
@@ -48,6 +49,25 @@ describe("desktop environment", () => {
         appImage: "/home/user/Applications/HostSpan.AppImage",
       }),
     ).toEqual({ path: "/home/user/Applications/HostSpan.AppImage", args: [] });
+  });
+
+  it("registers a login marker and preserves only an explicitly selected Linux display platform", () => {
+    const input = { platform: "linux" as const, isPackaged: true, execPath: "/opt/HostSpan", mainPath: "/app/main.js", login: true };
+    expect(desktopLaunchSpec(input).args).toEqual(["--hostspan-login"]);
+    const spec = desktopLaunchSpec({ ...input, ozonePlatform: "x11" });
+    expect(spec.args).toEqual(["--ozone-platform=x11", "--hostspan-login"]);
+    expect(linuxAutoStartContents(spec)).toContain('"--ozone-platform=x11" "--hostspan-login"');
+    expect(desktopLaunchSpec({ ...input, platform: "win32", ozonePlatform: "x11" }).args).toEqual(["--hostspan-login"]);
+    expect(desktopLaunchSpec({ ...input, platform: "darwin" }).args).toEqual([]);
+  });
+
+  it("starts the daemon only for a login launch, using the OS launch status on macOS", () => {
+    for (const platform of ["linux", "win32"] as const) {
+      expect(isDesktopLoginLaunch(platform, ["HostSpan"], false)).toBe(false);
+      expect(isDesktopLoginLaunch(platform, ["HostSpan", "--hostspan-login"], false)).toBe(true);
+    }
+    expect(isDesktopLoginLaunch("darwin", ["HostSpan"], true)).toBe(true);
+    expect(isDesktopLoginLaunch("darwin", ["HostSpan", "--hostspan-login"], false)).toBe(false);
   });
 
   it("writes Linux autostart without a shell or PATH-dependent Electron shim", () => {

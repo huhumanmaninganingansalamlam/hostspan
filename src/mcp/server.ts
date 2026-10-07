@@ -80,8 +80,8 @@ export function createMcpServer(
         "file_search.query is a ripgrep regular expression, not a shell command or glob. Escape regex metacharacters when searching literal code. " +
         "process_start.wait_ms controls response waiting only; max_bytes bounds each response. " +
         "There is no implicit process deadline. Set deadline_ms only when the task must be stopped after that duration, or use process_cancel. " +
-        "max_output_bytes caps retained output, not execution: once output_budget.remaining_bytes reaches zero, capture stops but the process continues. " +
-        "Poll the process for completion; human PTY attachments continue receiving live output after capture fills.",
+        "max_output_bytes caps retained output, not execution: older output is evicted while recent output continues to be captured. " +
+        "A cursor behind retention resumes at the earliest retained output with explicit loss metadata. Poll for completion; human PTY attachments receive recent history and live output.",
     },
   );
   registerHostSpanTools(server, handlers, responseContext, authorization);

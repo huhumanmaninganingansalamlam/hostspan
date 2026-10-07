@@ -25,7 +25,8 @@ export function resolveWindowsProgram(program, cwd, env) {
   const roots = explicitPath ? [cwd] : pathValue.split(delimiter).filter(Boolean);
   for (const root of roots) {
     const base = explicitPath ? (isAbsolute(program) ? program : resolve(cwd, program)) : join(root, program);
-    const candidates = hasExtension ? [base] : [base, ...extensions.map((extension) => `${base}${extension}`)];
+    // npm tools also ship POSIX shims without extensions; prefer native Windows entries.
+    const candidates = hasExtension ? [base] : [...extensions.map((extension) => `${base}${extension}`), base];
     for (const candidate of candidates) {
       if (executableFile(candidate)) return candidate;
     }

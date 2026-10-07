@@ -31,5 +31,4 @@ describe("audit error diagnostics", () => {
     expect(metadata).toEqual({ error_code: "INTERNAL_ERROR", retryable: true });
     expect(JSON.stringify(metadata)).not.toContain(canary);
   });
-
 });

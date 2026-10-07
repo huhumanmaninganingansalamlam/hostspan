@@ -1,8 +1,9 @@
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import process from "node:process";
+import { OutputSpoolStore } from "./output-spool-store.mjs";
 import { resolveWindowsCommand } from "./windows-command.mjs";
 
 const args = process.argv.slice(2);
@@ -16,18 +17,17 @@ const sessionDir = join(spec.dataDir, "sessions", spec.session);
 const socketPath = spec.socketPath;
 const statusPath = join(sessionDir, "status.json");
 const drainPath = join(sessionDir, "output-drained");
-const spoolPath = join(spec.dataDir, "spools", "processes", spec.processId, "stdout.bin");
+const spool = new OutputSpoolStore(spec.dataDir, spec.processId, spec.maxOutputBytes);
+spool.recover();
 mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
-mkdirSync(dirname(spoolPath), { recursive: true, mode: 0o700 });
 if (process.platform !== "win32") {
   mkdirSync(dirname(socketPath), { recursive: true, mode: 0o700 });
   rmSync(socketPath, { force: true });
 }
 rmSync(drainPath, { force: true });
-writeFileSync(spoolPath, "", { mode: 0o600 });
 
 let ptyProcess;
-let outputBytes = 0;
+let outputBytes = spool.highWater("stdout");
 let terminationReason = null;
 let finished = false;
 let exitObserved = false;
@@ -140,11 +140,9 @@ function terminate(reason, graceMs = 500) {
 
 function appendOutput(data) {
   const bytes = Buffer.from(data, "utf8");
-  const remaining = Math.max(0, spec.maxOutputBytes - outputBytes);
-  const chunk = bytes.subarray(0, remaining);
-  if (chunk.length > 0) {
-    appendFileSync(spoolPath, chunk);
-    outputBytes += chunk.length;
+  if (bytes.length > 0) {
+    spool.append("stdout", bytes);
+    outputBytes = spool.highWater("stdout");
   }
   for (const socket of attached) {
     if (socket.destroyed) {
@@ -246,10 +244,8 @@ async function handleRequest(socket, request, rest) {
     }
     socket.write(`${JSON.stringify({ ok: true, mode: "attach" })}\n`);
     try {
-      if (existsSync(spoolPath)) {
-        const content = readFileSync(spoolPath);
-        socket.write(content.subarray(Math.max(0, content.length - spec.attachHistoryBytes)));
-      }
+      const content = spool.readTail("stdout", spec.attachHistoryBytes);
+      if (content.length > 0) socket.write(content);
     } catch {
       // Live output still works if historical output cannot be replayed.
     }

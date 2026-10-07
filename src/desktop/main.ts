@@ -1,9 +1,9 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, type IpcMainInvokeEvent, Menu, nativeImage, Tray } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, type IpcMainInvokeEvent, Menu, nativeImage, nativeTheme, Tray } from "electron";
 import {
   addLocalWorkspace,
   buildAdminSnapshot,
@@ -18,7 +18,7 @@ import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath } from "../config/paths.js";
 import { PtySessionManager } from "../processes/pty-session.js";
 import { protectWindowsFile, protectWindowsTree } from "../security/windows-acl.js";
-import { desktopLaunchSpec, linuxAutoStartContents, prepareDesktopEnvironment } from "./environment.js";
+import { desktopLaunchSpec, isDesktopLoginLaunch, linuxAutoStartContents, prepareDesktopEnvironment } from "./environment.js";
 import {
   installDashboardNavigationGuards,
   isTrustedDashboardIpc,
@@ -68,15 +68,16 @@ let lastTrayTooltip: string | undefined;
 let quitting = false;
 
 function icon() {
-  const path = join(iconDir, process.platform === "darwin" ? "hostspanTemplate.png" : "tray.png");
+  const name = process.platform === "darwin"
+    ? "hostspanTemplate.png"
+    : process.platform === "win32"
+      ? `tray-on-${nativeTheme.shouldUseDarkColorsForSystemIntegratedUI ? "dark" : "light"}.png`
+      : "tray.png";
+  const path = join(iconDir, name);
   const branded = nativeImage.createFromPath(path);
-  if (!branded.isEmpty()) {
-    if (process.platform === "darwin") branded.setTemplateImage(true);
-    return branded;
-  }
-  return nativeImage.createFromDataURL(
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAA8SURBVHgB7ZAxCgAgDAMv4v9/ubg4OAhFQfBKQ5uQkBByyJxz9oA5QFZUVFS0AjYgC0gB6QAtIAekALSAbAB2FQugKf4BhwAAAABJRU5ErkJggg==",
-  );
+  if (branded.isEmpty()) throw new Error(`HostSpan tray icon is missing or invalid: ${path}`);
+  if (process.platform === "darwin") branded.setTemplateImage(true);
+  return branded;
 }
 
 function quoteShell(value: string): string {
@@ -122,6 +123,10 @@ function openAttach(processId: string, readOnly: boolean): void {
 }
 
 function launchSpec(): { path: string; args: string[] } {
+  let ozonePlatform = app.commandLine.getSwitchValue("ozone-platform");
+  if (process.platform === "linux" && !ozonePlatform && existsSync(linuxAutoStartPath())) {
+    ozonePlatform = readFileSync(linuxAutoStartPath(), "utf8").match(/^Exec=.*"--ozone-platform=([a-zA-Z0-9_-]+)"/m)?.[1] ?? "";
+  }
   return desktopLaunchSpec({
     platform: process.platform,
     isPackaged: app.isPackaged,
@@ -129,6 +134,8 @@ function launchSpec(): { path: string; args: string[] } {
     mainPath,
     ...(process.env.APPIMAGE ? { appImage: process.env.APPIMAGE } : {}),
     linuxDevelopmentExecPath: linuxDevelopmentElectronPath,
+    login: true,
+    ozonePlatform,
   });
 }
 
@@ -364,6 +371,7 @@ void app.whenReady().then(async () => {
     }
     if (process.platform === "darwin") app.dock?.hide();
     tray = new Tray(icon());
+    if (process.platform === "win32") nativeTheme.on("updated", () => tray?.setImage(icon()));
     tray.on("click", () => {
       const w = createWindow();
       if (w.isVisible()) w.hide();
@@ -372,6 +380,19 @@ void app.whenReady().then(async () => {
         w.focus();
       }
     });
+    const loginLaunch = isDesktopLoginLaunch(
+      process.platform,
+      process.argv,
+      process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin,
+    );
+    if (loginLaunch) {
+      try {
+        const result = await daemonAction("start");
+        if ("running" in result && !result.running) throw new Error("HostSpan daemon did not start within five seconds.");
+      } catch (error) {
+        dialog.showErrorBox("HostSpan daemon could not start", error instanceof Error ? error.message : String(error));
+      }
+    }
     await refreshUi();
     refreshTimer = setInterval(() => void refreshUi().catch(() => undefined), 2_000);
     refreshTimer.unref();
