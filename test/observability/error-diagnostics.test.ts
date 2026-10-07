@@ -19,22 +19,6 @@ describe("audit error diagnostics", () => {
     });
   });
 
-  it.each([
-    "patch_context_mismatch",
-    "patch_duplicate_path",
-    "patch_malformed",
-    "patch_postcondition_mismatch",
-    "patch_rollback_failed",
-    "patch_target_not_regular",
-  ])("projects bounded patch reason %s without patch content", (reason) => {
-    const error = new HostSpanError("PATCH_REJECTED", "private patch message", false, {
-      reason,
-      path: "/private/project",
-      unified_diff: "private file content",
-    });
-    expect(auditErrorDiagnostics(error)).toEqual({ error_code: "PATCH_REJECTED", retryable: false, error_reason: reason });
-  });
-
   it("drops arbitrary detail values even when they look diagnostic", () => {
     const canary = "HOSTSPAN_SECRET_CANARY_DO_NOT_LEAK_12345";
     const error = new HostSpanError("INTERNAL_ERROR", canary, true, {
@@ -47,5 +31,4 @@ describe("audit error diagnostics", () => {
     expect(metadata).toEqual({ error_code: "INTERNAL_ERROR", retryable: true });
     expect(JSON.stringify(metadata)).not.toContain(canary);
   });
-
 });

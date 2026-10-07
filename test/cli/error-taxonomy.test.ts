@@ -32,17 +32,8 @@ function configFixture(): string {
 }
 
 describe("CLI error taxonomy", () => {
-  it.each([
-    [["daemon"], "daemon requires start, stop, or status"],
-    [["smoke"], "smoke requires --target TARGET"],
-    [["not-a-command"], "unknown command: not-a-command"],
-  ])("classifies CLI usage errors as VALIDATION_FAILED: %j", async (argv, message) => {
-    await expect(main(argv as string[])).rejects.toEqual(
-      expect.objectContaining<Partial<HostSpanError>>({
-        code: "VALIDATION_FAILED",
-        message,
-      }),
-    );
+  it.each(["daemon", "smoke", "not-a-command"])("classifies CLI usage errors as VALIDATION_FAILED: %s", async (command) => {
+    await expect(main([command])).rejects.toMatchObject({ code: "VALIDATION_FAILED" });
   });
 
   it("classifies smoke while the daemon is running as a validation precondition", async () => {

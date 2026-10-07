@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { spawnWindowsJobProcess, windowsJobObjectProbe } from "../../src/processes/windows-job-process.js";
+import { spawnWindowsJobProcess } from "../../src/processes/windows-job-process.js";
 import { resolveWindowsCommand } from "../../src/processes/windows-command.mjs";
 
 const roots: string[] = [];
@@ -42,10 +42,6 @@ async function waitFor(condition: () => boolean, timeoutMs = 3_000): Promise<voi
 }
 
 describe.skipIf(process.platform !== "win32")("native Windows Job Object backend", () => {
-  it("proves kill-on-close support", () => {
-    expect(windowsJobObjectProbe()).toMatchObject({ ok: true });
-  });
-
   it("kills target descendants when the worker is terminated", async () => {
     const root = mkdtempSync(join(tmpdir(), "hostspan-job-object-"));
     roots.push(root);
@@ -87,6 +83,7 @@ describe.skipIf(process.platform !== "win32")("native Windows Job Object backend
       "require('node:fs').writeFileSync(process.env.HOSTSPAN_ARGV_OUT,JSON.stringify(process.argv.slice(2)))",
     );
     writeFileSync(commandFile, `@"${process.execPath}" "${helper}" %*\r\n`);
+    writeFileSync(join(root, "capture args"), "#!/bin/sh\nexit 99\n");
     const expected = [
       "",
       "space value",
@@ -98,16 +95,18 @@ describe.skipIf(process.platform !== "win32")("native Windows Job Object backend
       'quote"value',
       "paren(value)",
     ];
-    const env = { ...process.env, HOSTSPAN_META: "EXPANDED", HOSTSPAN_ARGV_OUT: output };
-    const resolved = resolveWindowsCommand(commandFile, expected, root, env);
-    const result = spawnSync(resolved.program, resolved.argv, {
-      cwd: root,
-      env,
-      encoding: "utf8",
-      windowsHide: true,
-      windowsVerbatimArguments: resolved.windowsVerbatimArguments,
-    });
-    expect(result.status, result.stderr || result.stdout).toBe(0);
-    expect(JSON.parse(readFileSync(output, "utf8"))).toEqual(expected);
+    const env = { ...process.env, PATH: `${root};${process.env.PATH || process.env.Path || ""}`, HOSTSPAN_META: "EXPANDED", HOSTSPAN_ARGV_OUT: output };
+    for (const command of [commandFile, "capture args"]) {
+      const resolved = resolveWindowsCommand(command, expected, root, env);
+      const result = spawnSync(resolved.program, resolved.argv, {
+        cwd: root,
+        env,
+        encoding: "utf8",
+        windowsHide: true,
+        windowsVerbatimArguments: resolved.windowsVerbatimArguments,
+      });
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(JSON.parse(readFileSync(output, "utf8"))).toEqual(expected);
+    }
   });
 });

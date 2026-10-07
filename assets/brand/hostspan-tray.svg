@@ -1,9 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="HostSpan tray icon">
-  <g fill="none" stroke="#000000" stroke-linecap="round" stroke-linejoin="round">
-    <circle cx="9" cy="32" r="5" stroke-width="5"/>
-    <circle cx="55" cy="32" r="5" stroke-width="5"/>
-    <path d="M14 32h8M42 32h8" stroke-width="5"/>
-    <rect x="22" y="14" width="20" height="36" rx="6" stroke-width="5"/>
-    <path d="M29 25h6M29 32h6M29 39h6" stroke-width="4"/>
-  </g>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="8 8 48 48" color="#000000"><title>HostSpan controlled span</title><path d="M25 17H19A5 5 0 0 0 14 22V42A5 5 0 0 0 19 47H25M39 17H45A5 5 0 0 1 50 22V42A5 5 0 0 1 45 47H39M14 32H50" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"/></svg>

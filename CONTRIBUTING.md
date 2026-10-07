@@ -4,7 +4,7 @@ Thanks for helping improve HostSpan.
 
 ## Before you start
 
-HostSpan is intentionally a small, terminal-first MCP execution gateway. The fixed 10-tool `hostspan-v3.2` surface is a compatibility contract, not an invitation to add one tool per feature. Prefer strengthening correctness, recovery, security boundaries, diagnostics, and platform support over growing the MCP surface.
+HostSpan is intentionally a small, terminal-first MCP execution gateway. The fixed 10-tool `hostspan-v3.3` surface is a compatibility contract, not an invitation to add one tool per feature. Prefer strengthening correctness, recovery, security boundaries, diagnostics, and platform support over growing the MCP surface.
 
 For security-sensitive issues, follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
 
@@ -49,7 +49,7 @@ Keep changes focused and explain:
 4. tests added or updated;
 5. whether the MCP tool name/schema/description metadata changes.
 
-Breaking tool-contract changes must use a new toolset version rather than silently changing `hostspan-v3.2`.
+Breaking tool-contract changes must use a new toolset version rather than silently changing `hostspan-v3.3`.
 
 Run `pnpm check` and `git diff --check` before submitting changes. CI runs the core gate and audit on pushes and pull requests across Linux x64, Windows x64, macOS arm64, and macOS x64. Pull requests additionally run CLI package smoke and unpacked desktop smoke; direct `dev` pushes do not. Verify the relevant native packages before promoting `dev` to `main`.
 

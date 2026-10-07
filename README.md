@@ -1,7 +1,7 @@
 # HostSpan
 
 <p align="center">
-  <img src="assets/brand/hostspan.svg" width="128" height="128" alt="HostSpan gateway icon">
+  <img src="assets/brand/hostspan.svg" width="128" height="128" alt="HostSpan controlled span icon">
 </p>
 
 [![CI](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/ci.yml/badge.svg)](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/ci.yml)
@@ -10,7 +10,7 @@
 
 HostSpan is a terminal-first MCP execution gateway for ChatGPT Web Developer Mode. It exposes a fixed `hostspan-v3.3` toolset for approved local targets and keeps file/process side effects verifiable and recoverable across reconnects.
 
-The HostSpan mark represents an MCP gateway spanning two local endpoints through a central protocol-routing hub. The tray uses a separate simplified bridge/hub glyph so it stays legible at 16–32 px instead of shrinking the full application artwork.
+The HostSpan controlled-span mark uses the same geometry for the application and tray. The app places the white mark on a blue rounded tile; the tray uses a tightly framed monochrome mark, or the same blue tile when panel tint is unavailable.
 
 HostSpan has native Linux x64, Windows x64, macOS x64, and macOS arm64 core paths. **Native execution is not an OS sandbox**: a child process runs with the permissions of the user running HostSpan. See [Security](SECURITY.md) before enabling `exec` on a target.
 
@@ -154,7 +154,7 @@ The optional tray companion is intentionally small: server start/stop/restart, v
 pnpm desktop
 ```
 
-The original HostSpan icon is generated from the checked-in SVG sources in `assets/brand`; platform PNG, ICO, and ICNS files are generated deterministically by `pnpm icons`. Electron supplies the tray/menu-bar surface on macOS, Windows, and Linux. Linux x64, native Windows x64, and native macOS x64 run the HostSpan core directly; the Windows desktop does not delegate core operations to WSL2. The macOS x64 app has been installed and launched from `~/Applications/HostSpan.app`, including a live menu-bar status item.
+`assets/brand/hostspan-mark.svg` is the shared canonical geometry. `pnpm icons` generates the app/tray SVG previews and platform PNG, ICO, and ICNS files. macOS uses black 16/32 px Template images with OS tint; Windows selects dark or white artwork using the system UI theme and updates it when the theme changes. Linux uses the same logo on a small blue app tile because Electron does not expose panel tint. See [Brand assets](docs/DISTRIBUTION.md#brand-assets) for generated paths. Linux x64, native Windows x64, and native macOS x64 run the HostSpan core directly; the Windows desktop does not delegate core operations to WSL2. The macOS x64 app has been installed and launched from `~/Applications/HostSpan.app`, including a live menu-bar status item.
 
 Create native desktop artifacts for the current operating system with:
 

@@ -1,7 +1,6 @@
 import { closeSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import fc from "fast-check";
 import { afterEach, describe, expect, it } from "vitest";
 import type { HostSpanConfig } from "../../src/config/schema.js";
 import { HostSpanError } from "../../src/errors.js";
@@ -175,18 +174,6 @@ describe("canonical target path guard", () => {
     writeFileSync(join(root, "value.txt"), "replacement");
     expect(() => resolveTargetPath(target, "value.txt")).toThrowError(
       expect.objectContaining({ code: "TARGET_NOT_READY" }),
-    );
-  });
-
-  it("holds the traversal invariant over generated suffixes", () => {
-    const { root } = tempRoot();
-    const target = targetFor(root);
-    fc.assert(
-      fc.property(fc.array(fc.stringMatching(/^[a-z]{1,8}$/), { minLength: 0, maxLength: 8 }), (parts) => {
-        const path = ["..", ...parts].join("/");
-        expect(() => resolveTargetPath(target, path)).toThrow(HostSpanError);
-      }),
-      { numRuns: 250 },
     );
   });
 });

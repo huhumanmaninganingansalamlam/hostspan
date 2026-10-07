@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, type IpcMainInvokeEvent, Menu, nativeImage, Tray } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, type IpcMainInvokeEvent, Menu, nativeImage, nativeTheme, Tray } from "electron";
 import {
   addLocalWorkspace,
   buildAdminSnapshot,
@@ -68,15 +68,16 @@ let lastTrayTooltip: string | undefined;
 let quitting = false;
 
 function icon() {
-  const path = join(iconDir, process.platform === "darwin" ? "hostspanTemplate.png" : "tray.png");
+  const name = process.platform === "darwin"
+    ? "hostspanTemplate.png"
+    : process.platform === "win32"
+      ? `tray-on-${nativeTheme.shouldUseDarkColorsForSystemIntegratedUI ? "dark" : "light"}.png`
+      : "tray.png";
+  const path = join(iconDir, name);
   const branded = nativeImage.createFromPath(path);
-  if (!branded.isEmpty()) {
-    if (process.platform === "darwin") branded.setTemplateImage(true);
-    return branded;
-  }
-  return nativeImage.createFromDataURL(
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAA8SURBVHgB7ZAxCgAgDAMv4v9/ubg4OAhFQfBKQ5uQkBByyJxz9oA5QFZUVFS0AjYgC0gB6QAtIAekALSAbAB2FQugKf4BhwAAAABJRU5ErkJggg==",
-  );
+  if (branded.isEmpty()) throw new Error(`HostSpan tray icon is missing or invalid: ${path}`);
+  if (process.platform === "darwin") branded.setTemplateImage(true);
+  return branded;
 }
 
 function quoteShell(value: string): string {
@@ -370,6 +371,7 @@ void app.whenReady().then(async () => {
     }
     if (process.platform === "darwin") app.dock?.hide();
     tray = new Tray(icon());
+    if (process.platform === "win32") nativeTheme.on("updated", () => tray?.setImage(icon()));
     tray.on("click", () => {
       const w = createWindow();
       if (w.isVisible()) w.hide();

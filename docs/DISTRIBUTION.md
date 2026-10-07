@@ -4,10 +4,10 @@ HostSpan keeps the MCP server/tool contract separate from the optional Electron 
 
 ## Brand assets
 
-The editable source assets are:
+The sole editable geometry source is `assets/brand/hostspan-mark.svg` (the controlled-span mark). The generator derives the checked-in previews:
 
-- `assets/brand/hostspan.svg` — full application icon;
-- `assets/brand/hostspan-tray.svg` — monochrome tray/menu-bar mark.
+- `assets/brand/hostspan.svg` — white mark on a `#2558D9` rounded tile;
+- `assets/brand/hostspan-tray.svg` — the same path with `viewBox="8 8 48 48"`, black on transparency.
 
 Generate derived assets with:
 
@@ -15,7 +15,16 @@ Generate derived assets with:
 pnpm icons
 ```
 
-The generator writes platform PNG, ICO, and ICNS files under `assets/icons/`. Derived icons are intentionally ignored by Git because CI regenerates them from the reviewed SVG sources.
+The generator writes platform PNG, ICO, and ICNS files under `assets/icons/`. These binary derivatives are ignored by Git because CI regenerates them from the reviewed canonical SVG.
+
+| Surface | Generated assets and selection |
+| --- | --- |
+| Application / installer | `app.png`, `app-16.png` through `app-512.png`, `app.ico`, `app.icns`; Electron Builder uses PNG on Linux, ICO on Windows, ICNS on macOS. |
+| macOS menu bar | `hostspanTemplate.png` (16 px), `hostspanTemplate@2x.png` (32 px), black with `setTemplateImage(true)`; the OS supplies tint. |
+| Windows tray | `tray-on-light.png` (`#151C2A`) and `tray-on-dark.png` (`#FFFFFF`), 32 px with 64 px `@2x` companions; `nativeTheme.shouldUseDarkColorsForSystemIntegratedUI` selects the system/taskbar theme, and `updated` refreshes the image. |
+| Linux tray | `tray.png` (32 px), `tray@2x.png` (64 px), the same blue app tile. Electron's tray image path does not provide symbolic tint or a reliable panel theme signal. |
+
+All variants preserve the canonical path. Missing or invalid tray assets produce an explicit startup error rather than an unrelated placeholder. Regeneration does not update installed apps or OS icon caches; installation and release are separate actions.
 
 ## Local packaging
 
