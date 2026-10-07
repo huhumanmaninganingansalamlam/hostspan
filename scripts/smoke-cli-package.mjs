@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -94,7 +94,7 @@ try {
       join(installDir, "pnpm-workspace.yaml"),
       [
         "allowBuilds:",
-        `  ${JSON.stringify(`${packageJson.name}@file:${relative(installDir, tarball).replaceAll("\\", "/")}`)}: true`,
+        `  ${JSON.stringify(`${packageJson.name}@file:${relative(realpathSync.native(installDir), tarball).replaceAll("\\", "/")}`)}: true`,
         "  better-sqlite3: true",
         "  koffi: true",
         "  node-pty: true",
