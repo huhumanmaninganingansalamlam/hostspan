@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
 // npm-installed CLI tarballs do not consume pnpm's patchedDependencies.
@@ -15,5 +15,8 @@ const after = hunk.filter((line) => !line.startsWith("-")).map((line) => line.sl
 const source = readFileSync(target, "utf8").replace(/\r\n/g, "\n");
 if (!source.includes(after)) {
   if (source.split(before).length !== 2) throw new Error("Installed node-pty does not match its pinned patch");
-  writeFileSync(target, source.replace(before, after));
+  // Replace this installation's file without modifying pnpm's shared hard links.
+  const temporary = `${target}.hostspan-patch-${process.pid}`;
+  writeFileSync(temporary, source.replace(before, after), { flag: "wx" });
+  renameSync(temporary, target);
 }
