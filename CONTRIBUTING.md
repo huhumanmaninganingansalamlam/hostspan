@@ -51,7 +51,7 @@ Keep changes focused and explain:
 
 Breaking tool-contract changes must use a new toolset version rather than silently changing `hostspan-v3.3`.
 
-Run `pnpm check` and `git diff --check` before submitting changes. CI runs the core gate and audit on pushes and pull requests across Linux x64, Windows x64, macOS arm64, and macOS x64. Pull requests additionally run CLI package smoke and unpacked desktop smoke; direct `dev` pushes do not. Verify the relevant native packages before promoting `dev` to `main`.
+Run `pnpm check` and `git diff --check` before submitting changes. CI runs the core gate and audit on pushes and pull requests across Linux x64, Windows x64, macOS arm64, and macOS x64. Pull requests additionally run CLI package smoke, unpacked desktop smoke, and a separate nonpublishing installer job: Windows x64 NSIS installs into `RUNNER_TEMP`; macOS arm64/x64 DMGs are mounted read-only and copied there before installed-runtime smoke. Direct `dev` pushes do not package. This adds pre-release installer coverage; it does not replace the tagged release gates or qualify signing/notarization or an interactive OS launch. Verify the relevant native packages before promoting `dev` to `main`.
 
 ## Design principles
 

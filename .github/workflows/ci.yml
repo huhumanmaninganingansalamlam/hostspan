@@ -60,3 +60,75 @@ jobs:
       - name: Smoke unpacked desktop runtime
         if: github.event_name == 'pull_request'
         run: pnpm desktop:smoke
+
+  installer:
+    name: Installer ${{ matrix.label }}
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            os: windows-latest
+            arch: x64
+          - label: macOS Apple Silicon
+            os: macos-14
+            arch: arm64
+          - label: macOS Intel
+            os: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: pnpm/setup@v2
+        with:
+          version: 12.4.2
+          runtime: node@22
+          cache: true
+          install: false
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Verify candidate and runner architecture
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          git rev-parse HEAD
+          actual="$(node -p 'process.arch')"
+          expected="${{ matrix.arch }}"
+          test "$actual" = "$expected" || { echo "Runner architecture $actual does not match expected $expected"; exit 1; }
+      - name: Build desktop installers without publishing
+        run: pnpm desktop:make
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Install and smoke Windows NSIS
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path out -Filter 'HostSpan-*-win-x64.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'Windows NSIS installer was not produced.' }
+          $installDir = Join-Path $env:RUNNER_TEMP 'HostSpanInstalled'
+          if (Test-Path $installDir) { Remove-Item -Recurse -Force $installDir }
+          $result = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', "/D=$installDir") -Wait -PassThru
+          if ($result.ExitCode -ne 0) { throw "NSIS installer exited $($result.ExitCode)." }
+          if (-not (Test-Path (Join-Path $installDir 'HostSpan.exe'))) { throw 'Installed HostSpan.exe is missing.' }
+          node scripts/smoke-packaged-cli.mjs --platform win32 --arch "${{ matrix.arch }}" --installed-dir "$installDir"
+      - name: Install and smoke macOS DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          dmg="$(find out -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          test -n "$dmg"
+          mount="$RUNNER_TEMP/hostspan-dmg"
+          installed="$RUNNER_TEMP/HostSpan.app"
+          rm -rf "$mount" "$installed"
+          mkdir -p "$mount"
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount"
+          trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true' EXIT
+          test -d "$mount/HostSpan.app"
+          cp -R "$mount/HostSpan.app" "$installed"
+          hdiutil detach "$mount"
+          trap - EXIT
+          node scripts/smoke-packaged-cli.mjs --platform darwin --arch "${{ matrix.arch }}" --installed-dir "$installed"
