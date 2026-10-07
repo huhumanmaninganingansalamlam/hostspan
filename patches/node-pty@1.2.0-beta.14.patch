@@ -1,0 +1,16 @@
+diff --git a/lib/unixTerminal.js b/lib/unixTerminal.js
+index af2d24c39deb60e77ad16e6b864f37a7ef58881c..f66bab2e8e734aae96ca3667e996dd9e31233f93 100644
+--- a/lib/unixTerminal.js
++++ b/lib/unixTerminal.js
+@@ -78,7 +78,10 @@ var UnixTerminal = /** @class */ (function (_super) {
+                 var timeout_1 = setTimeout(function () {
+                     timeout_1 = null;
+                     // Destroying the socket now will cause the close event to fire
+-                    _this._socket.destroy();
++                    // Timers may run after poll; yield through the next poll phase before forced close.
++                    setImmediate(function () {
++                        setImmediate(function () { _this._socket.destroy(); });
++                    });
+                 }, DESTROY_SOCKET_TIMEOUT_MS);
+                 _this.once('close', function () {
+                     if (timeout_1 !== null) {
