@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolveWindowsCommand } from "../src/processes/windows-command.mjs";
@@ -94,6 +94,7 @@ try {
       join(installDir, "pnpm-workspace.yaml"),
       [
         "allowBuilds:",
+        `  ${JSON.stringify(`${packageJson.name}@file:${relative(installDir, tarball).replaceAll("\\", "/")}`)}: true`,
         "  better-sqlite3: true",
         "  koffi: true",
         "  node-pty: true",

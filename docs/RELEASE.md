@@ -2,7 +2,12 @@
 
 Entries below describe the behavior of their named release. The latest release is listed first.
 
-## 0.9.0
+## 0.9.1
+
+- Include the 0.9.0 changes below. The immutable `v0.9.0` candidate was not published because Windows installed-CLI qualification rejected HostSpan's new postinstall script.
+- Permit only the reviewed HostSpan postinstall alongside the existing native dependencies in the isolated CLI qualification prefix; other dependency scripts remain subject to explicit approval.
+
+## 0.9.0 (unpublished candidate)
 
 - Keep recent native/PTY output in a shared bounded rolling spool; report retention gaps while preserving cumulative stream cursors and independent readers. Output capture continues after the retained payload budget fills.
 - Record acknowledged PTY input delivery separately from output observation so observation failures do not cause input replay. Finalize proven pre-delivery failures and persist confirmed cancellation independently of output observation.
