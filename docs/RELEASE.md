@@ -2,7 +2,13 @@
 
 Entries below describe the behavior of their named release. The latest release is listed first.
 
-## 0.9.2
+## 0.9.3
+
+- Include the earlier unpublished candidates below; their immutable tags are preserved.
+- Read only the spool index's committed ranges during concurrent output capture. Do not mix a prior indexed prefix with a newer on-disk tail and skip live output bytes. Writer-start recovery still recovers crash remnants.
+- The `v0.9.2` retry failed the unchanged daemon-restart PTY assertion before publication; this candidate fixes that reproduced output-read race without increasing timeouts or weakening the assertion.
+
+## 0.9.2 (unpublished candidate)
 
 - Include the 0.9.1 changes below. Both earlier immutable candidates remain unpublished.
 - Compute the isolated CLI fixture's exact tarball build allowance from the OS-canonical install directory, matching pnpm's identifier when Windows uses a short path alias. Only that reviewed HostSpan artifact and the existing native dependencies are allowed.

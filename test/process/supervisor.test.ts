@@ -1,4 +1,5 @@
-import { readFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import fs, { readFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,7 +10,7 @@ import { writeConfigAtomic } from "../../src/config/writer.js";
 import type { InteractiveSessionManager } from "../../src/processes/interactive-session.js";
 import { ProcessSupervisor } from "../../src/processes/supervisor.js";
 import { processGroupAlive } from "../../src/processes/recovery.js";
-import { cleanupExpiredProcessSpools } from "../../src/processes/output-spool.js";
+import { OutputSpool, cleanupExpiredProcessSpools } from "../../src/processes/output-spool.js";
 import { PolicyEvaluator } from "../../src/policy/evaluator.js";
 import { openDatabase } from "../../src/state/database.js";
 import { OperationsRepo } from "../../src/state/operations-repo.js";
@@ -242,6 +243,39 @@ describe("process supervisor", () => {
     }
     const runtimes = (supervisor as unknown as { runtimes: Map<string, unknown> }).runtimes;
     expect(runtimes.size).toBe(0);
+  });
+
+  it("preserves output and cursors when an append publishes during a read", () => {
+    const root = mkdtempSync(join(tmpdir(), "hostspan-spool-read-"));
+    roots.push(root);
+    const writer = new OutputSpool(root, "concurrent-read", 128);
+    writer.append("stdout", Buffer.alloc(4096, 120));
+    writer.append("stdout", Buffer.from("INFO:RECOVERY_READY\r\n"));
+    const cursor = writer.highWater("stdout");
+    writer.append("stdout", Buffer.from("resume"));
+    const reader = new OutputSpool(root, "concurrent-read", 128);
+    const echo = reader.read("stdout", cursor, 32);
+    const original = fs.readFileSync;
+    let appended = false;
+    fs.readFileSync = ((...args: Parameters<typeof fs.readFileSync>) => {
+      const result = Reflect.apply(original, fs, args);
+      if (!appended && String(args[0]).endsWith("index.json")) {
+        appended = true;
+        writer.append("stdout", Buffer.from("RECOVERED\r\n"));
+      }
+      return result;
+    }) as typeof fs.readFileSync;
+    syncBuiltinESMExports();
+    let during: ReturnType<OutputSpool["read"]>;
+    try {
+      during = reader.read("stdout", echo.next_cursor, 32);
+    } finally {
+      fs.readFileSync = original;
+      syncBuiltinESMExports();
+    }
+    const after = reader.read("stdout", during.next_cursor, 32);
+    expect(echo.text + during.text + after.text).toBe("resumeRECOVERED\r\n");
+    expect(during.dropped_bytes + after.dropped_bytes).toBe(0);
   });
 
   it("evicts oldest completed spool artifacts when retained output exceeds the budget", () => {
