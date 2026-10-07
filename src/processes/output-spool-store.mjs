@@ -113,7 +113,6 @@ function listDiskSegments(dir) {
 
 function snapshotState(dir) {
   const state = readState(dir);
-  const listed = new Map(state.segments.map((segment) => [segment.id, segment]));
   const disk = listDiskSegments(dir);
   const diskById = new Map(disk.map((segment) => [segment.id, segment]));
   const segments = [];
@@ -125,11 +124,9 @@ function snapshotState(dir) {
     const size = Math.min(actual.size, segment.size);
     if (size > 0) segments.push({ ...segment, size, path: actual.path });
   }
-  for (const actual of disk) {
-    if (actual.id <= state.last_id || listed.has(actual.id)) continue;
-    // A complete segment renamed into place before a crash is recoverable.
-    segments.push({ ...actual, last_sequence: state.sequence + 1 });
-  }
+  // Only the index publishes a complete append. Discovering new disk segments
+  // here can expose their tail while hiding the appended prefix in an older
+  // indexed segment, causing readers to skip real bytes. recover() owns crash recovery.
   const highwater = { ...state.highwater };
   for (const segment of segments) highwater[segment.stream] = Math.max(highwater[segment.stream], segment.start + segment.size);
   return { ...state, highwater, segments };
