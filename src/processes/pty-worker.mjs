@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import process from "node:process";
+import { StringDecoder } from "node:string_decoder";
 import { OutputSpoolStore } from "./output-spool-store.mjs";
 import { resolveWindowsCommand } from "./windows-command.mjs";
 
@@ -255,20 +256,18 @@ async function handleRequest(socket, request, rest) {
     if (!request.read_only) {
       const ownerGeneration = request.owner_generation;
       socket.hostspanOwnerGeneration = ownerGeneration;
-      if (rest.length) {
+      const decoder = new StringDecoder("utf8");
+      const writeInput = (chunk) => {
         if (!ownerGenerationIsCurrent(ownerGeneration)) {
           socket.destroy();
           return;
         }
-        ptyProcess.write(rest.toString("utf8"));
-      }
-      socket.on("data", (chunk) => {
-        if (!ownerGenerationIsCurrent(ownerGeneration)) {
-          socket.destroy();
-          return;
-        }
-        ptyProcess.write(chunk.toString("utf8"));
-      });
+        const chars = chunk === undefined ? decoder.end() : decoder.write(chunk);
+        if (chars) ptyProcess.write(chars);
+      };
+      if (rest.length) writeInput(rest);
+      socket.on("data", writeInput);
+      socket.on("end", writeInput);
     }
     return;
   }
