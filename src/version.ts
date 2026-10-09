@@ -1,3 +1,3 @@
-export const SERVER_VERSION = "0.9.3";
+export const SERVER_VERSION = "0.9.4";
 export const PROTOCOL_VERSION = "2026-07-28";
 export const TOOLSET_VERSION = "hostspan-v3.3";
