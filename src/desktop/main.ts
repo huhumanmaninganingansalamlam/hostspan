@@ -1,6 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, type IpcMainInvokeEvent, Menu, nativeImage, nativeTheme, Tray } from "electron";
@@ -18,7 +17,7 @@ import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath } from "../config/paths.js";
 import { PtySessionManager } from "../processes/pty-session.js";
 import { protectWindowsFile, protectWindowsTree } from "../security/windows-acl.js";
-import { desktopLaunchSpec, isDesktopLoginLaunch, linuxAutoStartContents, prepareDesktopEnvironment } from "./environment.js";
+import { desktopLaunchSpec, isDesktopLoginLaunch, linuxAutoStartContents, linuxAutoStartPath, prepareDesktopEnvironment } from "./environment.js";
 import {
   installDashboardNavigationGuards,
   isTrustedDashboardIpc,
@@ -139,10 +138,6 @@ function launchSpec(): { path: string; args: string[] } {
   });
 }
 
-function linuxAutoStartPath(): string {
-  return join(homedir(), ".config", "autostart", "hostspan.desktop");
-}
-
 function getAutoStart(): boolean {
   if (process.platform === "linux") return existsSync(linuxAutoStartPath());
   const spec = launchSpec();
@@ -157,7 +152,7 @@ function setAutoStart(enabled: boolean): boolean {
       rmSync(path, { force: true });
       return false;
     }
-    mkdirSync(join(homedir(), ".config", "autostart"), { recursive: true, mode: 0o700 });
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     writeFileSync(path, linuxAutoStartContents(spec), { mode: 0o600 });
     return true;
   }

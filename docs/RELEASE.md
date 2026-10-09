@@ -2,6 +2,10 @@
 
 Entries below describe the behavior of their named release. The latest release is listed first.
 
+## 0.9.4
+
+- Resolve Linux tray login autostart within `XDG_CONFIG_HOME`, keeping `~/.config` as the default when unset. Read, create and remove the entry in the same config directory; existing user settings and running services are not rewritten.
+
 ## 0.9.3
 
 - Include the earlier unpublished candidates below; their immutable tags are preserved.

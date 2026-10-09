@@ -1,17 +1,31 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildSystemdServiceUnit, serviceExecutionPath, systemdServiceInstalled } from "../../src/services/systemd.js";
 import {
   desktopLaunchSpec,
   extractMarkedPath,
   isDesktopLoginLaunch,
   linuxAutoStartContents,
+  linuxAutoStartPath,
   mergePathValues,
 } from "../../src/desktop/environment.js";
 
 describe("desktop environment", () => {
+  it("resolves Linux autostart within XDG config home while preserving the default", () => {
+    const root = mkdtempSync(join(tmpdir(), "hostspan-autostart-"));
+    try {
+      vi.stubEnv("XDG_CONFIG_HOME", undefined);
+      expect(linuxAutoStartPath()).toBe(join(homedir(), ".config", "autostart", "hostspan.desktop"));
+      vi.stubEnv("XDG_CONFIG_HOME", root);
+      expect(linuxAutoStartPath()).toBe(join(root, "autostart", "hostspan.desktop"));
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("merges PATH values in priority order without duplicates", () => {
     expect(mergePathValues(["/custom/bin", "/usr/bin"].join(delimiter), ["/usr/bin", "/bin"].join(delimiter))).toBe(
       ["/custom/bin", "/usr/bin", "/bin"].join(delimiter),

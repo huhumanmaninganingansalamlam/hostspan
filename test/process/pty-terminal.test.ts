@@ -893,15 +893,36 @@ describe("durable interactive PTY process backend", () => {
 
   it("enforces interactive deadlines in the session worker while the daemon is absent", async () => {
     const first = fixture();
-    // ConPTY startup can take noticeably longer than Unix PTY creation. Keep
-    // the deadline far enough beyond a successful start that this test proves
-    // the detached worker, rather than the starting daemon, enforces it.
     const deadlineMs = process.platform === "win32" ? 3_000 : 400;
-    const started = await first.supervisor.start(ttyInput("setTimeout(()=>{},60000)", deadlineMs, 0), "req_pty_deadline");
-    track(first.terminal, started);
-    expect(started.state).toBe("running");
-    const processId = String(started.process_id);
+    const input = ttyInput("setTimeout(()=>{},60000)", deadlineMs, 0);
+    const processId = `proc_${uuidv7().replaceAll("-", "")}`;
+    const session = first.terminal.sessionName(processId);
+    const deadlineAt = new Date(Date.now() + deadlineMs).toISOString();
+    first.operations.resolve(input.idempotency_key, "process_start", input, input.target_id);
+    first.processes.create({
+      process_id: processId,
+      idempotency_key: input.idempotency_key,
+      target_id: input.target_id,
+      argv_digest: "deadline-worker-fixture",
+      cwd_relative: input.cwd,
+      backend: "pty",
+      backend_ref: session,
+      deadline_at: deadlineAt,
+    });
+    // Close the daemon database before launching the independent worker.
+    // Its startup need not fit inside the process deadline to prove enforcement.
     first.db.close();
+    sessions.push({ terminal: first.terminal, session });
+    await first.terminal.start({
+      processId,
+      cwd: join(first.root, "target"),
+      argv: input.argv,
+      env: input.env,
+      columns: input.columns,
+      rows: input.rows,
+      deadlineAt,
+      maxOutputBytes: input.max_output_bytes,
+    });
     await sleep(deadlineMs + (process.platform === "win32" ? 1_000 : 300));
 
     const db = openDatabase(join(first.config.server.data_dir, "state.db"));
