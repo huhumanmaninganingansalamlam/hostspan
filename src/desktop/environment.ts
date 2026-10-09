@@ -72,6 +72,10 @@ X-GNOME-Autostart-enabled=true
 `;
 }
 
+export function linuxAutoStartPath(): string {
+  return join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "autostart", "hostspan.desktop");
+}
+
 function commonMacDevPaths(home: string): string {
   return [
     join(home, ".local", "bin"),
