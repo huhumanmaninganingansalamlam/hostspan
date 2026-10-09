@@ -149,6 +149,7 @@ async function openRawAttachment(
   session: string,
   readOnly: boolean,
   ownerGeneration?: number,
+  initialInput?: Buffer,
 ): Promise<{ socket: Socket; output(): string }> {
   const status = JSON.parse(readFileSync(join(dataDir, "sessions", session, "status.json"), "utf8")) as { ipc_token?: string };
   if (!status.ipc_token) throw new Error("PTY attachment fixture is missing ipc_token");
@@ -177,12 +178,13 @@ async function openRawAttachment(
     socket.once("error", onError);
     socket.on("data", onData);
     socket.once("connect", () => {
-      socket.write(`${JSON.stringify({
+      const request = Buffer.from(`${JSON.stringify({
         op: "attach",
         read_only: readOnly,
         token: status.ipc_token,
         ...(ownerGeneration === undefined ? {} : { owner_generation: ownerGeneration }),
       })}\n`);
+      socket.write(initialInput ? Buffer.concat([request, initialInput]) : request);
     });
   });
   return { socket, output: () => Buffer.concat(output).toString("utf8") };
@@ -410,6 +412,36 @@ describe("durable interactive PTY process backend", () => {
     expect(Number(completedBudget.used_bytes)).toBeGreaterThanOrEqual(Number(startedBudget.used_bytes));
     expect(completedBudget.remaining_bytes).toBe(1024 * 1024 - Number(completedBudget.used_bytes));
     db.close();
+  });
+
+  it("preserves raw-attach UTF-8 across chunks and EOF alongside JSON writes", async () => {
+    const { root, config, terminal, supervisor, db } = fixture(true, 2, true);
+    const generation = claimRuntimeGeneration(db);
+    terminal.activateOwnership(generation);
+    const capture = join(root, "target", "input-bytes");
+    const script = [
+      "const fs=require('node:fs');",
+      "process.stdin.setRawMode(true);",
+      "process.stdin.on('data',data=>fs.appendFileSync('input-bytes',data));",
+      "fs.writeFileSync('input-bytes','');",
+    ].join("");
+    const started = await supervisor.start(ttyInput(script), "req_pty_utf8_attach_start");
+    const session = track(terminal, started);
+    await expect.poll(() => existsSync(capture), { timeout: 5_000 }).toBe(true);
+    const input = Buffer.from("START|한글🙂|END");
+    const split = Buffer.byteLength("START|") + 1;
+    const raw = await openRawAttachment(config.server.data_dir, session, false, generation, input.subarray(0, split));
+    // Seeing the ASCII prefix forces the split character into separate worker reads.
+    await expect.poll(() => readFileSync(capture).length, { timeout: 5_000 }).toBeGreaterThanOrEqual(split - 1);
+    const eof = new Promise<void>((resolveEnd) => raw.socket.once("end", () => resolveEnd()));
+    // A final incomplete character must flush only when the connection reaches EOF.
+    raw.socket.end(Buffer.concat([input.subarray(split), Buffer.from([0xed])]));
+    await eof;
+    const rawExpected = Buffer.concat([input, Buffer.from("\uFFFD")]);
+    await expect.poll(() => readFileSync(capture), { timeout: 5_000 }).toEqual(rawExpected);
+
+    await terminal.write(session, { chars: input.toString("utf8"), control_keys: [] });
+    await expect.poll(() => readFileSync(capture), { timeout: 5_000 }).toEqual(Buffer.concat([rawExpected, input]));
   });
 
   it("does not replay acknowledged PTY input when output observation fails", async () => {
