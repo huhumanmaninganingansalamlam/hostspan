@@ -102,7 +102,7 @@ Forward these paths to the same HostSpan upstream:
 /revoke
 ```
 
-Keep `/healthz` and `/readyz` private unless you have an explicit operational reason to publish them. HostSpan advertises `hostspan.read`, `hostspan.write`, `hostspan.exec`, and `hostspan.terminal`; requests without a scope default to `hostspan.read`. It requires PKCE S256 and issues rotating refresh tokens so ChatGPT can maintain OAuth connectivity. The OAuth metadata and endpoint layout follow the MCP SDK shape used by known-working ChatGPT integrations.
+Keep `/healthz` and `/readyz` private unless you have an explicit operational reason to publish them. HostSpan advertises `hostspan.read`, `hostspan.write`, `hostspan.exec`, `hostspan.terminal`, and `hostspan.computer`; requests without a scope default to `hostspan.read`. It requires PKCE S256 and issues rotating refresh tokens so ChatGPT can maintain OAuth connectivity. The OAuth metadata and endpoint layout follow the MCP SDK shape used by known-working ChatGPT integrations.
 
 MCP `2026-07-28` is stateless at the protocol core, so ordinary reverse proxies and load balancers do not need sticky MCP sessions for modern requests. The proxy should preserve the `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`, content type, and request body headers/data.
 
@@ -110,8 +110,8 @@ MCP `2026-07-28` is stateless at the protocol core, so ordinary reverse proxies 
 
 In ChatGPT Developer Mode, add the MCP endpoint issued by Secure MCP Tunnel or the OAuth-protected HTTPS reverse proxy endpoint you operate. For the latter, choose OAuth. ChatGPT should open the HostSpan authorization page; enter the credential from the local `approval_secret_file` created by `hostspan oauth init`. After authorization/tool scan, invoke `system_status` and verify:
 
-- `toolset_version` is `hostspan-v3.3`
-- the toolset has exactly 10 tools
+- `toolset_version` is `hostspan-v3.4`
+- the toolset has 11 tools for this contract version
 - `toolset_hash` matches `hostspan print-toolset`
 - `policy_epoch` matches the local config
 
@@ -119,9 +119,9 @@ OpenAI Developer Mode reference: <https://developers.openai.com/api/docs/guides/
 
 ## Refresh after metadata changes
 
-ChatGPT may cache tool names/descriptions/schemas. `hostspan-v3.3` keeps its 10 tool names and input schemas fixed. If a HostSpan release changes tool metadata, compare `server_version` and `toolset_hash`, then use the ChatGPT app Refresh action before diagnosing a cached schema as a HostSpan runtime failure.
+ChatGPT may cache tool names/descriptions/schemas. `hostspan-v3.4` preserves the prior file/process tool names and input schemas and adds `computer`. If a HostSpan release changes tool metadata, compare `server_version` and `toolset_hash`, then use the ChatGPT app Refresh action before diagnosing a cached schema as a HostSpan runtime failure.
 
-A breaking contract must use a new toolset version rather than silently changing `hostspan-v3.3`.
+A breaking contract must use a new toolset version rather than silently changing `hostspan-v3.4`.
 
 ## Interactive terminal use
 
@@ -158,4 +158,4 @@ If the approval credential is lost or suspected compromised, run `hostspan oauth
 
 ## Inspector validation
 
-Before ChatGPT interoperability testing, MCP Inspector can be used against the local or tunnel endpoint to verify 2026-07-28 `server/discover`, per-request `tools/list`, schemas, annotations, and tool calls independently of ChatGPT UI behavior. The repository contract suite pins the approved hash for the fixed 10-tool registry, while integration coverage verifies tool calls and OAuth authorization. HostSpan v3 targets the 2026-07-28 contract directly and does not carry an older stateless transport fallback.
+Before ChatGPT interoperability testing, MCP Inspector can be used against the local or tunnel endpoint to verify 2026-07-28 `server/discover`, per-request `tools/list`, schemas, annotations, and tool calls independently of ChatGPT UI behavior. The repository contract suite pins the approved hash for the versioned 11-tool registry, while integration coverage verifies tool calls and OAuth authorization. HostSpan v3 targets the 2026-07-28 contract directly and does not carry an older stateless transport fallback.

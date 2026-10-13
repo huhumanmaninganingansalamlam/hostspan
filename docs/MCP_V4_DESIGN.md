@@ -1,6 +1,6 @@
 # HostSpan MCP v4 contract design
 
-Status: design target for the next breaking MCP contract. This document does not change the active `hostspan-v3.3` contract.
+Status: design target for the next breaking MCP contract. This document does not change the active versioned contract.
 
 ## Goals
 
@@ -25,7 +25,7 @@ Every successful structured result continues to include `request_id`, `toolset_h
 
 ## Public tool surface
 
-v4 should retain the current 10 public tool names. The breaking change is the richer contract, not gratuitous renaming.
+v4 should retain the existing public tool names; ten was the v0.9.5 inventory, not a ceiling. The separately approved GUI extension adds `computer` in v3.4. The breaking change is the richer contract, not gratuitous renaming.
 
 | Tool | Title | OAuth scope | Selection rule |
 | --- | --- | --- | --- |
@@ -303,7 +303,7 @@ A future v4 implementation should be one deliberate breaking-contract change:
 1. Add typed output schemas and infer handler result types from them.
 2. Add titles and selection-oriented descriptions.
 3. Introduce the v4 metadata renames and common error serialization.
-4. Keep the 10-tool surface.
+4. Preserve existing tool semantics and include approved extensions; there is no numeric tool ceiling.
 5. Add contract tests that pin names, titles, descriptions, input/output schemas, annotations, and the new toolset hash.
 6. Add model-facing tool-selection regression fixtures.
 7. Run the complete existing safety/recovery/idempotency suite plus the new v4 contract suite before switching any default client guidance.

@@ -1,9 +1,11 @@
+export const HOSTSPAN_OAUTH_SCOPE_COMPUTER = "hostspan.computer";
 export const HOSTSPAN_OAUTH_SCOPE_READ = "hostspan.read";
 export const HOSTSPAN_OAUTH_SCOPE_WRITE = "hostspan.write";
 export const HOSTSPAN_OAUTH_SCOPE_EXEC = "hostspan.exec";
 export const HOSTSPAN_OAUTH_SCOPE_TERMINAL = "hostspan.terminal";
 
 export const HOSTSPAN_OAUTH_SCOPES = [
+  HOSTSPAN_OAUTH_SCOPE_COMPUTER,
   HOSTSPAN_OAUTH_SCOPE_READ,
   HOSTSPAN_OAUTH_SCOPE_WRITE,
   HOSTSPAN_OAUTH_SCOPE_EXEC,

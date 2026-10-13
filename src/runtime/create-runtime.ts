@@ -1,3 +1,5 @@
+import { PortalDesktop } from "../computer/portal.js";
+import { HostSpanError } from "../errors.js";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
@@ -149,6 +151,7 @@ export function createRuntime(
   const db = openDatabase(join(config.server.data_dir, "state.db"));
   const operations = new OperationsRepo(db);
   const processes = new ProcessesRepo(db);
+  const computer = config.computer ? new PortalDesktop(operations) : undefined;
   const transactions = new TransactionsRepo(db);
   const audit = new AuditRepo(db, {
     maxAgeDays: config.retention.audit_days,
@@ -322,6 +325,10 @@ export function createRuntime(
   };
 
   const handlers: HostSpanToolHandlers = {
+    computer: (input, requestId) => traced("computer", input, requestId, () => {
+      if (!computer) throw new HostSpanError("SCOPE_DENIED", "Desktop control is not configured. Set computer.backend to wayland-portal in the intended user-session config.");
+      return computer.run(input);
+    }),
     system_status: (_input: SystemStatusInput, requestId: string) =>
       traced("system_status", {}, requestId, () => {
         const searchReady = searchBackendReady();
@@ -340,6 +347,8 @@ export function createRuntime(
               ready: processReady,
             },
             terminal: { name: "hostspan_pty", ready: terminalReady, configured: Boolean(config.terminal) },
+            computer: { name: "wayland-portal", configured: Boolean(computer),
+              supported_session: process.platform === "linux" && process.env.XDG_SESSION_TYPE === "wayland" },
             search_concurrency: searchLimiter.snapshot(),
           },
           active_process_count: processes.activeCount(),
@@ -428,6 +437,7 @@ export function createRuntime(
     close: () => {
       if (closeRuntimePromise) return closeRuntimePromise;
       closing = true;
+      computer?.dispose();
       clearInterval(processMaintenanceTimer);
       clearInterval(retentionMaintenanceTimer);
       closeRuntimePromise = (async () => {

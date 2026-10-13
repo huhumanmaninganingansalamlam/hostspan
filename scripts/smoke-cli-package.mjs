@@ -109,6 +109,10 @@ try {
   console.log("[package-smoke] exercising installed CLI entrypoint and local admin flow");
   const bin = join(installDir, "node_modules", ".bin", process.platform === "win32" ? "hostspan.cmd" : "hostspan");
   if (!existsSync(bin)) throw new Error(`Installed HostSpan bin not found: ${bin}`);
+  const helper = join(installDir, "node_modules", "hostspan", "dist", "src", "computer", "portal-worker.py");
+  if (!readFileSync(helper).equals(readFileSync(join(root, "src", "computer", "portal-worker.py")))) {
+    throw new Error("Installed desktop helper does not match the candidate source");
+  }
   const version = run(bin, ["--version"]);
   if (version !== packageJson.version) {
     throw new Error(`Installed CLI version ${version} does not match package.json ${packageJson.version}`);

@@ -128,6 +128,7 @@ function fakeHandlers(calls: string[]): HostSpanToolHandlers {
     return { tool };
   };
   return {
+    computer: () => result("computer"),
     system_status: () => result("system_status"),
     target_list: () => result("target_list"),
     file_list: () => result("file_list"),
@@ -236,10 +237,10 @@ describe("OAuth scope split", () => {
     if (!oauth) throw new Error("OAuth runtime was not initialized.");
     try {
       expect(oauth.authorizationServerMetadata()).toMatchObject({
-        scopes_supported: ["hostspan.read", "hostspan.write", "hostspan.exec", "hostspan.terminal"],
+        scopes_supported: ["hostspan.computer", "hostspan.read", "hostspan.write", "hostspan.exec", "hostspan.terminal"],
       });
       expect(oauth.protectedResourceMetadata()).toMatchObject({
-        scopes_supported: ["hostspan.read", "hostspan.write", "hostspan.exec", "hostspan.terminal"],
+        scopes_supported: ["hostspan.computer", "hostspan.read", "hostspan.write", "hostspan.exec", "hostspan.terminal"],
       });
 
       const defaultGrant = issueToken(oauth, approvalSecret);
@@ -334,6 +335,10 @@ describe("OAuth scope split", () => {
       expectAllowed(await callTool(app, read.access_token, "system_status", {}), "system_status");
       expectScopeDenied(await callTool(app, read.access_token, "file_patch", patchArgs()), "hostspan.write");
       expect(calls).not.toContain("file_patch");
+      expectScopeDenied(await callTool(app, read.access_token, "computer", { action: "open" }), "hostspan.computer");
+      expect(calls).not.toContain("computer");
+      const desktop = issueToken(oauth, approvalSecret, "hostspan.computer").token;
+      expectAllowed(await callTool(app, desktop.access_token, "computer", { action: "open" }), "computer");
 
       expectAllowed(await callTool(app, write.access_token, "file_patch", patchArgs()), "file_patch");
       expectScopeDenied(

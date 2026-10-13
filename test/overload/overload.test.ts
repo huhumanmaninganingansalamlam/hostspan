@@ -212,6 +212,7 @@ describe("overload stability", () => {
         await hold.promise;
         return { ok: true };
       },
+      computer: () => ({ state: "closed" }),
       target_list: () => ({ targets: [] }),
       file_list: () => ({ entries: [] }),
       file_read: () => ({ text: "" }),

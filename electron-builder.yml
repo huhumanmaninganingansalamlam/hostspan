@@ -13,6 +13,7 @@ files:
   - assets/icons/**/*
   - package.json
 asarUnpack:
+  - dist/src/computer/portal-worker.py
   - node_modules/better-sqlite3/prebuilds/**/*
   - node_modules/better-sqlite3/lib/**/*
   - node_modules/koffi/**/*

@@ -256,7 +256,7 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
   checks.push(await processGroupCheck());
   checks.push({
     name: "toolset",
-    status: TOOL_NAMES.length === 10 ? "pass" : "fail",
+    status: TOOL_NAMES.length === new Set(TOOL_NAMES).size ? "pass" : "fail",
     details: `${TOOL_NAMES.length} tools; ${TOOLSET_HASH}`,
   });
   const tunnel = spawnSync("tunnel-client", ["--version"], { encoding: "utf8", timeout: 2_000, windowsHide: true });

@@ -3,6 +3,7 @@ import { canonicalJson } from "../canonical-json.js";
 import type { McpServer, ServerContext, ToolAnnotations } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import {
+  HOSTSPAN_OAUTH_SCOPE_COMPUTER,
   HOSTSPAN_OAUTH_SCOPE_EXEC,
   HOSTSPAN_OAUTH_SCOPE_READ,
   HOSTSPAN_OAUTH_SCOPE_TERMINAL,
@@ -10,6 +11,7 @@ import {
   oauthScopesGrant,
   type HostSpanOAuthScope,
 } from "../auth/oauth-scopes.js";
+import { ComputerInputSchema, type ComputerInput } from "../computer/portal.js";
 import { TOOLSET_VERSION } from "../version.js";
 import { HostSpanError } from "../errors.js";
 import { errorResult, requestId, successResult, type ResponseContext } from "./result.js";
@@ -120,6 +122,12 @@ export const TOOL_DEFINITIONS = [
     inputSchema: ProcessCancelInputSchema,
     annotations: processAnnotations,
   },
+  {
+    name: "computer" as const,
+    description: "Observe and control the consented desktop. Open returns a session_id while the user selects a screen; observe returns an image and observation_id. Input uses that observation and a unique idempotency_key, then returns a fresh image. Dispatched input is not verified application success; compare the new image. Close releases the session. Coordinates use coordinate_width/height, not resized image pixels. Desktop input is not confined by file target roots.",
+    inputSchema: ComputerInputSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  },
 ] as const;
 
 export const TOOL_NAMES = TOOL_DEFINITIONS.map((tool) => tool.name);
@@ -141,6 +149,7 @@ export function toolsetDocument() {
 export const TOOLSET_HASH = `sha256:${createHash("sha256").update(canonicalJson(toolsetDocument())).digest("hex")}`;
 
 export interface HostSpanToolHandlers {
+  computer(input: ComputerInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
   system_status(input: SystemStatusInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
   target_list(input: TargetListInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
   file_list(input: FileListToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
@@ -211,11 +220,12 @@ async function invoke<T>(
   handler: (input: T, requestId: string) => Promise<Record<string, unknown>> | Record<string, unknown>,
   context: ResponseContextProvider,
   authorize?: (input: T) => void,
+  includeImage = false,
 ) {
   const id = requestId();
   try {
     authorize?.(input);
-    return successResult(context(), await handler(input, id), id);
+    return successResult(context(), await handler(input, id), id, includeImage);
   } catch (error) {
     return errorResult(context(), error, id);
   }
@@ -259,4 +269,8 @@ export function registerHostSpanTools(
   server.registerTool(TOOL_DEFINITIONS[9].name, TOOL_DEFINITIONS[9], (input, requestContext) =>
     invoke(input, handlers.process_cancel.bind(handlers), context, (parsed) => authorizeProcessCancel(requestContext, parsed, authorization)),
   );
+  server.registerTool(TOOL_DEFINITIONS[10].name, TOOL_DEFINITIONS[10], (input, requestContext) =>
+    invoke(input, handlers.computer.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_COMPUTER), true),
+  );
+
 }
