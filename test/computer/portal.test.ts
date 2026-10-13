@@ -13,18 +13,19 @@ it.skipIf(process.platform !== "linux")("observes after input and never resends 
   vi.stubEnv("XDG_SESSION_TYPE", "wayland");
   const db = openDatabase(":memory:");
   const operations = new OperationsRepo(db);
-  const worker = Object.assign(new EventEmitter(), {
-    stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
-  });
-  vi.mocked(spawn).mockReturnValue(worker as unknown as ChildProcessWithoutNullStreams);
   const commands: Array<Record<string, unknown>> = [];
   let failObservation = false;
   let failInput = false;
+  let failOpen = false;
+  vi.mocked(spawn).mockImplementation(() => {
+  const worker = Object.assign(new EventEmitter(), {
+    stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+  });
   worker.stdin.on("data", (data: Buffer) => {
     const command = JSON.parse(data.toString()) as Record<string, unknown>;
     commands.push(command);
     queueMicrotask(() => {
-      if ((command.action === "observe" && failObservation) || (command.action === "text" && failInput)) {
+      if ((command.action === "open" && failOpen) || (command.action === "observe" && failObservation) || (command.action === "text" && failInput)) {
         worker.stdout.write(`${JSON.stringify({ id: command.id, error: "injected transport failure" })}\n`);
       } else {
         worker.stdout.write(`${JSON.stringify({ id: command.id, result: command.action === "observe"
@@ -34,10 +35,17 @@ it.skipIf(process.platform !== "linux")("observes after input and never resends 
       }
     });
   });
+    return worker as unknown as ChildProcessWithoutNullStreams;
+  });
   const desktop = new PortalDesktop(operations);
   try {
     const opened = await desktop.run({ action: "open" });
-    expect(opened).toMatchObject({ state: "awaiting_consent" });
+    expect(opened).toMatchObject({ state: "awaiting_consent", next_action: {
+      tool: "computer", arguments: { action: "observe", session_id: opened.session_id },
+    } });
+    const resumed = await desktop.run({ action: "open" });
+    expect(resumed.session_id).toBe(opened.session_id);
+    expect(commands.filter((command) => command.action === "open")).toHaveLength(1);
     // The fake portal resolves consent asynchronously, like a user accepting the OS dialog.
     await Promise.resolve();
     const first = await desktop.run({ action: "observe", session_id: opened.session_id });
@@ -59,6 +67,15 @@ it.skipIf(process.platform !== "linux")("observes after input and never resends 
     expect(await desktop.run(uncertain)).toMatchObject({ state: "unknown" });
     expect(await desktop.run(input)).toMatchObject({ replayed: true, dispatched: true });
     expect(commands).toHaveLength(commandCount);
+    failOpen = true;
+    await desktop.run({ action: "open" });
+    await Promise.resolve();
+    expect(desktop.status()).toMatchObject({ state: "failed", next_action: { arguments: { action: "open" } } });
+    failOpen = false;
+    const reopened = await desktop.run({ action: "open" });
+    await Promise.resolve();
+    expect(desktop.status()).toMatchObject({ state: "ready", session_id: reopened.session_id });
+    expect(await desktop.run({ action: "close", session_id: reopened.session_id })).toMatchObject({ closed: true, state: "closed" });
     await expect(desktop.run({ ...input, text: "different" })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
   } finally {
     desktop.dispose();

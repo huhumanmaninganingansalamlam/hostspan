@@ -303,8 +303,13 @@ Apache-2.0. See [`LICENSE`](LICENSE).
 
 ## Desktop computer control
 
+Use `hostspan computer status` to discover the saved setting and next step. `hostspan computer enable --config /path/to/config.yaml` (or `disable`) changes only that profile. Add `--json` for automation. These commands never restart a daemon: apply changes explicitly when existing work allows it. The dashboard shows saved configuration; `system_status.backends.computer` reports the running session.
+
+
 The `computer` tool connects observation, input and a fresh PNG observation. In a logged-in Linux Wayland session, configure `computer: { backend: wayland-portal }` in that instance's YAML configuration. Existing configurations do not silently enable desktop control. Remote callers need the explicit `hostspan.computer` OAuth scope; file/process grants do not grant screen access. The native OS dialog selects a screen and grants input. The selected screen bounds capture/coordinates, **not keyboard focus or application authority**; desktop actions are not confined by file target roots.
 
 Requirements: `/usr/bin/python3` with PyGObject, dbus-python, GStreamer introspection and `pipewiresrc`, `videoconvert`, `pngenc`, `appsink`; a working session D-Bus and RemoteDesktop/ScreenCast portal backend. Exact text paste additionally requires the portal Clipboard interface and its session grant. Packages bundle the helper, not these host desktop services. No display/security setup is changed automatically.
 
 Call `open`, retain `session_id`, then `observe` until consent completes. The image response includes `observation_id`, image dimensions and `coordinate_width/height`; convert resized image coordinates to the latter before clicking. Call `click`, `move`, `scroll`, `key` or `text` with that observation ID and a new idempotency key. `text` writes only the supplied UTF-8 text to the consented clipboard and pastes it; this replaces clipboard content and never reads/restores prior clipboard data. Input returns `dispatched` separately from `outcome_verified`; inspect the fresh image for the actual outcome. When a response is lost, reuse the identical key/arguments; an unknown delivery is never replayed. Call `close` to release the portal session.
+
+Repeating `computer.open` recovers the existing session, including pending consent. Follow the response message and structured `next_action`. After failed/canceled consent, open again. If input was sent but observation failed, retry observation only. If delivery is uncertain, inspect the screen before deciding on a new input. The same key never resends input. Desktop MCP text gives a concise status while structured content retains identifiers and exact next-call arguments.

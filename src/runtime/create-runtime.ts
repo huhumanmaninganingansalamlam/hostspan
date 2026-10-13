@@ -326,7 +326,7 @@ export function createRuntime(
 
   const handlers: HostSpanToolHandlers = {
     computer: (input, requestId) => traced("computer", input, requestId, () => {
-      if (!computer) throw new HostSpanError("SCOPE_DENIED", "Desktop control is not configured. Set computer.backend to wayland-portal in the intended user-session config.");
+      if (!computer) throw new HostSpanError("SCOPE_DENIED", "Desktop control is off. Run hostspan computer enable with the intended --config, then explicitly restart that daemon to apply it.");
       return computer.run(input);
     }),
     system_status: (_input: SystemStatusInput, requestId: string) =>
@@ -348,7 +348,8 @@ export function createRuntime(
             },
             terminal: { name: "hostspan_pty", ready: terminalReady, configured: Boolean(config.terminal) },
             computer: { name: "wayland-portal", configured: Boolean(computer),
-              supported_session: process.platform === "linux" && process.env.XDG_SESSION_TYPE === "wayland" },
+              supported_session: process.platform === "linux" && process.env.XDG_SESSION_TYPE === "wayland",
+              ...(computer ? computer.status() : { state: "disabled", message: "Desktop control is off. Use hostspan computer enable to configure it." }) },
             search_concurrency: searchLimiter.snapshot(),
           },
           active_process_count: processes.activeCount(),

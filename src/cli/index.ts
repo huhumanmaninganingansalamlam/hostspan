@@ -66,7 +66,7 @@ function isLoopbackHost(host: string): boolean {
 }
 
 function usage(): string {
-  return `HostSpan ${SERVER_VERSION}\n\nCommands:\n  init [--config PATH]\n  serve [--config PATH]\n  daemon start|stop|status [--config PATH]\n  doctor [--config PATH]\n  smoke --target TARGET [--config PATH]\n  status [--verbose] [--config PATH]\n  admin snapshot [--recent N] [--config PATH]\n  terminal list|attach --process PROCESS_ID [--read-only] [--config PATH]\n  targets list|add|remove ... [--config PATH]\n  oauth init --public-url https://host/mcp [--config PATH]\n  oauth status [--config PATH]\n  oauth rotate-secret [--config PATH]\n  policy validate [--config PATH]\n  print-toolset\n  logs [--follow] [--config PATH]\n  support-export [PATH] [--config PATH]\n  service install|start|stop|restart|status [--config PATH]\n  --version\n`;
+  return `HostSpan ${SERVER_VERSION}\n\nCommands:\n  init [--config PATH]\n  serve [--config PATH]\n  daemon start|stop|status [--config PATH]\n  doctor [--config PATH]\n  computer status|enable|disable [--json] [--config PATH]\n    Configure desktop control; use the connected MCP assistant to observe and act.\n  smoke --target TARGET [--config PATH]\n  status [--verbose] [--config PATH]\n  admin snapshot [--recent N] [--config PATH]\n  terminal list|attach --process PROCESS_ID [--read-only] [--config PATH]\n  targets list|add|remove ... [--config PATH]\n  oauth init --public-url https://host/mcp [--config PATH]\n  oauth status [--config PATH]\n  oauth rotate-secret [--config PATH]\n  policy validate [--config PATH]\n  print-toolset\n  logs [--follow] [--config PATH]\n  support-export [PATH] [--config PATH]\n  service install|start|stop|restart|status [--config PATH]\n  --version\n`;
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
@@ -85,6 +85,32 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   }
 
   const configPath = resolve(flag(argv, "--config") ?? defaultConfigPath());
+  if (command === "computer") {
+    const action = argv[1] ?? "status";
+    if (!["status", "enable", "disable"].includes(action)) throw cliValidationError("computer requires status, enable, or disable");
+    const config = loadConfig(configPath);
+    const changed = action !== "status" && Boolean(config.computer) !== (action === "enable");
+    if (changed) {
+      if (action === "enable") config.computer = { backend: "wayland-portal" };
+      else delete config.computer;
+      writeConfigAtomic(configPath, config);
+    }
+    const running = daemonStatus(configPath).running;
+    const configured = Boolean(config.computer);
+    const supported = process.platform === "linux" && process.env.XDG_SESSION_TYPE === "wayland";
+    const message = changed ? `Desktop control ${configured ? "enabled" : "disabled"} in this profile.`
+      : `Desktop control is ${configured ? "configured" : "off"}.`;
+    const next = changed && running ? "Restart this daemon explicitly when safe to apply the change. Existing work was not interrupted."
+      : configured ? "Start HostSpan in your logged-in Wayland session. Ask your MCP assistant to open computer, select a screen in the OS dialog, then observe and act."
+      : "Run hostspan computer enable with the same --config to enable desktop control.";
+    const result = { configured, supported_session: supported, changed, daemon_running: running,
+      message, next, config_path: configPath,
+      runtime_note: "This describes saved configuration, not an active desktop grant. Remote callers also need hostspan.computer.",
+      ...(!supported && configured ? { limitation: "GUI control currently requires Linux Wayland; Windows/macOS/X11 are not supported." } : {}) };
+    if (has(argv, "--json")) print(result);
+    else process.stdout.write(`${message}\n${next}\n${result.runtime_note}\n${result.limitation ?? ""}\nProfile: ${configPath}\n`);
+    return 0;
+  }
   if (command === "daemon") {
     const action = argv[1];
     if (action === "start") {
@@ -266,6 +292,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       toolset_version: snapshot.toolset_version,
       policy_epoch: snapshot.policy_epoch,
       daemon: snapshot.daemon,
+      computer: snapshot.computer,
       listen_host: snapshot.listen.host,
       listen_port: snapshot.listen.port,
       native_execution: true,

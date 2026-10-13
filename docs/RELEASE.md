@@ -2,6 +2,12 @@
 
 Entries describe versioned behavior. Publication is established by the corresponding Git tag and GitHub Release; notes alone do not prove publication.
 
+## 0.10.1
+
+- Make desktop control discoverable with `computer status|enable|disable` in the local CLI and a dashboard section. Configuration changes never restart the daemon automatically; saved configuration and live OS consent remain distinct.
+- Recover the existing desktop session when `computer.open` is repeated. Report consent progress, capture/input outcomes and concrete next actions; retain uncertain input without replaying it.
+- Present concise desktop messages in MCP text content while preserving identifiers and recovery arguments in structured content. Failed consent can be opened again; observation failure after input calls for observation only.
+
 ## 0.10.0
 
 - Add `computer` in the versioned `hostspan-v3.4` contract. Existing file/process tools retain their input semantics; tool counts describe a version and are not a product ceiling.

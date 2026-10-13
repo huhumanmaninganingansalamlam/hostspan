@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { writeDaemonPid } from "../../src/daemon/control.js";
+import { daemonStatus, writeDaemonPid } from "../../src/daemon/control.js";
 import { main } from "../../src/cli/index.js";
 import { createRuntime } from "../../src/runtime/create-runtime.js";
 import { runSmoke } from "../../src/cli/smoke.js";
@@ -32,6 +32,18 @@ function configFixture(): string {
 }
 
 describe("CLI error taxonomy", () => {
+  it("configures desktop control without starting a daemon or changing unrelated settings", async () => {
+    const configPath = configFixture();
+    const before = loadConfig(configPath);
+    expect(await main(["computer", "enable", "--json", "--config", configPath])).toBe(0);
+    expect(loadConfig(configPath)).toEqual({ ...before, computer: { backend: "wayland-portal" } });
+    const enabled = readFileSync(configPath, "utf8");
+    expect(await main(["computer", "status", "--config", configPath])).toBe(0);
+    expect(readFileSync(configPath, "utf8")).toBe(enabled);
+    expect(await main(["computer", "disable", "--config", configPath])).toBe(0);
+    expect(loadConfig(configPath)).toEqual(before);
+    expect(daemonStatus(configPath).running).toBe(false);
+  });
   it.each(["daemon", "smoke", "not-a-command"])("classifies CLI usage errors as VALIDATION_FAILED: %s", async (command) => {
     await expect(main([command])).rejects.toMatchObject({ code: "VALIDATION_FAILED" });
   });

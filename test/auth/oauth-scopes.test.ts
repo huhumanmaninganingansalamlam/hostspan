@@ -200,7 +200,7 @@ function expectScopeDenied(body: Awaited<ReturnType<typeof callTool>>, requiredS
   expect(body.result?.isError).toBe(true);
   const text = body.result?.content?.[0]?.text;
   if (!text) throw new Error("scope denial did not include HostSpan error content");
-  const payload = JSON.parse(text) as { error?: { code?: string; details?: Record<string, unknown> } };
+  const payload = (body.result?.structuredContent ?? JSON.parse(text)) as { error?: { code?: string; details?: Record<string, unknown> } };
   expect(payload.error?.code).toBe("SCOPE_DENIED");
   expect(payload.error?.details).toMatchObject({ reason: "oauth_scope" });
   if (requiredScope) expect(payload.error?.details?.required_scope).toBe(requiredScope);
