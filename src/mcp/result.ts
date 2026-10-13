@@ -16,14 +16,14 @@ export function successResult(context: ResponseContext, value: Record<string, un
   const payload = { request_id, ...context, ...(hasImage ? metadata : value) };
   return {
     content: [
-      { type: "text" as const, text: JSON.stringify(payload) },
+      { type: "text" as const, text: includeImage && typeof value.message === "string" ? value.message : JSON.stringify(payload) },
       ...(hasImage ? [{ type: "image" as const, mimeType: "image/png", data: image }] : []),
     ],
     structuredContent: payload,
   };
 }
 
-export function errorResult(context: ResponseContext, error: unknown, request_id = requestId()) {
+export function errorResult(context: ResponseContext, error: unknown, request_id = requestId(), humanMessage = false) {
   const known = asHostSpanError(error);
   const payload = {
     request_id,
@@ -38,6 +38,7 @@ export function errorResult(context: ResponseContext, error: unknown, request_id
   };
   return {
     isError: true,
-    content: [{ type: "text" as const, text: JSON.stringify(payload) }],
+    content: [{ type: "text" as const, text: humanMessage ? known.message : JSON.stringify(payload) }],
+    ...(humanMessage ? { structuredContent: payload } : {}),
   };
 }

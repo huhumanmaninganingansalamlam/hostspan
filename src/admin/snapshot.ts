@@ -192,6 +192,14 @@ export function buildAdminSnapshot(configPath: string, options: AdminSnapshotOpt
     toolset_version: TOOLSET_VERSION,
     policy_epoch: config.policy_epoch,
     daemon,
+    computer: {
+      profile: resolvedConfigPath,
+      configured: Boolean(config.computer),
+      supported_session: process.platform === "linux" && process.env.XDG_SESSION_TYPE === "wayland",
+      message: config.computer
+        ? "Desktop control is configured. Ask the connected assistant to open computer, select a screen, then observe and act. Configuration changes require an explicit daemon restart."
+        : "Desktop control is off. Run hostspan computer enable with this profile to configure it.",
+    },
     listen: { host: config.server.listen_host, port: config.server.listen_port },
     targets: targets.list().map((target) => {
       const active = runtimeTargets.get(target.target_id);

@@ -227,7 +227,7 @@ async function invoke<T>(
     authorize?.(input);
     return successResult(context(), await handler(input, id), id, includeImage);
   } catch (error) {
-    return errorResult(context(), error, id);
+    return errorResult(context(), error, id, includeImage);
   }
 }
 
