@@ -367,6 +367,10 @@ if (candidates.length === 0)
 	);
 
 const asarPath = candidates[0];
+const desktopHelper = join(`${asarPath}.unpacked`, "dist", "src", "computer", "portal-worker.py");
+if (!readFileSync(desktopHelper).equals(readFileSync(join(root, "src", "computer", "portal-worker.py")))) {
+	throw new Error("Unpacked desktop helper does not match the candidate source");
+}
 const { executable, cli, runtime, nativeModule, ptyModule, ripgrepModule, jobModule } = packagedPaths(asarPath, targetPlatform);
 if (!existsSync(executable))
 	throw new Error(`Packaged executable not found: ${executable}`);

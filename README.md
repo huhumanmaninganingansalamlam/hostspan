@@ -16,13 +16,13 @@ HostSpan has native Linux x64, Windows x64, macOS x64, and macOS arm64 core path
 
 ## Current scope
 
-The MCP tool registry is immutable for `hostspan-v3.3`:
+The MCP tool registry is versioned as `hostspan-v3.4` (v0.10.0):
 
-`system_status`, `target_list`, `file_list`, `file_read`, `file_search`, `file_patch`, `process_start`, `process_poll`, `process_write`, `process_cancel`.
+`system_status`, `target_list`, `file_list`, `file_read`, `file_search`, `file_patch`, `process_start`, `process_poll`, `process_write`, `process_cancel`, `computer`.
 
 Every file/process request names a persistent `target_id`; no ChatGPT session ID or temporary workspace handle is product state. File mutation uses expected SHA-256 values, dry-run/staging, per-file atomic replacement, a durable transaction journal, and postcondition hashes. Non-interactive commands use the durable native process supervisor. Interactive commands use the same `process_id` lifecycle through a HostSpan-owned, daemon-independent PTY session worker: start with `tty=true`, read through `process_poll`, write/resize through `process_write`, and close through `process_cancel`.
 
-Linux x64 and both macOS architectures use Unix PTYs and POSIX process groups. Native Windows x64 uses ConPTY plus a Job Object-backed process-tree controller. WSL2 remains a Linux runtime and is not counted as Windows qualification. Linux x64, native Windows x64, and both native macOS architectures have passed the full core gate, installed CLI smoke, and packaged-runtime verification. The installed macOS arm64 app was also smoked on a separate native Mac. GUI/browser computer-use, multi-host routing, LSP/CodeGraph, and claims of sandboxed execution remain out of scope.
+Linux x64 and both macOS architectures use Unix PTYs and POSIX process groups. Native Windows x64 uses ConPTY plus a Job Object-backed process-tree controller. WSL2 remains a Linux runtime and is not counted as Windows qualification. Linux x64, native Windows x64, and both native macOS architectures have passed the full core gate, installed CLI smoke, and packaged-runtime verification. The installed macOS arm64 app was also smoked on a separate native Mac. GUI control is being qualified separately through the Linux Wayland portal backend; Windows/macOS GUI and browser DOM integration are not implemented. Multi-host routing, LSP/CodeGraph, and claims of sandboxed execution remain out of scope.
 
 ## Requirements
 
@@ -300,3 +300,11 @@ When reporting an interoperability issue, attach `hostspan doctor` output and a 
 ## License
 
 Apache-2.0. See [`LICENSE`](LICENSE).
+
+## Desktop computer control
+
+The `computer` tool connects observation, input and a fresh PNG observation. In a logged-in Linux Wayland session, configure `computer: { backend: wayland-portal }` in that instance's YAML configuration. Existing configurations do not silently enable desktop control. Remote callers need the explicit `hostspan.computer` OAuth scope; file/process grants do not grant screen access. The native OS dialog selects a screen and grants input. The selected screen bounds capture/coordinates, **not keyboard focus or application authority**; desktop actions are not confined by file target roots.
+
+Requirements: `/usr/bin/python3` with PyGObject, dbus-python, GStreamer introspection and `pipewiresrc`, `videoconvert`, `pngenc`, `appsink`; a working session D-Bus and RemoteDesktop/ScreenCast portal backend. Exact text paste additionally requires the portal Clipboard interface and its session grant. Packages bundle the helper, not these host desktop services. No display/security setup is changed automatically.
+
+Call `open`, retain `session_id`, then `observe` until consent completes. The image response includes `observation_id`, image dimensions and `coordinate_width/height`; convert resized image coordinates to the latter before clicking. Call `click`, `move`, `scroll`, `key` or `text` with that observation ID and a new idempotency key. `text` writes only the supplied UTF-8 text to the consented clipboard and pastes it; this replaces clipboard content and never reads/restores prior clipboard data. Input returns `dispatched` separately from `outcome_verified`; inspect the fresh image for the actual outcome. When a response is lost, reuse the identical key/arguments; an unknown delivery is never replayed. Call `close` to release the portal session.

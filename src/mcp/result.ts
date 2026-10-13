@@ -10,10 +10,15 @@ export function requestId(): string {
   return `req_${uuidv7().replaceAll("-", "")}`;
 }
 
-export function successResult(context: ResponseContext, value: Record<string, unknown>, request_id = requestId()) {
-  const payload = { request_id, ...context, ...value };
+export function successResult(context: ResponseContext, value: Record<string, unknown>, request_id = requestId(), includeImage = false) {
+  const { image, ...metadata } = value;
+  const hasImage = includeImage && typeof image === "string" && value.mime_type === "image/png";
+  const payload = { request_id, ...context, ...(hasImage ? metadata : value) };
   return {
-    content: [{ type: "text" as const, text: JSON.stringify(payload) }],
+    content: [
+      { type: "text" as const, text: JSON.stringify(payload) },
+      ...(hasImage ? [{ type: "image" as const, mimeType: "image/png", data: image }] : []),
+    ],
     structuredContent: payload,
   };
 }

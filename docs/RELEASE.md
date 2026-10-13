@@ -1,6 +1,14 @@
 # HostSpan release notes
 
-Entries below describe the behavior of their named release. The latest release is listed first.
+Entries describe versioned behavior. Publication is established by the corresponding Git tag and GitHub Release; notes alone do not prove publication.
+
+## 0.10.0
+
+- Add `computer` in the versioned `hostspan-v3.4` contract. Existing file/process tools retain their input semantics; tool counts describe a version and are not a product ceiling.
+- Connect Linux Wayland screen observation, pointer/keyboard input and PNG MCP image responses through the user's RemoteDesktop/ScreenCast portal session. Requires explicitly configured desktop control and `hostspan.computer` for remote OAuth callers. The OS screen selection/consent remains authoritative.
+- Paste exact UTF-8 text through the consented Clipboard portal rather than sending text through the current IME. This replaces clipboard content without reading prior content. Report unsupported clipboard access explicitly.
+- Serialize desktop actions and retain durable input receipts. Do not resend ambiguous or delivered input when observation fails; obtain another image to verify application state.
+- Native local qualification observed a real owned GTK window, pasted `HostSpan 한글 END-20261013` (28 UTF-8 bytes), clicked its button and verified the rendered result. Windows/macOS/X11 GUI backends and signing/notarization are not implemented or newly qualified by this change. Existing cross-platform terminal/core qualification remains required.
 
 ## 0.9.5
 

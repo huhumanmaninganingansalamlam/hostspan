@@ -18,7 +18,7 @@ const modernMeta = {
   "io.modelcontextprotocol/clientCapabilities": {},
 };
 
-const HOSTSPAN_V3_3_APPROVED_TOOLSET_HASH = "sha256:c0d02387bccf2dd9aad5ab92ba4bf93574484a8662d99ddc6fc0593c07da3a7f";
+const HOSTSPAN_V3_4_APPROVED_TOOLSET_HASH = "sha256:742b0a5a1ad87d854d9f44f4d1755a96a326da22b115516cac3ee83ec3d6f2f5";
 
 async function toolsListOnce(handler: ReturnType<typeof createMcpHandler>, id: number): Promise<Array<Record<string, unknown>>> {
   const response = await handler.fetch(
@@ -40,10 +40,10 @@ async function toolsListOnce(handler: ReturnType<typeof createMcpHandler>, id: n
   return tools;
 }
 
-describe("hostspan-v3.3 tool contract", () => {
-  it("contains exactly the fixed 10 tools with a stable digest", () => {
-    expect(toolsetDocument().tools).toHaveLength(10);
-    expect(TOOLSET_HASH).toBe(HOSTSPAN_V3_3_APPROVED_TOOLSET_HASH);
+describe("hostspan-v3.4 tool contract", () => {
+  it("contains exactly the versioned 11 tools with a stable digest", () => {
+    expect(toolsetDocument().tools).toHaveLength(11);
+    expect(TOOLSET_HASH).toBe(HOSTSPAN_V3_4_APPROVED_TOOLSET_HASH);
   });
 
   it("keeps modern tools/list name/schema/annotation content stable across separate requests", async () => {
@@ -53,7 +53,7 @@ describe("hostspan-v3.3 tool contract", () => {
       for (let index = 0; index < 2; index += 1) {
         const tools = await toolsListOnce(handler, index + 1);
         expect(tools.map((tool) => tool.name)).toEqual(TOOL_NAMES);
-        expect(tools).toHaveLength(10);
+        expect(tools).toHaveLength(11);
         const digestable = JSON.stringify(tools);
         first ??= digestable;
         expect(digestable).toBe(first);

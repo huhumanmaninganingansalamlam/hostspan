@@ -35,7 +35,7 @@ export async function runSmoke(context: SmokeContext, targetId: string): Promise
   };
 
   await record("toolset", () => {
-    if (TOOL_NAMES.length !== 10) throw new Error(`expected 10 tools, got ${TOOL_NAMES.length}`);
+    if (TOOL_NAMES.length !== new Set(TOOL_NAMES).size) throw new Error("Tool registry contains duplicate names");
   });
   await record("target_list", async () => {
     const result = await context.handlers.target_list({}, "smoke_target_list");

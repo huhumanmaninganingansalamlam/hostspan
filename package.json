@@ -1,6 +1,6 @@
 {
   "name": "hostspan",
-  "version": "0.9.5",
+  "version": "0.10.0",
   "productName": "HostSpan",
   "desktopName": "HostSpan",
   "description": "Terminal-first MCP execution gateway for approved local targets",
@@ -44,7 +44,7 @@
   },
   "scripts": {
     "postinstall": "node scripts/apply-node-pty-patch.mjs",
-    "build": "node scripts/clean.mjs dist && tsc -p tsconfig.json",
+    "build": "node scripts/clean.mjs dist && tsc -p tsconfig.json && node scripts/copy-runtime-assets.mjs",
     "prepack": "pnpm build",
     "icons": "node scripts/generate-icons.mjs",
     "desktop": "pnpm build && pnpm icons && electron dist/src/desktop/main.js",

@@ -4,7 +4,7 @@ Thanks for helping improve HostSpan.
 
 ## Before you start
 
-HostSpan is intentionally a small, terminal-first MCP execution gateway. The fixed 10-tool `hostspan-v3.3` surface is a compatibility contract, not an invitation to add one tool per feature. Prefer strengthening correctness, recovery, security boundaries, diagnostics, and platform support over growing the MCP surface.
+HostSpan is intentionally a small, terminal-first MCP execution gateway. Tool lists are versioned contracts, not permanent numeric limits. v0.9.5 provided ten `hostspan-v3.3` tools; the GUI extension adds `computer` in `hostspan-v3.4`. Prefer strengthening correctness, recovery, security boundaries, diagnostics, and platform support over growing the MCP surface.
 
 For security-sensitive issues, follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
 

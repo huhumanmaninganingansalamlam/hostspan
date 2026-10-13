@@ -73,7 +73,7 @@ export function createMcpServer(
     { name: "hostspan", version: SERVER_VERSION },
     {
       instructions:
-        "HostSpan operates on explicit persistent target_id values. File paths are target-relative. " +
+        "HostSpan file/process tools use persistent target_id values and target-relative file paths. The computer tool uses its own consented desktop session_id, outside file-root boundaries. " +
         "Generate a fresh random UUIDv7 idempotency key for each new side-effect operation. Keys are shared across all targets and sessions and remain reserved after completion. " +
         "Reuse a key only to retry the identical operation with identical arguments; never reuse example keys or restart a counter in another session. " +
         "For process_poll/process_write, copy next_stdout_cursor and next_stderr_cursor from that same process's previous response; cursors are independent byte offsets, not character counts. " +

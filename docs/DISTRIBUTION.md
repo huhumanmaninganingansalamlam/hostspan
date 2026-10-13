@@ -26,6 +26,10 @@ The generator writes platform PNG, ICO, and ICNS files under `assets/icons/`. Th
 
 All variants preserve the canonical path. Missing or invalid tray assets produce an explicit startup error rather than an unrelated placeholder. Regeneration does not update installed apps or OS icon caches; installation and release are separate actions.
 
+## Optional desktop-control runtime
+
+The Linux Wayland GUI helper is included in CLI `dist/src/computer/portal-worker.py` and unpacked beside Electron's ASAR so system Python can execute it. Installed CLI and desktop smoke compare it with the candidate source. PyGObject/dbus-python, GStreamer/PipeWire plugins and a user-session portal backend are host prerequisites, not bundled services. See the README for activation and consent. Packaging PASS does not imply an interactive GUI grant or Windows/macOS GUI support.
+
 ## Local packaging
 
 Build an unpacked application for the current platform:

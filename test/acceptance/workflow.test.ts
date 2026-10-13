@@ -98,7 +98,7 @@ describe("HostSpan core acceptance", () => {
       const listed = await post(address, "tools-1", "tools/list");
       const result = listed.result as { tools?: Array<{ name?: string }> } | undefined;
       expect(result?.tools?.map((tool) => tool.name)).toEqual(TOOL_NAMES);
-      expect(result?.tools).toHaveLength(10);
+      expect(result?.tools).toHaveLength(11);
     } finally {
       await app.close();
       await runtime.close();
