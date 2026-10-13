@@ -4,7 +4,7 @@ Thanks for helping improve HostSpan.
 
 ## Before you start
 
-HostSpan is intentionally a small, terminal-first MCP execution gateway. Tool lists are versioned contracts, not permanent numeric limits. v0.9.5 provided ten `hostspan-v3.3` tools; the GUI extension adds `computer` in `hostspan-v3.4`. Prefer strengthening correctness, recovery, security boundaries, diagnostics, and platform support over growing the MCP surface.
+HostSpan is intentionally a small, terminal-first MCP execution gateway. Tool lists are versioned contracts, not permanent numeric limits. v0.9.5 provided ten `hostspan-v3.3` tools; the GUI extension adds `computer` in `hostspan-v3.4`. Keep tools purposeful and avoid redundant entry points; approved capabilities may extend the versioned MCP surface.
 
 For security-sensitive issues, follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
 
@@ -49,7 +49,7 @@ Keep changes focused and explain:
 4. tests added or updated;
 5. whether the MCP tool name/schema/description metadata changes.
 
-Breaking tool-contract changes must use a new toolset version rather than silently changing `hostspan-v3.3`.
+Breaking tool-contract changes must use a new toolset version rather than silently changing the published contract.
 
 Run `pnpm check` and `git diff --check` before submitting changes. CI runs the core gate and audit on pushes and pull requests across Linux x64, Windows x64, macOS arm64, and macOS x64. Pull requests additionally run CLI package smoke, unpacked desktop smoke, and a separate nonpublishing installer job: Windows x64 NSIS installs into `RUNNER_TEMP`; macOS arm64/x64 DMGs are mounted read-only and copied there before installed-runtime smoke. Direct `dev` pushes also qualify the fresh installed CLI on Windows; desktop packaging remains limited to pull requests and releases. This adds pre-release installer coverage; it does not replace the tagged release gates or qualify signing/notarization or an interactive OS launch. Verify the relevant native packages before promoting `dev` to `main`.
 
