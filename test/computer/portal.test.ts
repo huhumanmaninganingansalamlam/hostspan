@@ -17,6 +17,8 @@ it.skipIf(process.platform !== "linux")("observes after input and never resends 
   let failObservation = false;
   let failInput = false;
   let failOpen = false;
+  let revokeDuringObservation = false;
+  let currentWorker: ChildProcessWithoutNullStreams;
   vi.mocked(spawn).mockImplementation(() => {
   const worker = Object.assign(new EventEmitter(), {
     stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
@@ -25,6 +27,10 @@ it.skipIf(process.platform !== "linux")("observes after input and never resends 
     const command = JSON.parse(data.toString()) as Record<string, unknown>;
     commands.push(command);
     queueMicrotask(() => {
+      if (command.action === "observe" && revokeDuringObservation) {
+        worker.stdout.write('{"event":"closed"}\n');
+        return;
+      }
       if ((command.action === "open" && failOpen) || (command.action === "observe" && failObservation) || (command.action === "text" && failInput)) {
         worker.stdout.write(`${JSON.stringify({ id: command.id, error: "injected transport failure" })}\n`);
       } else {
@@ -35,6 +41,7 @@ it.skipIf(process.platform !== "linux")("observes after input and never resends 
       }
     });
   });
+    currentWorker = worker as unknown as ChildProcessWithoutNullStreams;
     return worker as unknown as ChildProcessWithoutNullStreams;
   });
   const desktop = new PortalDesktop(operations);
@@ -75,7 +82,26 @@ it.skipIf(process.platform !== "linux")("observes after input and never resends 
     const reopened = await desktop.run({ action: "open" });
     await Promise.resolve();
     expect(desktop.status()).toMatchObject({ state: "ready", session_id: reopened.session_id });
-    expect(await desktop.run({ action: "close", session_id: reopened.session_id })).toMatchObject({ closed: true, state: "closed" });
+    // The portal notifies the owner when OS sharing is revoked. The next open must request fresh consent.
+    currentWorker!.stdout.emit("data", '{"event":"closed"}\n');
+    expect(desktop.status()).toMatchObject({ state: "failed", next_action: { arguments: { action: "open" } } });
+    await expect(desktop.run({ action: "observe", session_id: reopened.session_id })).rejects.toMatchObject({ code: "SCOPE_DENIED" });
+    expect(await desktop.run(input)).toMatchObject({ replayed: true, dispatched: true });
+    const restored = await desktop.run({ action: "open" });
+    expect(restored.session_id).not.toBe(reopened.session_id);
+    await Promise.resolve();
+    const fresh = await desktop.run({ action: "observe", session_id: restored.session_id });
+    expect(fresh).toMatchObject({ state: "ready" });
+    failInput = false;
+    revokeDuringObservation = true;
+    const closingInput = { ...input, session_id: restored.session_id, observation_id: fresh.observation_id, idempotency_key: "closing" };
+    expect(await desktop.run(closingInput)).toMatchObject({ dispatched: true, observation_required: true,
+      next_action: { arguments: { action: "open" } } });
+    expect(await desktop.run(closingInput)).toMatchObject({ replayed: true, dispatched: true });
+    revokeDuringObservation = false;
+    const final = await desktop.run({ action: "open" });
+    await Promise.resolve();
+    expect(await desktop.run({ action: "close", session_id: final.session_id })).toMatchObject({ closed: true, state: "closed" });
     await expect(desktop.run({ ...input, text: "different" })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
   } finally {
     desktop.dispose();
