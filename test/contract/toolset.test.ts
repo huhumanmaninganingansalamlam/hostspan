@@ -4,7 +4,6 @@ import { createMcpServer } from "../../src/mcp/server.js";
 import {
   TOOLSET_HASH,
   TOOL_NAMES,
-  toolsetDocument,
   type HostSpanToolHandlers,
 } from "../../src/mcp/registry.js";
 
@@ -41,19 +40,14 @@ async function toolsListOnce(handler: ReturnType<typeof createMcpHandler>, id: n
 }
 
 describe("hostspan-v3.4 tool contract", () => {
-  it("contains exactly the versioned 11 tools with a stable digest", () => {
-    expect(toolsetDocument().tools).toHaveLength(11);
-    expect(TOOLSET_HASH).toBe(HOSTSPAN_V3_4_APPROVED_TOOLSET_HASH);
-  });
-
   it("keeps modern tools/list name/schema/annotation content stable across separate requests", async () => {
+    expect(TOOLSET_HASH).toBe(HOSTSPAN_V3_4_APPROVED_TOOLSET_HASH);
     const handler = createMcpHandler(() => createMcpServer(handlers, () => ({ toolset_hash: TOOLSET_HASH, policy_epoch: 1 })));
     try {
       let first: string | undefined;
       for (let index = 0; index < 2; index += 1) {
         const tools = await toolsListOnce(handler, index + 1);
         expect(tools.map((tool) => tool.name)).toEqual(TOOL_NAMES);
-        expect(tools).toHaveLength(11);
         const digestable = JSON.stringify(tools);
         first ??= digestable;
         expect(digestable).toBe(first);
