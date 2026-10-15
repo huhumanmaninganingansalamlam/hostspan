@@ -2,6 +2,13 @@
 
 Entries describe versioned behavior. Publication is established by the corresponding Git tag and GitHub Release; notes alone do not prove publication.
 
+## 0.10.2
+
+- Invalidate desktop sessions immediately when the OS stops sharing, including during capture. Reopening requests fresh consent instead of returning a closed session as ready. Delivered and uncertain inputs remain protected against replay.
+- Keep portal signals responsive while waiting for a screenshot; retain the existing capture deadline.
+- Initialize the granted virtual keyboard before the first observation so keyboard-less Wayland test desktops can deliver their first input to GTK clients.
+- Actual isolated GNOME qualification covered GTK3 input/click results and GTK4 multi-line Korean, accented text, emoji and tabs (43 characters / 51 UTF-8 bytes), plus sharing revocation and recovery. This does not qualify Windows/macOS/X11 GUI or change OS consent requirements.
+
 ## 0.10.1
 
 - Make desktop control discoverable with `computer status|enable|disable` in the local CLI and a dashboard section. Configuration changes never restart the daemon automatically; saved configuration and live OS consent remain distinct.

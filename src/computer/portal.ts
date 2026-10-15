@@ -85,7 +85,11 @@ export class PortalDesktop {
         const line = buffered.slice(0, end);
         buffered = buffered.slice(end + 1);
         try {
-          const reply = JSON.parse(line) as { id: string; result?: Record<string, unknown>; error?: string };
+          const reply = JSON.parse(line) as { event?: string; id: string; result?: Record<string, unknown>; error?: string };
+          if (reply.event === "closed") {
+            this.fail(new Error("Desktop sharing ended. Open computer again to select a screen."));
+            return;
+          }
           if (!this.pending || reply.id !== this.pending.id) throw new Error("Unexpected desktop worker reply");
           const pending = this.pending;
           this.pending = undefined;
@@ -232,7 +236,9 @@ export class PortalDesktop {
       } catch (error) {
         return { ...receipt, observation_required: true,
           observation_error: error instanceof Error ? error.message : "Desktop observation failed",
-          message: "Input was sent, but the screen could not be captured. Retry observation only, not the input.",
+          message: this.sessionId
+            ? "Input was sent, but the screen could not be captured. Retry observation only, not the input."
+            : "Input was sent, but desktop sharing ended. Open computer again and observe; do not repeat the input.",
           next_action: this.status().next_action };
       }
     } finally {

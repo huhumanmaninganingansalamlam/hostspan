@@ -151,6 +151,12 @@ def close_session():
             pass
 
 
+def session_closed(*unused):
+    print(json.dumps({"event": "closed"}), flush=True)
+    close_session()
+    loop.quit()
+
+
 def open_session():
     global session, stream, stream_size, pipewire_fd, closed_match, clipboard_enabled
     if session:
@@ -163,7 +169,7 @@ def open_session():
         created = request(remote.CreateSession, session_handle_token="hostspan_" + uuid.uuid4().hex)
         session = str(created["session_handle"])
         closed_match = bus.add_signal_receiver(
-            lambda *unused: close_session(), signal_name="Closed",
+            session_closed, signal_name="Closed",
             dbus_interface="org.freedesktop.portal.Session", bus_name=BUS_NAME, path=session)
         request(remote.SelectDevices, session, types=dbus.UInt32(3), persist_mode=dbus.UInt32(0))
         # Screen selection is explicit. No restore token or persistent permission is created.
@@ -183,6 +189,11 @@ def open_session():
         stream, properties = streams[0]
         stream_size = tuple(int(n) for n in properties["size"])
         pipewire_fd = cast.OpenPipeWireRemote(session, options()).take()
+        # Mutter creates the virtual keyboard lazily. Register it before the required
+        # first observation, so headless clients receive their keymap before input.
+        # VoidSymbol has no key mapping, so it creates no application key or modifier.
+        remote.NotifyKeyboardKeysym(session, options(), dbus.Int32(0xFFFFFF), dbus.UInt32(1))
+        remote.NotifyKeyboardKeysym(session, options(), dbus.Int32(0xFFFFFF), dbus.UInt32(0))
         return {"backend": "wayland-portal", "text_supported": clipboard_enabled, "coordinate_width": stream_size[0],
                 "coordinate_height": stream_size[1]}
     except Exception:
@@ -195,10 +206,24 @@ def observe():
         raise RuntimeError("Desktop session is closed")
     pipeline = Gst.parse_launch(
         f"pipewiresrc fd={pipewire_fd} path={int(stream)} do-timestamp=true ! "
-        "videoconvert ! pngenc snapshot=true ! appsink name=frame sync=false max-buffers=1 drop=true")
+        "videoconvert ! pngenc snapshot=true ! appsink name=frame sync=false max-buffers=1 drop=true emit-signals=true")
+    capture_wait = GLib.MainLoop()
+    samples = []
+
+    def frame_ready(sink):
+        samples.append(sink.emit("pull-sample"))
+        GLib.idle_add(capture_wait.quit)
+        return Gst.FlowReturn.OK
+
+    sink = pipeline.get_by_name("frame")
+    handler = sink.connect("new-sample", frame_ready)
+    timer = GLib.timeout_add(5000, lambda: (capture_wait.quit(), False)[1])
     try:
         pipeline.set_state(Gst.State.PLAYING)
-        sample = pipeline.get_by_name("frame").emit("try-pull-sample", 5 * Gst.SECOND)
+        # Keep portal Closed and clipboard signals flowing while waiting for a frame.
+        if not samples:
+            capture_wait.run()
+        sample = samples[0] if samples else None
         if sample is None:
             message = pipeline.get_bus().pop_filtered(Gst.MessageType.ERROR)
             reason = str(message.parse_error()[0]) if message else "No frame within capture deadline"
@@ -213,6 +238,9 @@ def observe():
                 "height": caps.get_value("height"), "coordinate_width": stream_size[0],
                 "coordinate_height": stream_size[1]}
     finally:
+        if GLib.MainContext.default().find_source_by_id(timer):
+            GLib.source_remove(timer)
+        sink.disconnect(handler)
         pipeline.set_state(Gst.State.NULL)
 
 
