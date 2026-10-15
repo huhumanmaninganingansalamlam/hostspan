@@ -78,7 +78,7 @@
     "node-pty": "1.2.0-beta.14",
     "pino": "9.9.5",
     "uuid": "13.0.1",
-    "yaml": "2.8.3",
+    "yaml": "2.9.1",
     "zod": "4.6.5"
   },
   "devDependencies": {
