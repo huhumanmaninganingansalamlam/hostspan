@@ -906,7 +906,8 @@ describe("durable interactive PTY process backend", () => {
     track(terminal, started);
     let current = started;
     let transcript = String(started.stdout ?? "");
-    for (let attempt = 0; attempt < 8 && current.state === "running"; attempt += 1) {
+    // Output wakes poll before wait_ms elapses; eight calls are not a four-second completion wait.
+    await expect.poll(async () => {
       current = await supervisor.poll({
         process_id: String(started.process_id),
         stdout_cursor: Number(current.next_stdout_cursor ?? 0),
@@ -915,8 +916,8 @@ describe("durable interactive PTY process backend", () => {
         max_bytes: 64 * 1024,
       });
       transcript += String(current.stdout ?? "");
-    }
-    expect(current.state).toBe("succeeded");
+      return current.state;
+    }, { timeout: 4_000 }).toBe("succeeded");
     expect(transcript).toContain("TAIL-");
     expect(transcript).toContain("-END");
     expect(terminal.outputBytes(String(started.process_id))).toBeGreaterThanOrEqual(Buffer.byteLength(payload));
