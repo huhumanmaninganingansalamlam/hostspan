@@ -129,6 +129,15 @@ async function pollUntilTerminal(
   throw new Error(`process ${processId} did not reach a terminal state within ${timeoutMs}ms; last=${String(current.state)}`);
 }
 
+// Startup is not the latency under test. Wait for actual bytes under the existing
+// process deadline before measuring how quickly a poll returns unread output.
+async function waitForNativeOutput(supervisor: ProcessSupervisor, processes: ProcessesRepo, processId: string, stream: "stdout" | "stderr") {
+  while ((processes.get(processId)?.[`${stream}_bytes`] ?? 0) === 0) {
+    const result = await supervisor.poll({ process_id: processId, stdout_cursor: 0, stderr_cursor: 0, max_bytes: 1024, wait_ms: 100 });
+    expect(result.state).toBe("running");
+  }
+}
+
 describe("process supervisor", () => {
   it("replays a proven pre-dispatch write failure without delivering input", async () => {
     const failure = new Error("output unavailable before dispatch");
@@ -175,9 +184,10 @@ describe("process supervisor", () => {
 
   it.each(["stdout", "stderr"] as const)("returns unread native %s immediately", async (stream) => {
     const { supervisor, processes } = fixture();
-    const started = await supervisor.start(startInput({ argv: ["node", "-e", `process.${stream}.write('ready');setInterval(()=>{},1000)`], wait_ms: 0 }), "req_ready_output");
+    const started = await supervisor.start(startInput({ argv: ["node", "-e", `setTimeout(()=>process.${stream}.write('ready'),1100);setInterval(()=>{},1000)`], wait_ms: 0 }), "req_ready_output");
     const processId = String(started.process_id);
-    await expect.poll(() => processes.get(processId)?.[`${stream}_bytes`]).toBe(5);
+    await waitForNativeOutput(supervisor, processes, processId, stream);
+    expect(processes.get(processId)?.[`${stream}_bytes`]).toBe(5);
     const before = Date.now();
     const result = await supervisor.poll({ process_id: processId, stdout_cursor: 0, stderr_cursor: 0, max_bytes: 1024, wait_ms: 2_000 });
     expect(result[stream]).toBe("ready");
@@ -188,7 +198,8 @@ describe("process supervisor", () => {
     const { supervisor, processes } = fixture();
     const started = await supervisor.start(startInput({ argv: ["node", "-e", "process.stdout.write(Buffer.from([0xe2]));setInterval(()=>{},1000)"], wait_ms: 0 }), "req_partial_output");
     const processId = String(started.process_id);
-    await expect.poll(() => processes.get(processId)?.stdout_bytes).toBe(1);
+    await waitForNativeOutput(supervisor, processes, processId, "stdout");
+    expect(processes.get(processId)?.stdout_bytes).toBe(1);
     const before = Date.now();
     const result = await supervisor.poll({ process_id: processId, stdout_cursor: 0, stderr_cursor: 0, max_bytes: 1024, wait_ms: 150 });
     expect(result.next_stdout_cursor).toBe(0);
@@ -217,7 +228,8 @@ describe("process supervisor", () => {
 
   it("returns a terminal result for a short process", async () => {
     const { supervisor } = fixture();
-    const result = await supervisor.start(startInput(), "req_short");
+    const started = await supervisor.start(startInput(), "req_short");
+    const result = started.state === "running" ? await pollUntilTerminal(supervisor, String(started.process_id)) : started;
     expect(result.state).toBe("succeeded");
     expect(result.stdout).toBe("ok");
     expect(result.output_budget).toEqual({

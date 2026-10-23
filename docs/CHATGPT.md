@@ -115,11 +115,15 @@ In ChatGPT Developer Mode, add the MCP endpoint issued by Secure MCP Tunnel or t
 - `toolset_hash` matches `hostspan print-toolset`
 - `policy_epoch` matches the local config
 
-OpenAI Developer Mode reference: <https://developers.openai.com/api/docs/guides/developer-mode>
+OpenAI connection guide: <https://developers.openai.com/apps-sdk/deploy/connect-chatgpt>
 
 ## Refresh after metadata changes
 
-ChatGPT may cache tool names/descriptions/schemas. `hostspan-v3.5` adds `process_list` and optional byte continuation to `file_read`; `computer` remains the Linux Wayland portal tool. If a HostSpan release changes tool metadata, compare `server_version` and `toolset_hash`, then use the ChatGPT app Refresh action before diagnosing a cached schema as a HostSpan runtime failure.
+ChatGPT may cache tool names/descriptions/schemas. `hostspan-v3.5` adds `process_list` and optional byte continuation to `file_read`; `computer` remains the Linux Wayland portal tool. If a HostSpan release changes tool metadata, compare `server_version` and `toolset_hash`, then open the existing connection at [ChatGPT Plugins](https://chatgpt.com/plugins) and select **Refresh** before diagnosing a cached schema as a HostSpan runtime failure.
+
+Refreshing metadata does not expand an existing OAuth grant. `tools/list` includes `computer` even without its scope; its `_meta.securitySchemes` declares `hostspan.computer`. Calling it with an insufficient grant returns the original `SCOPE_DENIED` plus `_meta["mcp/www_authenticate"]`, requesting the required scope together with the already granted supported scopes. ChatGPT can then present normal reauthorization for the existing connection. Refresh tokens cannot add scopes. Never edit token records or bypass a target/OS denial; those denials do not trigger OAuth relinking. See [OpenAI authentication UI requirements](https://developers.openai.com/apps-sdk/build/auth#triggering-authentication-ui).
+
+After consent, verify `system_status.authorization.granted_scopes` includes `hostspan.computer`, then let the designated desktop operator call `computer.open`/`observe`. OAuth consent and the OS screen/control chooser are separate; a missing tool, client observation timeout or OAuth card is not evidence of a live OS chooser.
 
 A breaking contract must use a new toolset version rather than silently changing `hostspan-v3.5`.
 

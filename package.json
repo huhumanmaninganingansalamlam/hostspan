@@ -1,6 +1,6 @@
 {
   "name": "hostspan",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "productName": "HostSpan",
   "desktopName": "HostSpan",
   "description": "Terminal-first MCP execution gateway for approved local targets",
@@ -79,14 +79,14 @@
     "pino": "9.9.5",
     "uuid": "13.0.1",
     "yaml": "2.8.3",
-    "zod": "4.6.5"
+    "zod": "4.6.6"
   },
   "devDependencies": {
     "@biomejs/biome": "2.2.4",
     "@electron/asar": "3.4.1",
     "@types/better-sqlite3": "7.6.13",
     "@types/node": "24.7.2",
-    "electron": "44.5.0",
+    "electron": "44.9.1",
     "electron-builder": "^26.15.3",
     "png2icons": "^2.0.1",
     "sharp": "^0.35.5",

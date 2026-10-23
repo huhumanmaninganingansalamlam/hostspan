@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -542,6 +543,9 @@ describe("durable interactive PTY process backend", () => {
     expect(current.state).toBe("succeeded");
     expect(transcript).toContain("DONE");
     expect(readFileSync(join(root, "target", "done"), "utf8")).toBe("ok");
+    // The supervisor spool and this raw socket are independent observers.
+    // EOF confirms this client has received all queued data after the child exits.
+    if (!observer.socket.readableEnded) await once(observer.socket, "end");
     expect(observer.output()).toContain("DONE");
   });
 
