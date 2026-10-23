@@ -61,45 +61,56 @@ const processAnnotations: ToolAnnotations = {
   openWorldHint: true,
 };
 
+function oauthMetadata(...scopes: HostSpanOAuthScope[]) {
+  return { securitySchemes: [{ type: "oauth2", scopes }] };
+}
+
 export const TOOL_DEFINITIONS = [
   {
     name: "system_status" as const,
+    _meta: oauthMetadata(HOSTSPAN_OAUTH_SCOPE_READ),
     description: "Return HostSpan server, immutable toolset, policy, backend, and active process status.",
     inputSchema: SystemStatusInputSchema,
     annotations: readOnlyAnnotations,
   },
   {
     name: "target_list" as const,
+    _meta: oauthMetadata(HOSTSPAN_OAUTH_SCOPE_READ),
     description: "List configured persistent target aliases and the capabilities currently available for each target.",
     inputSchema: TargetListInputSchema,
     annotations: readOnlyAnnotations,
   },
   {
     name: "file_list" as const,
+    _meta: oauthMetadata(HOSTSPAN_OAUTH_SCOPE_READ),
     description: "List a bounded directory tree under one target using target-relative paths.",
     inputSchema: FileListInputSchema,
     annotations: readOnlyAnnotations,
   },
   {
     name: "file_read" as const,
+    _meta: oauthMetadata(HOSTSPAN_OAUTH_SCOPE_READ),
     description: "Read one target-relative file. Use start_byte=0 for lossless byte pages, then returned next_byte and expected_sha256 to continue without gaps or changed content. Line ranges remain available.",
     inputSchema: FileReadInputSchema,
     annotations: readOnlyAnnotations,
   },
   {
     name: "file_search" as const,
+    _meta: oauthMetadata(HOSTSPAN_OAUTH_SCOPE_READ),
     description: "Search bounded target-relative paths with ripgrep and return matching lines with nearby context.",
     inputSchema: FileSearchInputSchema,
     annotations: readOnlyAnnotations,
   },
   {
     name: "file_patch" as const,
+    _meta: oauthMetadata(HOSTSPAN_OAUTH_SCOPE_WRITE),
     description: "Dry-run or apply an idempotent hash-guarded multi-file unified diff and verify postconditions.",
     inputSchema: FilePatchInputSchema,
     annotations: mutationAnnotations,
   },
   {
     name: "process_start" as const,
+    _meta: oauthMetadata(),
     description:
       "Start one durable process with no implicit deadline; wait_ms and max_bytes bound the response, max_output_bytes bounds rolling output retention without stopping execution. Set deadline_ms for an explicit lifetime or tty=true for an interactive terminal on targets with terminal capability.",
     inputSchema: ProcessStartInputSchema,
@@ -107,18 +118,21 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "process_poll" as const,
+    _meta: oauthMetadata(HOSTSPAN_OAUTH_SCOPE_READ),
     description: "Read output and state for a returned process_id, using its cursors. If the ID was lost, use process_list; never invent an ID or restart a running command. exit_code belongs to the spawned command, not nested tests.",
     inputSchema: ProcessPollInputSchema,
     annotations: readOnlyAnnotations,
   },
   {
     name: "process_write" as const,
+    _meta: oauthMetadata(HOSTSPAN_OAUTH_SCOPE_TERMINAL),
     description: "Idempotently deliver characters, control keys, or resize updates to an interactive process, then observe incremental output; observation failure does not resend delivered input.",
     inputSchema: ProcessWriteInputSchema,
     annotations: processAnnotations,
   },
   {
     name: "process_cancel" as const,
+    _meta: oauthMetadata(),
     description:
       "Idempotently stop a supervised process: terminate the native process group or close the durable interactive session as appropriate.",
     inputSchema: ProcessCancelInputSchema,
@@ -126,12 +140,14 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "computer" as const,
+    _meta: oauthMetadata(HOSTSPAN_OAUTH_SCOPE_COMPUTER),
     description: "Observe and control the consented desktop. Open returns a session_id while the user selects a screen; observe returns an image and observation_id. Input uses that observation and a unique idempotency_key, then returns a fresh image. Dispatched input is not verified application success; compare the new image. Close releases the session. Coordinates use coordinate_width/height, not resized image pixels. Desktop input is not confined by file target roots.",
     inputSchema: ComputerInputSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   },
   {
     name: "process_list" as const,
+    _meta: oauthMetadata(HOSTSPAN_OAUTH_SCOPE_READ),
     description: "Recover HostSpan process IDs and state for one target/cwd without running a command. Defaults to active processes; active_only=false includes completed work. Continue with the returned cursor and use process_poll to recover output. Does not list unrelated OS processes.",
     inputSchema: ProcessListInputSchema,
     annotations: readOnlyAnnotations,
@@ -150,6 +166,7 @@ export function toolsetDocument() {
       description: tool.description,
       input_schema: z.toJSONSchema(tool.inputSchema),
       annotations: tool.annotations,
+      _meta: tool._meta,
     })),
   };
 }
@@ -189,6 +206,7 @@ function requireOAuthScope(context: ServerContext, requiredScope: HostSpanOAuthS
     reason: "oauth_scope",
     required_scope: requiredScope,
     granted_scopes: [...grantedScopes],
+    resource_metadata: context.http?.authInfo?.resourceMetadataUrl,
   });
 }
 
@@ -199,6 +217,7 @@ function requireAnyOAuthScope(context: ServerContext, requiredScopes: readonly H
     reason: "oauth_scope",
     required_scopes: [...requiredScopes],
     granted_scopes: [...grantedScopes],
+    resource_metadata: context.http?.authInfo?.resourceMetadataUrl,
   });
 }
 

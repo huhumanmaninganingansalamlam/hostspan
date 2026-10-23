@@ -2,6 +2,12 @@
 
 Entries describe versioned behavior. Publication is established by the corresponding Git tag and GitHub Release; notes alone do not prove publication.
 
+## 0.11.1
+
+- Declare per-tool OAuth scopes in the supported MCP descriptor metadata and return `mcp/www_authenticate` challenges when an existing grant lacks authority. ChatGPT can discover `computer` and request normal reauthorization instead of receiving only a generic scope error.
+- Preserve already granted supported scopes in the requested consent set. Existing tokens, target/OS denials and process/desktop dispatch checks remain enforced; metadata refresh and user consent are still required.
+- Tool names and input schemas retain `hostspan-v3.5`; the digest now covers auth metadata. OAuth linking, OS screen selection and actual desktop operation are separate acceptance steps.
+
 ## 0.11.0
 
 - Add read-only `process_list` in `hostspan-v3.5` to recover owned execution IDs by target/cwd without restarting work. Return explicit output-drain/expiry and spawned-command exit semantics in process snapshots.

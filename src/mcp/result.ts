@@ -1,4 +1,6 @@
+import { bearerAuthChallengeResponse, OAuthError, OAuthErrorCode } from "@modelcontextprotocol/server";
 import { v7 as uuidv7 } from "uuid";
+import { isSupportedHostSpanOAuthScope } from "../auth/oauth-scopes.js";
 import { asHostSpanError } from "../errors.js";
 
 export interface ResponseContext {
@@ -36,7 +38,19 @@ export function errorResult(context: ResponseContext, error: unknown, request_id
       request_id,
     },
   };
+  // Only an OAuth scope denial requests reauthorization. Target/OS denials stay denied.
+  const required = typeof known.details.required_scope === "string" ? [known.details.required_scope]
+    : Array.isArray(known.details.required_scopes) ? known.details.required_scopes : [];
+  const granted = Array.isArray(known.details.granted_scopes) ? known.details.granted_scopes : [];
+  const challenges = known.code === "SCOPE_DENIED" && known.details.reason === "oauth_scope"
+    ? required.filter((scope): scope is string => typeof scope === "string").map((scope) =>
+      bearerAuthChallengeResponse(new OAuthError(OAuthErrorCode.InsufficientScope, "Additional HostSpan authorization is required."), {
+        requiredScopes: [...new Set([...granted.filter((value): value is string => typeof value === "string" && isSupportedHostSpanOAuthScope(value)), scope])],
+        ...(typeof known.details.resource_metadata === "string" ? { resourceMetadataUrl: known.details.resource_metadata } : {}),
+      }).headers.get("www-authenticate"),
+    ).filter((challenge): challenge is string => challenge !== null) : [];
   return {
+    ...(challenges.length ? { _meta: { "mcp/www_authenticate": challenges } } : {}),
     isError: true,
     content: [{ type: "text" as const, text: humanMessage ? known.message : JSON.stringify(payload) }],
     structuredContent: payload,

@@ -9,6 +9,8 @@ import { createOAuthSetup, type OAuthService, type OAuthTokenResponse } from "..
 import { createRuntime, type HostSpanRuntime } from "../../src/runtime/create-runtime.js";
 import type { HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
+import { HostSpanError } from "../../src/errors.js";
+import { errorResult } from "../../src/mcp/result.js";
 import { TOOL_NAMES, TOOLSET_HASH, type HostSpanToolHandlers } from "../../src/mcp/registry.js";
 import { createHostSpanHttpServer } from "../../src/mcp/server.js";
 
@@ -61,8 +63,8 @@ function fixture() {
   return { runtime, approvalSecret: setup.approval_secret };
 }
 
-function issueToken(oauth: OAuthService, approvalSecret: string, scope?: string): { clientId: string; token: OAuthTokenResponse } {
-  const client = oauth.registerClient({
+function issueToken(oauth: OAuthService, approvalSecret: string, scope?: string, existingClientId?: string): { clientId: string; token: OAuthTokenResponse } {
+  const client = existingClientId ? { client_id: existingClientId } : oauth.registerClient({
     client_name: "scope-test",
     application_type: "native",
     redirect_uris: [REDIRECT],
@@ -186,6 +188,7 @@ async function callTool(app: FastifyInstance, token: string, name: string, args:
   return response.json() as {
     result?: {
       isError?: boolean;
+      _meta?: { "mcp/www_authenticate"?: string[] };
       structuredContent?: Record<string, unknown>;
       content?: Array<{ type?: string; text?: string }>;
     };
@@ -330,17 +333,32 @@ describe("OAuth scope split", () => {
         },
         payload: { jsonrpc: "2.0", id: "list", method: "tools/list", params: { _meta: modernMeta() } },
       });
-      const listedBody = listed.json() as { result?: { tools?: Array<{ name: string }> } };
+      const listedBody = listed.json() as { result?: { tools?: Array<{ name: string; _meta?: { securitySchemes?: unknown } }> } };
       expect(listedBody.result?.tools?.map((tool) => tool.name)).toEqual(TOOL_NAMES);
+      expect(listedBody.result?.tools?.find((tool) => tool.name === "computer")?._meta?.securitySchemes)
+        .toEqual([{ type: "oauth2", scopes: ["hostspan.computer"] }]);
 
       expectAllowed(await callTool(app, read.access_token, "system_status", {}), "system_status");
       expectAllowed(await callTool(app, read.access_token, "process_list", { target_id: "test" }), "process_list");
       expectScopeDenied(await callTool(app, read.access_token, "file_patch", patchArgs()), "hostspan.write");
       expect(calls).not.toContain("file_patch");
       expect(runtime.audit.recent()).toContainEqual(expect.objectContaining({ process_id: null, metadata: expect.objectContaining({ tool: "file_patch", stage: "authorization", error_reason: "oauth_scope" }) }));
-      expectScopeDenied(await callTool(app, read.access_token, "computer", { action: "open" }), "hostspan.computer");
+      const deniedDesktop = await callTool(app, read.access_token, "computer", { action: "open" });
+      expectScopeDenied(deniedDesktop, "hostspan.computer");
+      const challenges = deniedDesktop.result?._meta?.["mcp/www_authenticate"];
+      expect(challenges).toHaveLength(1);
+      expect(challenges?.[0]).toContain('error="insufficient_scope"');
+      expect(challenges?.[0]).toContain('error_description="Additional HostSpan authorization is required."');
+      expect(challenges?.[0]).toContain('scope="hostspan.read hostspan.computer"');
+      expect(challenges?.[0]).toContain('resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp"');
       expect(calls).not.toContain("computer");
-      const desktop = issueToken(oauth, approvalSecret, "hostspan.computer").token;
+      const policyDenied = errorResult({ toolset_hash: TOOLSET_HASH, policy_epoch: 5 },
+        new HostSpanError("SCOPE_DENIED", "Desktop control is off."));
+      expect(policyDenied.isError).toBe(true);
+      expect(policyDenied._meta).toBeUndefined();
+      const desktop = issueToken(oauth, approvalSecret, "hostspan.read hostspan.computer", readGrant.clientId).token;
+      expect(oauth.verifyAccessToken(read.access_token)?.scopes).toEqual(["hostspan.read"]);
+      expect(oauth.verifyAccessToken(desktop.access_token)?.scopes).toEqual(["hostspan.read", "hostspan.computer"]);
       expectAllowed(await callTool(app, desktop.access_token, "computer", { action: "open" }), "computer");
 
       expectAllowed(await callTool(app, write.access_token, "file_patch", patchArgs()), "file_patch");
