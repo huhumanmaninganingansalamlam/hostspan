@@ -4,7 +4,7 @@ Entries describe versioned behavior. Publication is established by the correspon
 
 ## 0.11.1
 
-- Update Zod 4.6.5 to the official compatible 4.6.6 patch for GHSA-mrhx-c7xc-m3w5; resolve the direct and MCP transitive dependency paths without an audit exclusion.
+- Update Zod 4.6.5 to 4.6.6 for GHSA-mrhx-c7xc-m3w5 and Electron 44.5.0 to 44.9.1 for GHSA-jr5w-w6x2-84p9, using official fixes within the existing major versions. Resolve the actual dependency paths without audit exclusions.
 
 - Declare per-tool OAuth scopes in the supported MCP descriptor metadata and return `mcp/www_authenticate` challenges when an existing grant lacks authority. ChatGPT can discover `computer` and request normal reauthorization instead of receiving only a generic scope error.
 - Preserve already granted supported scopes in the requested consent set. Existing tokens, target/OS denials and process/desktop dispatch checks remain enforced; metadata refresh and user consent are still required.
