@@ -6,7 +6,7 @@ Status: design target for the next breaking MCP contract. This document does not
 
 The v4 contract should make tool selection and result handling easier for models without expanding HostSpan's authority surface. It should add explicit output schemas, clearer titles and selection-oriented descriptions, a stable error vocabulary, and names that match the behavior they describe.
 
-The active v3.4 contract remains immutable while v4 is implemented behind a new toolset version. Existing v3.4 names, input schemas, annotations, and toolset hash must not be edited in place.
+This is a future design proposal based on v3.4, not a prerequisite for current releases. Current v3.5 adds process discovery and byte continuation under its own contract hash; v4 would be a separate deliberate contract change.
 
 ## Contract versioning and hash
 
@@ -320,6 +320,6 @@ The design is implemented only when all of the following are true:
 - Process results no longer expose the ambiguous `native_execution` / `sandboxed` pair.
 - Successful binary `file_read` results no longer masquerade as errors through `error_code`.
 - Errors have stable code/retryability/safe-reason semantics with no unreviewed detail leakage.
-- The public tool count remains 10.
+- Tool count describes a versioned inventory, not a permanent ceiling.
 - Model-facing regressions catch unnecessary calls, duplicate side effects, and authority-escalation attempts.
-- The active v3.4 contract and hash remain unchanged until a separately reviewed v4 implementation is intentionally selected.
+- Any implemented contract change receives its own version and hash; this proposal does not freeze current development.

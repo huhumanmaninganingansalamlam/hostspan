@@ -1,6 +1,7 @@
 import { PortalDesktop } from "../computer/portal.js";
 import { HostSpanError } from "../errors.js";
 import { spawnSync } from "node:child_process";
+import { hostname } from "node:os";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -23,12 +24,13 @@ import type {
   FileSearchToolInput,
   ProcessCancelToolInput,
   ProcessPollToolInput,
+  ProcessListToolInput,
   ProcessStartToolInput,
   ProcessWriteToolInput,
   SystemStatusInput,
   TargetListInput,
 } from "../tools/schemas.js";
-import { auditErrorDiagnostics } from "../observability/error-diagnostics.js";
+import { auditErrorDiagnostics, auditRequestDiagnostics, auditResponseDiagnostics } from "../observability/error-diagnostics.js";
 import { HostSpanLogger } from "../observability/logger.js";
 import { PolicyEvaluator } from "../policy/evaluator.js";
 import { protectWindowsFile, protectWindowsTree } from "../security/windows-acl.js";
@@ -289,6 +291,7 @@ export function createRuntime(
       tool,
       argument_hash: argumentHash(input),
       target_id: typeof inputRecord.target_id === "string" ? inputRecord.target_id : undefined,
+      ...auditRequestDiagnostics(inputRecord),
     };
     audit.append({ request_id: requestId, event_type: "request.accepted", metadata });
     logger.auditEvent("request.accepted", { request_id: requestId, ...metadata });
@@ -299,7 +302,7 @@ export function createRuntime(
       audit.append({
         request_id: requestId,
         event_type: "response.returned",
-        metadata: { tool, total_ms: Date.now() - started, state: result.state },
+        metadata: { tool, total_ms: Date.now() - started, ...auditResponseDiagnostics(result) },
         ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
         ...(processId ? { process_id: processId } : {}),
       });
@@ -312,6 +315,7 @@ export function createRuntime(
         event_type: "request.aborted",
         metadata: {
           tool, stage: "handler", ...auditErrorDiagnostics(known), total_ms: Date.now() - started,
+          ...auditRequestDiagnostics(inputRecord),
           ...(known.code === "CURSOR_EXPIRED" ? {
             stdout_cursor: inputRecord.stdout_cursor,
             stderr_cursor: inputRecord.stderr_cursor,
@@ -336,6 +340,7 @@ export function createRuntime(
         const processReady = isQualifiedCorePlatform();
         return {
           server_version: SERVER_VERSION,
+          host: { hostname: hostname(), platform: process.platform, arch: process.arch },
           protocol_version: PROTOCOL_VERSION,
           toolset_version: TOOLSET_VERSION,
           advertised_tools: [...TOOL_NAMES],
@@ -349,6 +354,8 @@ export function createRuntime(
             terminal: { name: "hostspan_pty", ready: terminalReady, configured: Boolean(config.terminal) },
             computer: { name: "wayland-portal", configured: Boolean(computer),
               supported_session: process.platform === "linux" && process.env.XDG_SESSION_TYPE === "wayland",
+              scope: "daemon_desktop_portal_selection", display_selection: "OS_consent",
+              remote_ssh_desktop: false, display_enumeration: false,
               ...(computer ? computer.status() : { state: "disabled", message: "Desktop control is off. Use hostspan computer enable to configure it." }) },
             search_concurrency: searchLimiter.snapshot(),
           },
@@ -401,6 +408,13 @@ export function createRuntime(
       traced("process_start", input, requestId, () => supervisor.start(input, requestId)),
     process_poll: (input: ProcessPollToolInput, requestId: string) =>
       traced("process_poll", input, requestId, () => supervisor.poll(input)),
+    process_list: (input: ProcessListToolInput, requestId: string) =>
+      traced("process_list", input, requestId, () => {
+        const target = targets.get(input.target_id, "read");
+        const path = resolveTargetPath(target, input.cwd);
+        policy.assertFileAllowed(target, path.relative, path.absolute, false);
+        return processes.list({ ...input, cwd: path.relative });
+      }),
     process_write: (input: ProcessWriteToolInput, requestId: string) =>
       traced("process_write", input, requestId, () => supervisor.write(input)),
     process_cancel: (input: ProcessCancelToolInput, requestId: string) =>
@@ -408,6 +422,11 @@ export function createRuntime(
   };
 
   const authorization: HostSpanToolAuthorization = {
+    rejected: (tool, input, requestId, error, stage) => {
+      audit.append({ request_id: requestId, event_type: "request.aborted", metadata: {
+        tool, stage, ...auditErrorDiagnostics(error), ...auditRequestDiagnostics(input),
+      } });
+    },
     processBackend: (processId) => {
       const backend = processes.get(processId)?.backend;
       return backend === "native" || backend === "pty" ? backend : undefined;

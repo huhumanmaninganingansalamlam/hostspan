@@ -13,7 +13,7 @@ import {
 } from "../auth/oauth-scopes.js";
 import { ComputerInputSchema, type ComputerInput } from "../computer/portal.js";
 import { TOOLSET_VERSION } from "../version.js";
-import { HostSpanError } from "../errors.js";
+import { asHostSpanError, HostSpanError } from "../errors.js";
 import { errorResult, requestId, successResult, type ResponseContext } from "./result.js";
 import {
   FileListInputSchema,
@@ -22,6 +22,7 @@ import {
   FileSearchInputSchema,
   ProcessCancelInputSchema,
   ProcessPollInputSchema,
+  ProcessListInputSchema,
   ProcessStartInputSchema,
   ProcessWriteInputSchema,
   SystemStatusInputSchema,
@@ -32,6 +33,7 @@ import {
   type FileSearchToolInput,
   type ProcessCancelToolInput,
   type ProcessPollToolInput,
+  type ProcessListToolInput,
   type ProcessStartToolInput,
   type ProcessWriteToolInput,
   type SystemStatusInput,
@@ -80,7 +82,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "file_read" as const,
-    description: "Read a bounded text range or binary metadata from one target-relative file, optionally with SHA-256.",
+    description: "Read one target-relative file. Use start_byte=0 for lossless byte pages, then returned next_byte and expected_sha256 to continue without gaps or changed content. Line ranges remain available.",
     inputSchema: FileReadInputSchema,
     annotations: readOnlyAnnotations,
   },
@@ -105,7 +107,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "process_poll" as const,
-    description: "Read incremental stdout/stderr bytes and durable terminal state; expired cursors resume at retained output with explicit loss metadata.",
+    description: "Read output and state for a returned process_id, using its cursors. If the ID was lost, use process_list; never invent an ID or restart a running command. exit_code belongs to the spawned command, not nested tests.",
     inputSchema: ProcessPollInputSchema,
     annotations: readOnlyAnnotations,
   },
@@ -127,6 +129,12 @@ export const TOOL_DEFINITIONS = [
     description: "Observe and control the consented desktop. Open returns a session_id while the user selects a screen; observe returns an image and observation_id. Input uses that observation and a unique idempotency_key, then returns a fresh image. Dispatched input is not verified application success; compare the new image. Close releases the session. Coordinates use coordinate_width/height, not resized image pixels. Desktop input is not confined by file target roots.",
     inputSchema: ComputerInputSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  },
+  {
+    name: "process_list" as const,
+    description: "Recover HostSpan process IDs and state for one target/cwd without running a command. Defaults to active processes; active_only=false includes completed work. Continue with the returned cursor and use process_poll to recover output. Does not list unrelated OS processes.",
+    inputSchema: ProcessListInputSchema,
+    annotations: readOnlyAnnotations,
   },
 ] as const;
 
@@ -157,12 +165,14 @@ export interface HostSpanToolHandlers {
   file_search(input: FileSearchToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
   file_patch(input: FilePatchToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
   process_start(input: ProcessStartToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
+  process_list(input: ProcessListToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
   process_poll(input: ProcessPollToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
   process_write(input: ProcessWriteToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
   process_cancel(input: ProcessCancelToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
 }
 
 export interface HostSpanToolAuthorization {
+  rejected?(tool: ToolName, input: Record<string, unknown>, requestId: string, error: HostSpanError, stage: "authorization" | "validation"): void;
   processBackend(processId: string): "native" | "pty" | undefined;
 }
 
@@ -219,12 +229,12 @@ async function invoke<T>(
   input: T,
   handler: (input: T, requestId: string) => Promise<Record<string, unknown>> | Record<string, unknown>,
   context: ResponseContextProvider,
-  authorize?: (input: T) => void,
+  authorize?: (input: T, requestId: string) => void,
   includeImage = false,
 ) {
   const id = requestId();
   try {
-    authorize?.(input);
+    authorize?.(input, id);
     return successResult(context(), await handler(input, id), id, includeImage);
   } catch (error) {
     return errorResult(context(), error, id, includeImage);
@@ -237,40 +247,49 @@ export function registerHostSpanTools(
   context: ResponseContextProvider,
   authorization?: HostSpanToolAuthorization,
 ): void {
+  function checked<T>(tool: ToolName, check: (input: T) => void) {
+    return (input: T, id: string) => {
+      try { check(input); }
+      catch (error) {
+        authorization?.rejected?.(tool, input as Record<string, unknown>, id, asHostSpanError(error), "authorization");
+        throw error;
+      }
+    };
+  }
   server.registerTool(TOOL_DEFINITIONS[0].name, TOOL_DEFINITIONS[0], (input, requestContext) =>
-    invoke(input, handlers.system_status.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
+    invoke(input, async (parsed, id) => ({ ...await handlers.system_status(parsed, id), authorization: { mode: requestOAuthScopes(requestContext) ? "oauth" : "local", granted_scopes: requestOAuthScopes(requestContext), client_tool_visibility: "not_observable" } }), context, checked("system_status", () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ))),
   );
   server.registerTool(TOOL_DEFINITIONS[1].name, TOOL_DEFINITIONS[1], (input, requestContext) =>
-    invoke(input, handlers.target_list.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
+    invoke(input, handlers.target_list.bind(handlers), context, checked("target_list", () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ))),
   );
   server.registerTool(TOOL_DEFINITIONS[2].name, TOOL_DEFINITIONS[2], (input, requestContext) =>
-    invoke(input, handlers.file_list.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
+    invoke(input, handlers.file_list.bind(handlers), context, checked("file_list", () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ))),
   );
   server.registerTool(TOOL_DEFINITIONS[3].name, TOOL_DEFINITIONS[3], (input, requestContext) =>
-    invoke(input, handlers.file_read.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
+    invoke(input, handlers.file_read.bind(handlers), context, checked("file_read", () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ))),
   );
   server.registerTool(TOOL_DEFINITIONS[4].name, TOOL_DEFINITIONS[4], (input, requestContext) =>
-    invoke(input, handlers.file_search.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
+    invoke(input, handlers.file_search.bind(handlers), context, checked("file_search", () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ))),
   );
   server.registerTool(TOOL_DEFINITIONS[5].name, TOOL_DEFINITIONS[5], (input, requestContext) =>
-    invoke(input, handlers.file_patch.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_WRITE)),
+    invoke(input, handlers.file_patch.bind(handlers), context, checked("file_patch", () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_WRITE))),
   );
   server.registerTool(TOOL_DEFINITIONS[6].name, TOOL_DEFINITIONS[6], (input, requestContext) =>
-    invoke(input, handlers.process_start.bind(handlers), context, (parsed) =>
-      requireOAuthScope(requestContext, parsed.tty ? HOSTSPAN_OAUTH_SCOPE_TERMINAL : HOSTSPAN_OAUTH_SCOPE_EXEC),
-    ),
+    invoke(input, handlers.process_start.bind(handlers), context, checked("process_start", (parsed: ProcessStartToolInput) => requireOAuthScope(requestContext, parsed.tty ? HOSTSPAN_OAUTH_SCOPE_TERMINAL : HOSTSPAN_OAUTH_SCOPE_EXEC))),
   );
   server.registerTool(TOOL_DEFINITIONS[7].name, TOOL_DEFINITIONS[7], (input, requestContext) =>
-    invoke(input, handlers.process_poll.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ)),
+    invoke(input, handlers.process_poll.bind(handlers), context, checked("process_poll", () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ))),
   );
   server.registerTool(TOOL_DEFINITIONS[8].name, TOOL_DEFINITIONS[8], (input, requestContext) =>
-    invoke(input, handlers.process_write.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_TERMINAL)),
+    invoke(input, handlers.process_write.bind(handlers), context, checked("process_write", () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_TERMINAL))),
   );
   server.registerTool(TOOL_DEFINITIONS[9].name, TOOL_DEFINITIONS[9], (input, requestContext) =>
-    invoke(input, handlers.process_cancel.bind(handlers), context, (parsed) => authorizeProcessCancel(requestContext, parsed, authorization)),
+    invoke(input, handlers.process_cancel.bind(handlers), context, checked("process_cancel", (parsed: ProcessCancelToolInput) => authorizeProcessCancel(requestContext, parsed, authorization))),
   );
   server.registerTool(TOOL_DEFINITIONS[10].name, TOOL_DEFINITIONS[10], (input, requestContext) =>
-    invoke(input, handlers.computer.bind(handlers), context, () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_COMPUTER), true),
+    invoke(input, handlers.computer.bind(handlers), context, checked("computer", () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_COMPUTER)), true),
   );
-
+  server.registerTool(TOOL_DEFINITIONS[11].name, TOOL_DEFINITIONS[11], (input, requestContext) =>
+    invoke(input, handlers.process_list.bind(handlers), context, checked("process_list", () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ))),
+  );
 }

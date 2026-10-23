@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HostSpanError } from "../../src/errors.js";
-import { auditErrorDiagnostics } from "../../src/observability/error-diagnostics.js";
+import { auditErrorDiagnostics, auditRequestDiagnostics, auditResponseDiagnostics } from "../../src/observability/error-diagnostics.js";
 
 describe("audit error diagnostics", () => {
   it("keeps only explicitly safe diagnostic fields", () => {
@@ -30,5 +30,10 @@ describe("audit error diagnostics", () => {
     const metadata = auditErrorDiagnostics(error);
     expect(metadata).toEqual({ error_code: "INTERNAL_ERROR", retryable: true });
     expect(JSON.stringify(metadata)).not.toContain(canary);
+    const request = auditRequestDiagnostics({ target_id: "local", path: canary, start_byte: 17, max_bytes: 5, action: "text", text: canary, argv: [canary], env: { SECRET: canary } });
+    const response = auditResponseDiagnostics({ text: canary, stdout: canary, message: canary, image: canary, state: "failed", exit_code: 1, returned_bytes: 5, truncated_after: true, next_byte: 22, returned_range: { start_byte: 17, end_byte: 22 }, has_more_output: true });
+    expect(request).toMatchObject({ start_byte: 17, max_bytes: 5, action: "text", path_hash: expect.any(String) });
+    expect(response).toMatchObject({ state: "failed", exit_code: 1, returned_bytes: 5, truncated_after: true, next_byte: 22, returned_start_byte: 17, returned_end_byte: 22, stdout_returned_bytes: Buffer.byteLength(canary), has_more_output: true });
+    expect(JSON.stringify({ request, response })).not.toContain(canary);
   });
 });

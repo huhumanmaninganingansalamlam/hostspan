@@ -89,7 +89,7 @@ The recommended remote path remains outbound-only OpenAI Secure MCP Tunnel. If y
 - the retired full-authority `hostspan` scope is rejected; clients with grants using it must authorize again with granular scopes;
 - refresh without a requested scope preserves the grant, while an explicit refresh scope may only narrow it;
 - OAuth scope checks and HostSpan target policy are independent boundaries: a token must authorize the tool class and the selected target must separately grant the underlying file/process capability. Desktop authority uses explicit computer configuration and the OS-consented screen session, not a filesystem target;
-- the versioned `hostspan-v3.4` tool list/schema/hash is unchanged by scope enforcement; tool authorization is checked at invocation time;
+- the versioned `hostspan-v3.5` tool list/schema/hash is unchanged by scope enforcement; tool authorization is checked at invocation time;
 - HostSpan exposes the MCP-SDK-compatible root `/authorize`, `/token`, `/register`, and `/revoke` OAuth surface;
 - refresh tokens are issued and rotated for reconnects without requiring a separate `offline_access` scope;
 - rotating the approval secret revokes all outstanding access/refresh tokens;
@@ -128,3 +128,7 @@ HostSpan fails bounded rather than spawning unbounded work under request bursts:
 ## Reporting
 
 Use the repository security reporting channel for vulnerabilities. For compatibility bugs, collect `hostspan doctor` and `hostspan support-export`; review the bundle before sharing it.
+
+Request diagnostics retain numerical bounds/ranges, output sizes/loss, process state, known desktop actions and allowlisted error reasons. File paths are fingerprinted for correlation; file/command/clipboard bodies, environment values and screenshots are excluded. `process_list` uses the existing read scope and configured target boundary, exposes only HostSpan-owned process metadata, and grants no execution or desktop authority. Approval decisions made before dispatch remain client-owned and cannot be inferred from a missing server event.
+
+The MCP SDK 2.3.0 update follows [GHSA-46jr-4wx8-v453](https://github.com/advisories/GHSA-46jr-4wx8-v453): cap aggregate tool-input array elements/object keys at 10,000 before schema validation, including pre-handler diagnostics. The SDK applies the same cap to non-HTTP callers; HTTP retains Fastify's existing 1 MiB body limit. This bounds validation allocations rather than increasing permissions. The per-request server factory already avoids [cross-client response sharing](https://github.com/advisories/GHSA-jm63-cq47-j5jp). Both the OAuth store and SDK check the configured resource audience.

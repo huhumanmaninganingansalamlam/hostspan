@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { v7 as uuidv7 } from "uuid";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRuntime, runtimeReadiness } from "../../src/runtime/create-runtime.js";
 import { runDoctor } from "../../src/diagnostics/doctor.js";
@@ -98,12 +99,79 @@ describe("HostSpan core acceptance", () => {
       const listed = await post(address, "tools-1", "tools/list");
       const result = listed.result as { tools?: Array<{ name?: string }> } | undefined;
       expect(result?.tools?.map((tool) => tool.name)).toEqual(TOOL_NAMES);
-      expect(result?.tools).toHaveLength(11);
     } finally {
       await app.close();
       await runtime.close();
     }
   });
+
+  it("recovers a running command through MCP and drains output without confusing wrapper and child results", async () => {
+    const { targetRoot, configPath } = fixture();
+    mkdirSync(join(targetRoot, "project", "child"), { recursive: true });
+    mkdirSync(join(targetRoot, "other"));
+    const runtime = createRuntime(configPath);
+    const app = createHostSpanHttpServer({
+      listen_host: "127.0.0.1", listen_port: 0, handlers: runtime.handlers, authorization: runtime.authorization,
+      responseContext: () => ({ toolset_hash: TOOLSET_HASH, policy_epoch: runtime.config.policy_epoch }),
+      status: { health: () => ({}), readiness: () => ({ ready: true }) },
+    });
+    try {
+      const address = await app.listen({ host: "127.0.0.1", port: 0 });
+      const call = async (name: string, args: Record<string, unknown>) => {
+        const response = await fetch(`${address}/mcp`, {
+          method: "POST",
+          headers: { accept: "application/json, text/event-stream", "content-type": "application/json", "mcp-method": "tools/call", "mcp-name": name, "mcp-protocol-version": "2026-07-28" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: uuidv7(), method: "tools/call", params: { name, arguments: args, _meta: {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": { name: "recovery-acceptance", version: "1" },
+            "io.modelcontextprotocol/clientCapabilities": {},
+          } } }),
+        });
+        expect(response.status).toBe(200);
+        const body = await response.json() as { result: { structuredContent: Record<string, unknown> } };
+        return body.result.structuredContent;
+      };
+      const invalid = await call("process_start", { target_id: "local", argv: [process.execPath], idempotency_key: "not-a-uuid", wait_ms: 2000 });
+      expect(invalid).toMatchObject({ error: { code: "VALIDATION_FAILED", details: { reason: "invalid_tool_arguments" } } });
+      expect(JSON.stringify(invalid)).toContain("wait_ms");
+      expect(JSON.stringify(invalid)).toContain("idempotency_key");
+      const crowded = await call("process_start", { target_id: "local", argv: [process.execPath], idempotency_key: uuidv7(), env: Object.fromEntries(Array.from({ length: 10_001 }, (_, i) => [`ENV_${i}`, "x"])) });
+      expect(crowded).toMatchObject({ error: { code: "VALIDATION_FAILED", message: expect.stringContaining("element validation budget") } });
+      expect(runtime.processes.active()).toEqual([]);
+      expect(runtime.audit.recent().find((event) => event.request_id === invalid.request_id)).toMatchObject({
+        process_id: null, metadata: { tool: "process_start", stage: "validation", error_code: "VALIDATION_FAILED" },
+      });
+      const wrapper = `const fs=require('node:fs');const timer=setInterval(()=>{if(!fs.existsSync('go'))return;clearInterval(timer);const child=require('node:child_process').spawnSync(process.execPath,['-e','process.exit(0)']);fs.writeFileSync('result.json',JSON.stringify({child_exit:child.status,value:process.env.HOSTSPAN_TEST_VALUE}));process.stdout.write('x'.repeat(100)+' result.json\\n');process.exitCode=1;},20);`;
+      const start = await call("process_start", { target_id: "local", cwd: "project", argv: [process.execPath, "-e", wrapper], env: { HOSTSPAN_TEST_VALUE: "explicit-env" }, idempotency_key: uuidv7(), wait_ms: 0 });
+      const sibling = await call("process_start", { target_id: "local", cwd: "project/child", argv: [process.execPath, "-e", "process.stdout.write('child')"], idempotency_key: uuidv7(), wait_ms: 0 });
+      const active = await call("process_list", { target_id: "local", cwd: "project" });
+      expect(active.processes).toContainEqual(expect.objectContaining({ process_id: start.process_id, target_id: "local", cwd: "project" }));
+      const first = await call("process_list", { target_id: "local", cwd: "project", active_only: false, limit: 1 });
+      const second = await call("process_list", { target_id: "local", cwd: "project", active_only: false, limit: 1, cursor: first.cursor });
+      expect([...(first.processes as Record<string, unknown>[]), ...(second.processes as Record<string, unknown>[])].map((p) => p.process_id).sort()).toEqual([start.process_id, sibling.process_id].sort());
+      expect(await call("process_list", { target_id: "local", cwd: "other", active_only: false })).toMatchObject({ processes: [] });
+      expect(await call("process_list", { target_id: "local", cwd: "../" })).toMatchObject({ error: { code: "PATH_OUTSIDE_TARGET" } });
+      writeFileSync(join(targetRoot, "project", "go"), "go");
+      let stdout = "";
+      let output: Record<string, unknown> = { next_stdout_cursor: 0, next_stderr_cursor: 0, state: "running" };
+      const deadline = Date.now() + 15_000;
+      do {
+        output = await call("process_poll", { process_id: start.process_id, stdout_cursor: output.next_stdout_cursor, stderr_cursor: output.next_stderr_cursor, max_bytes: 32, wait_ms: 500 });
+        stdout += output.stdout;
+        if (Date.now() > deadline) throw new Error(`Command did not finish: ${JSON.stringify(output)}`);
+      } while (["accepted", "launching", "running"].includes(String(output.state)) || output.has_more_output);
+      expect(output).toMatchObject({ exit_code: 1, exit_code_scope: "spawned_command", output_expired: false, has_more_output: false, cwd: "project" });
+      expect(stdout).toBe(`${"x".repeat(100)} result.json\n`);
+      const receipt = await call("file_read", { target_id: "local", path: "project/result.json", start_byte: 0 });
+      expect(JSON.parse(String(receipt.text))).toEqual({ child_exit: 0, value: "explicit-env" });
+      const readAudit = runtime.audit.recent().find((event) => event.request_id === receipt.request_id && event.event_type === "response.returned");
+      expect(readAudit).toMatchObject({ metadata: { returned_bytes: Buffer.byteLength(String(receipt.text)), truncated_after: false } });
+    } finally {
+      await app.close();
+      await runtime.supervisor.shutdown();
+      await runtime.close();
+    }
+  }, 25_000);
 
   it("serves concurrent stateless MCP clients without cross-request state", async () => {
     const { configPath } = fixture();

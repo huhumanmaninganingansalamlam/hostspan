@@ -8,7 +8,7 @@
 [![Desktop release](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/release.yml/badge.svg)](https://github.com/huhumanmaninganingansalamlam/hostspan/actions/workflows/release.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
-HostSpan is a terminal-first MCP execution gateway for ChatGPT Web Developer Mode. It exposes the versioned `hostspan-v3.4` toolset for approved local targets and explicitly enabled desktop control and keeps file/process side effects verifiable and recoverable across reconnects.
+HostSpan is a terminal-first MCP execution gateway for ChatGPT Web Developer Mode. It exposes the versioned `hostspan-v3.5` toolset for approved local targets and explicitly enabled desktop control and keeps file/process side effects verifiable and recoverable across reconnects.
 
 The HostSpan controlled-span mark uses the same geometry for the application and tray. The app places the white mark on a blue rounded tile; the tray uses a tightly framed monochrome mark, or the same blue tile when panel tint is unavailable.
 
@@ -16,9 +16,9 @@ HostSpan has native Linux x64, Windows x64, macOS x64, and macOS arm64 core path
 
 ## Current scope
 
-The MCP tool registry is versioned as `hostspan-v3.4` (v0.10.0):
+The MCP tool registry is versioned as `hostspan-v3.5` (v0.11.0):
 
-`system_status`, `target_list`, `file_list`, `file_read`, `file_search`, `file_patch`, `process_start`, `process_poll`, `process_write`, `process_cancel`, `computer`.
+`system_status`, `target_list`, `file_list`, `file_read`, `file_search`, `file_patch`, `process_start`, `process_poll`, `process_write`, `process_cancel`, `computer`, `process_list`.
 
 Every file/process request names a persistent `target_id`; no ChatGPT session ID or temporary workspace handle is product state. File mutation uses expected SHA-256 values, dry-run/staging, per-file atomic replacement, a durable transaction journal, and postcondition hashes. Non-interactive commands use the durable native process supervisor. Interactive commands use the same `process_id` lifecycle through a HostSpan-owned, daemon-independent PTY session worker: start with `tty=true`, read through `process_poll`, write/resize through `process_write`, and close through `process_cancel`.
 
@@ -70,6 +70,10 @@ Target `deny_globs` / `ignore_globs` use a deliberately portable policy syntax: 
 Native and PTY commands inherit the HostSpan process's OS environment with caller-provided `env` entries taking precedence. HostSpan's internal Electron `ELECTRON_RUN_AS_NODE` bootstrap flag is not implicitly passed to user programs; callers can still set it explicitly. A headless service inherits its service environment, not a separate interactive desktop session.
 
 File discovery follows the selected target's `ignore_globs`, `deny_globs`, and the tool's hidden-file setting. Directory names such as `dist` and `node_modules` are not unconditionally hidden: configure exclusions on the target when wanted. Search accepts valid regular expressions, including blank-line and match-all patterns; requested match/byte/deadline budgets and the shared search concurrency limit bound the work.
+
+For a complete file, use `file_read(start_byte=0)` and continue from `next_byte` with the first response's `sha256` as `expected_sha256`. Byte pages preserve delimiters and complete Unicode characters; `returned_bytes` counts returned UTF-8 bytes, while `next_byte` is an offset in the source encoding. A changed file fails with `STALE_CONTENT`. Line-range reads retain their existing formatting; after a byte-capped line read, resume at `next_byte`, not the next line number.
+
+Recover lost execution IDs with read-only `process_list(target_id, cwd)`; it lists active HostSpan-owned processes in that directory and descendants. Use `active_only=false` for completed work and the returned `cursor` for another page. Poll the recovered ID using its output cursors. `exit_code_scope=spawned_command` identifies the wrapper's exit status; read a nested program's result file separately. Continue polling while `has_more_output`; `output_expired` and dropped-byte counters distinguish expired or evicted history from empty output.
 
 `file_read` may scan forward to a requested late line independently of the response `max_bytes`, but each call has a fixed 64 MiB line-scan ceiling. Requests beyond that bound fail explicitly with `reason=file_read_scan_limit`; use `file_search` to narrow the location first rather than turning one read into an unbounded filesystem scan.
 
@@ -282,7 +286,7 @@ hostspan doctor
 hostspan smoke --target local-app
 ```
 
-The contract suite pins the approved hash for the versioned 11-tool `hostspan-v3.4` registry. Acceptance coverage exercises the MCP request/response flow; process coverage exercises PTY input, resize, polling, cancellation, and recovery. Windows also checks Job Object process-tree control and native path security.
+The contract suite pins the approved hash for the versioned 12-tool `hostspan-v3.5` registry. Acceptance coverage exercises the MCP request/response flow; process coverage exercises PTY input, resize, polling, cancellation, and recovery. Windows also checks Job Object process-tree control and native path security.
 
 ## Security and support
 

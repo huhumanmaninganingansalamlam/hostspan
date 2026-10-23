@@ -219,6 +219,7 @@ describe("overload stability", () => {
       file_search: () => ({ matches: [] }),
       file_patch: () => ({ state: "succeeded" }),
       process_start: () => ({ state: "succeeded" }),
+      process_list: () => ({ processes: [], truncated: false }),
       process_poll: () => ({ state: "succeeded" }),
       process_write: () => ({ state: "succeeded" }),
       process_cancel: () => ({ state: "cancelled" }),

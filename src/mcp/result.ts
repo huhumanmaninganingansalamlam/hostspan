@@ -39,6 +39,6 @@ export function errorResult(context: ResponseContext, error: unknown, request_id
   return {
     isError: true,
     content: [{ type: "text" as const, text: humanMessage ? known.message : JSON.stringify(payload) }],
-    ...(humanMessage ? { structuredContent: payload } : {}),
+    structuredContent: payload,
   };
 }

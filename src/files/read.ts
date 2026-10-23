@@ -10,6 +10,8 @@ export interface FileReadInput {
   end_line: number;
   max_bytes: number;
   include_sha256: boolean;
+  start_byte?: number | undefined;
+  expected_sha256?: string | undefined;
 }
 
 const FILE_READ_SCAN_LIMIT_BYTES = 64 * 1024 * 1024;
@@ -175,7 +177,8 @@ function scanLineRange(
 function decodeRange(buffer: Buffer, encoding: TextEncoding): string {
   if (encoding === "utf-16le") return buffer.toString("utf16le");
   if (encoding === "utf-16be") return swapUtf16(buffer).toString("utf16le");
-  return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+  // The file BOM was removed once; a U+FEFF at a page boundary is content.
+  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer);
 }
 
 export function sha256File(target: TargetRuntime, path: string): string {
@@ -193,14 +196,25 @@ export function fileRead(target: TargetRuntime, input: FileReadInput, scanLimitB
     if (!stat.isFile()) throw new HostSpanError("FILE_NOT_FOUND", `Not a regular file: ${input.path}`);
     const detected = detectTextEncoding(fd, stat.size);
     const maxReturnedBytes = detected.encoding === "utf-8" ? input.max_bytes : input.max_bytes - (input.max_bytes % 2);
-    const range = scanLineRange(fd, stat.size, detected.encoding, detected.dataStart, input.start_line, input.end_line, maxReturnedBytes, scanLimitBytes);
+    const byteMode = input.start_byte !== undefined;
+    const byteStart = input.start_byte ? input.start_byte : detected.dataStart;
+    if (byteMode && (byteStart < detected.dataStart || byteStart > stat.size || (detected.encoding !== "utf-8" && (byteStart - detected.dataStart) % 2 !== 0))) {
+      throw new HostSpanError("VALIDATION_FAILED", "start_byte must be a valid file byte offset at an encoding boundary.");
+    }
+    const range = byteMode
+      ? { start: byteStart, end: Math.min(stat.size, byteStart + maxReturnedBytes), scanned: Math.min(maxReturnedBytes, stat.size - byteStart), binary: false, endedOnNewline: false }
+      : scanLineRange(fd, stat.size, detected.encoding, detected.dataStart, input.start_line, input.end_line, maxReturnedBytes, scanLimitBytes);
+    const sha256 = input.include_sha256 || input.expected_sha256 ? sha256Fd(fd) : undefined;
+    if (input.expected_sha256 && sha256 !== input.expected_sha256.toLowerCase()) {
+      throw new HostSpanError("STALE_CONTENT", "File content changed since the previous read; read the current file before continuing.");
+    }
     const metadata = {
       path: path.relative,
       encoding: range.binary ? "binary" : detected.encoding,
       bom: range.binary ? false : detected.bom,
       size_bytes: stat.size,
       mtime: stat.mtime.toISOString(),
-      ...(input.include_sha256 ? { sha256: sha256Fd(fd) } : {}),
+      ...(sha256 ? { sha256 } : {}),
     };
     if (range.binary) {
       return { ...metadata, binary: true, error_code: "BINARY_FILE", returned_bytes: 0, truncated_before: false, truncated_after: stat.size > 0 };
@@ -211,6 +225,7 @@ export function fileRead(target: TargetRuntime, input: FileReadInput, scanLimitB
         binary: false,
         newline_style: "none",
         text: "",
+        returned_bytes: 0,
         returned_range: { start_line: input.start_line, end_line: input.start_line - 1, bytes_scanned: range.scanned },
         truncated_before: input.start_line > 1,
         truncated_after: false,
@@ -221,12 +236,31 @@ export function fileRead(target: TargetRuntime, input: FileReadInput, scanLimitB
     let returnBytes = Math.min(available, input.max_bytes);
     if (detected.encoding !== "utf-8") returnBytes -= returnBytes % 2;
     const buffer = Buffer.alloc(returnBytes);
-    if (returnBytes) readSync(fd, buffer, 0, returnBytes, range.start);
+    let bytesRead = 0;
+    while (bytesRead < returnBytes) {
+      const count = readSync(fd, buffer, bytesRead, returnBytes - bytesRead, range.start + bytesRead);
+      if (!count) break;
+      bytesRead += count;
+    }
+    const afterRead = fstatSync(fd);
+    if (afterRead.size !== stat.size || afterRead.mtimeMs !== stat.mtimeMs || afterRead.ctimeMs !== stat.ctimeMs) {
+      throw new HostSpanError("STALE_CONTENT", "File changed while being read; retry against the current content.");
+    }
+    const raw = buffer.subarray(0, bytesRead);
+    if (byteMode && detected.encoding === "utf-8" && raw.length && ((raw[0] ?? 0) & 0xc0) === 0x80) {
+      throw new HostSpanError("VALIDATION_FAILED", "start_byte splits a UTF-8 character; use next_byte from the previous response.");
+    }
+    if (byteMode && detected.encoding !== "utf-8" && raw.length >= 2) {
+      const first = detected.encoding === "utf-16le" ? raw.readUInt16LE(0) : raw.readUInt16BE(0);
+      if (first >= 0xdc00 && first <= 0xdfff) {
+        throw new HostSpanError("VALIDATION_FAILED", "start_byte splits a UTF-16 character; use next_byte from the previous response.");
+      }
+    }
     const safeBuffer =
       detected.encoding === "utf-8"
-        ? validUtf8Prefix(buffer)
-        : validUtf16Prefix(buffer, detected.encoding);
-    if (safeBuffer === undefined) {
+        ? validUtf8Prefix(raw)
+        : validUtf16Prefix(raw, detected.encoding);
+    if (safeBuffer === undefined || (range.start + bytesRead === stat.size && safeBuffer.length !== bytesRead) || (raw.includes(0) && detected.encoding === "utf-8")) {
       return {
         ...metadata,
         encoding: "binary",
@@ -237,6 +271,9 @@ export function fileRead(target: TargetRuntime, input: FileReadInput, scanLimitB
         truncated_before: input.start_line > 1,
         truncated_after: range.end < stat.size || available > 0,
       };
+    }
+    if (byteMode && !safeBuffer.length && range.start < stat.size) {
+      throw new HostSpanError("VALIDATION_FAILED", "max_bytes cannot fit the next complete character; use at least 4 bytes.");
     }
     let text = decodeRange(safeBuffer, detected.encoding);
     if (safeBuffer.length === available && range.endedOnNewline) {
@@ -251,8 +288,12 @@ export function fileRead(target: TargetRuntime, input: FileReadInput, scanLimitB
       binary: false,
       newline_style,
       text,
-      returned_range: { start_line: input.start_line, end_line: returnedEndLine, bytes_scanned: range.scanned },
-      truncated_before: input.start_line > 1,
+      returned_bytes: Buffer.byteLength(text),
+      returned_range: byteMode
+        ? { start_byte: range.start, end_byte: range.start + safeBuffer.length, bytes_scanned: range.scanned }
+        : { start_line: input.start_line, end_line: returnedEndLine, bytes_scanned: range.scanned },
+      ...(range.start + safeBuffer.length < stat.size ? { next_byte: range.start + safeBuffer.length } : {}),
+      truncated_before: byteMode ? range.start > detected.dataStart : input.start_line > 1,
       truncated_after: safeBuffer.length < available || range.end < stat.size,
     };
   } finally {

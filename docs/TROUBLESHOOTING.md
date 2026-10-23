@@ -20,13 +20,13 @@ Run:
 hostspan print-toolset
 ```
 
-HostSpan 0.10.0 advertises the 11-tool `hostspan-v3.4` contract, including `computer`; ten tools described v0.9.5, not a permanent limit. Target permissions never remove a tool from `tools/list`; a disallowed call returns `SCOPE_DENIED`. If ChatGPT still shows older cached tool metadata after upgrading, Refresh the app before debugging the server.
+HostSpan 0.11.0 advertises the 12-tool `hostspan-v3.5` contract, including `computer` and `process_list`; ten tools described v0.9.5, not a permanent limit. Target permissions never remove a tool from `tools/list`; a disallowed call returns `SCOPE_DENIED`. If ChatGPT still shows older cached tool metadata after upgrading, Refresh the app before debugging the server.
 
 ## Only read-only tools appear in one ChatGPT conversation
 
 First compare `hostspan print-toolset` with the tool schemas actually injected into that conversation. If HostSpan advertises its complete versioned registry but `file_patch`, `process_start`, `process_write`, and `process_cancel` are absent, the filtering occurred in the ChatGPT app/action-permission or conversation tool-injection layer before a request reached HostSpan.
 
-Check the app's enabled tools/action controls, use Refresh, explicitly select HostSpan in a new conversation, and delete/re-add the app only if the stale subset persists. Confirm the absence of a corresponding HostSpan transport/audit trace before classifying it as a server defect.
+Compare the client tool schema with `system_status.advertised_tools` and `authorization.granted_scopes`. Refresh stale metadata after an actual upgrade. A missing/collapsed/expired client approval card is not a HostSpan permission decision; use that client’s original request record, without replaying a side effect. Missing retained server evidence alone does not establish which client state occurred.
 
 Do **not** mark side-effecting tools as `readOnlyHint=true`, omit their real risk semantics to evade client controls, or hide all operations behind a misleading generic tool. These changes cannot guarantee client injection and would make confirmation/audit behavior less trustworthy.
 
@@ -38,7 +38,7 @@ Use:
 hostspan logs --follow
 ```
 
-Then reproduce once. A received transport request is logged before the handler, and an accepted tool call is recorded in the durable audit store. If neither exists, do not debug the HostSpan tool handler; inspect ChatGPT/tunnel behavior first.
+Correlate an existing request first. Transport records contain the parsed MCP method/tool; audit `request.aborted.stage` distinguishes `validation`, `authorization`, and `handler`. Errors include `request_id` in structured content. Client-side hidden tools or pre-dispatch approval refusals never enter the handler; establish the version and retained time window before interpreting missing events.
 
 ## A workspace was added or removed but MCP still shows the old target list
 
@@ -148,3 +148,11 @@ Before upgrading to 0.8.0, remove `default_deadline_ms`, `max_deadline_ms`, `def
 ## Process concurrency
 
 Native execution and PTY sessions each default to 16 concurrent processes per target. Existing configurations keep explicit values: set `exec_profiles.<name>.max_concurrent_processes` and `terminal.max_concurrent_sessions` to the intended capacity, then restart the daemon to apply them. Reaching capacity returns retryable `SERVER_BUSY` before accepting a durable operation. Retry the identical request with its original idempotency key after capacity frees; already accepted operations remain replayable while the target is full.
+
+## Missing execution ID, SDK environment, or display mismatch
+
+Use `process_list` for the intended target/cwd instead of inventing an ID or launching the command again. Set `active_only=false` for completed work. A wrapper exit 1 and an inner test receipt reporting exit 0 are distinct results: drain `process_poll` using returned cursors and read the reported result path. No execution ID exists for a client pre-dispatch denial.
+
+A child inherits the daemon's environment plus explicit `process_start.env`, not the caller's login shell. Check required SDK/NDK tools in the authorized target environment and pass known required variables; an absent `ANDROID_HOME` and an absent NDK installation are different causes. HostSpan does not install SDKs or choose an Android display implicitly.
+
+`system_status.backends.computer` describes this daemon's Linux Wayland portal session. The OS selects the shared screen; there is no arbitrary display enumeration, SSH desktop forwarding, Android display control, or foreground-window identification. An intended display number is not evidence of the display actually used. Observe the granted screen and the result after input; associate errors with that `computer` action and session, not a separate provider approval card.

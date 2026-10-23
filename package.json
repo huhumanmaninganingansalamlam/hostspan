@@ -1,6 +1,6 @@
 {
   "name": "hostspan",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "productName": "HostSpan",
   "desktopName": "HostSpan",
   "description": "Terminal-first MCP execution gateway for approved local targets",
@@ -69,11 +69,11 @@
   "dependencies": {
     "@modelcontextprotocol/fastify": "2.0.0",
     "@modelcontextprotocol/node": "2.0.0",
-    "@modelcontextprotocol/server": "2.0.0",
+    "@modelcontextprotocol/server": "2.3.0",
     "@vscode/ripgrep": "1.18.0",
     "better-sqlite3": "13.0.3",
     "diff": "8.0.3",
-    "fastify": "5.12.5",
+    "fastify": "5.12.6",
     "koffi": "3.2.1",
     "node-pty": "1.2.0-beta.14",
     "pino": "9.9.5",
@@ -86,12 +86,12 @@
     "@electron/asar": "3.4.1",
     "@types/better-sqlite3": "7.6.13",
     "@types/node": "24.7.2",
-    "electron": "^44.4.1",
+    "electron": "44.5.0",
     "electron-builder": "^26.15.3",
     "png2icons": "^2.0.1",
     "sharp": "^0.35.5",
     "typescript": "5.9.3",
-    "vitest": "4.1.11"
+    "vitest": "4.1.12"
   },
   "packageManager": "pnpm@12.4.2"
 }

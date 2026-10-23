@@ -74,6 +74,39 @@ describe("file services", () => {
     expect(result).toMatchObject({ encoding: "utf-8", binary: false, text: "abc", truncated_after: true });
     expect("text" in result ? result.text : "").not.toContain("�");
     expect(result.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(result).toMatchObject({ next_byte: 3 });
+    const rest = fileRead(target, { path: "utf8.txt", start_line: 1, end_line: 240, start_byte: 3, max_bytes: 1024, include_sha256: false, expected_sha256: result.sha256 });
+    expect(rest).toMatchObject({ text: "😀def\nsecond\n", truncated_after: false });
+  });
+
+  it("reconstructs byte pages through EOF and rejects changed content or split character offsets", () => {
+    const { root, target } = fixture();
+    const text = "abc😀한글\r\n\uFEFF끝\nEND\n";
+    for (const encoding of ["utf8", "utf16le", "utf16be"] as const) {
+      const body = Buffer.from(text, encoding === "utf8" ? "utf8" : "utf16le");
+      if (encoding === "utf16be") body.swap16();
+      const bom = encoding === "utf8" ? [0xef, 0xbb, 0xbf] : encoding === "utf16le" ? [0xff, 0xfe] : [0xfe, 0xff];
+      const path = `${encoding}.txt`;
+      writeFileSync(join(root, path), Buffer.concat([Buffer.from(bom), body]));
+      const input = { path, start_line: 1, end_line: 240, max_bytes: 5, include_sha256: true };
+      let start_byte: number | undefined = 0;
+      let sha256: string | undefined;
+      let reconstructed = "";
+      do {
+        const page = fileRead(target, { ...input, start_byte, expected_sha256: sha256 });
+        if (!("text" in page)) throw new Error("Text page classified as binary");
+        reconstructed += page.text;
+        sha256 ??= page.sha256;
+        expect(page.returned_bytes).toBe(Buffer.byteLength(page.text));
+        if (page.next_byte !== undefined) expect(page.next_byte).toBeGreaterThan(start_byte);
+        start_byte = page.next_byte;
+      } while (start_byte !== undefined);
+      expect(reconstructed).toBe(text);
+      const splitOffset = bom.length + (encoding === "utf8" ? 4 : 8);
+      expect(() => fileRead(target, { ...input, start_byte: splitOffset })).toThrowError(expect.objectContaining({ code: "VALIDATION_FAILED" }));
+      writeFileSync(join(root, path), "changed");
+      expect(() => fileRead(target, { ...input, start_byte: 0, expected_sha256: sha256 })).toThrowError(expect.objectContaining({ code: "STALE_CONTENT" }));
+    }
   });
 
   it("streams to a late line range instead of limiting the scan to max_bytes", () => {

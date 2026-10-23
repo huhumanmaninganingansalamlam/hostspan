@@ -28,11 +28,17 @@ export const FileReadInputSchema = z
     end_line: z.number().int().min(1).max(10_000_000).default(240),
     max_bytes: z.number().int().min(1).max(4 * 1024 * 1024).default(131_072),
     include_sha256: z.boolean().default(true),
+    start_byte: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    expected_sha256: Sha256HexSchema.optional(),
   })
   .strict()
   .refine((value) => value.end_line >= value.start_line, {
     message: "end_line must be greater than or equal to start_line",
     path: ["end_line"],
+  })
+  .refine((value) => value.start_byte === undefined || (value.start_line === 1 && value.end_line === 240), {
+    message: "start_byte selects byte reading; omit start_line and end_line",
+    path: ["start_byte"],
   });
 
 export const FileSearchInputSchema = z
@@ -75,8 +81,8 @@ export const ProcessStartInputSchema = z
     idempotency_key: UuidV7Schema,
     target_id: z.string().min(1),
     argv: z.array(z.string().max(65_536)).min(1).max(256),
-    cwd: RelativePathSchema.default("."),
-    env: z.record(z.string().min(1).max(256), z.string().max(131_072)).default({}),
+    cwd: RelativePathSchema.default(".").describe("Directory relative to this target root, not an absolute host path."),
+    env: z.record(z.string().min(1).max(256), z.string().max(131_072)).default({}).describe("Overrides the daemon environment. Interactive shell or SSH/Android device environments are not implicitly imported; pass required SDK variables explicitly."),
     wait_ms: z.number().int().min(0).max(1_500).default(1_200),
     deadline_ms: z.number().int().min(1).max(2_147_483_647).optional(),
     max_bytes: z.number().int().min(1).max(4 * 1024 * 1024).optional(),
@@ -96,6 +102,14 @@ export const ProcessPollInputSchema = z
     max_bytes: z.number().int().min(1).max(4 * 1024 * 1024).default(131_072),
   })
   .strict();
+
+export const ProcessListInputSchema = z.object({
+  target_id: z.string().min(1),
+  cwd: RelativePathSchema.default("."),
+  active_only: z.boolean().default(true),
+  limit: z.number().int().min(1).max(500).default(100),
+  cursor: z.string().regex(/^proc_[0-9a-f]{32}$/).optional(),
+}).strict();
 
 export const ProcessCancelInputSchema = z
   .object({
@@ -127,5 +141,6 @@ export type FileSearchToolInput = z.infer<typeof FileSearchInputSchema>;
 export type FilePatchToolInput = z.infer<typeof FilePatchInputSchema>;
 export type ProcessStartToolInput = z.infer<typeof ProcessStartInputSchema>;
 export type ProcessPollToolInput = z.infer<typeof ProcessPollInputSchema>;
+export type ProcessListToolInput = z.infer<typeof ProcessListInputSchema>;
 export type ProcessCancelToolInput = z.infer<typeof ProcessCancelInputSchema>;
 export type ProcessWriteToolInput = z.infer<typeof ProcessWriteInputSchema>;
