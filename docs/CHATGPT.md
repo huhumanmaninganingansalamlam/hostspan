@@ -110,8 +110,8 @@ MCP `2026-07-28` is stateless at the protocol core, so ordinary reverse proxies 
 
 In ChatGPT Developer Mode, add the MCP endpoint issued by Secure MCP Tunnel or the OAuth-protected HTTPS reverse proxy endpoint you operate. For the latter, choose OAuth. ChatGPT should open the HostSpan authorization page; enter the credential from the local `approval_secret_file` created by `hostspan oauth init`. After authorization/tool scan, invoke `system_status` and verify:
 
-- `toolset_version` is `hostspan-v3.4`
-- the toolset has 11 tools for this contract version
+- `toolset_version` is `hostspan-v3.5`
+- the toolset has 12 tools for this contract version
 - `toolset_hash` matches `hostspan print-toolset`
 - `policy_epoch` matches the local config
 
@@ -119,9 +119,9 @@ OpenAI Developer Mode reference: <https://developers.openai.com/api/docs/guides/
 
 ## Refresh after metadata changes
 
-ChatGPT may cache tool names/descriptions/schemas. `hostspan-v3.4` preserves the prior file/process tool names and input schemas and adds `computer`. If a HostSpan release changes tool metadata, compare `server_version` and `toolset_hash`, then use the ChatGPT app Refresh action before diagnosing a cached schema as a HostSpan runtime failure.
+ChatGPT may cache tool names/descriptions/schemas. `hostspan-v3.5` adds `process_list` and optional byte continuation to `file_read`; `computer` remains the Linux Wayland portal tool. If a HostSpan release changes tool metadata, compare `server_version` and `toolset_hash`, then use the ChatGPT app Refresh action before diagnosing a cached schema as a HostSpan runtime failure.
 
-A breaking contract must use a new toolset version rather than silently changing `hostspan-v3.4`.
+A breaking contract must use a new toolset version rather than silently changing `hostspan-v3.5`.
 
 ## Interactive terminal use
 
@@ -138,7 +138,7 @@ hostspan logs --follow
 hostspan support-export ./hostspan-support.json
 ```
 
-HostSpan records transport requests and accepted tool calls. If there is no corresponding transport/request event, the failure occurred before HostSpan and is a client/tunnel compatibility incident, not a HostSpan handler failure. Do not fabricate a successful tool result for a request that never arrived.
+HostSpan records transport requests and accepted tool calls, plus pre-handler `validation` and `authorization` failures. Correlate `request_id` with the client request and the server version/time window: absence in a retained journal alone does not prove a global permission denial. `system_status.authorization` reports the granted scopes; client tool visibility and approval-card state are not observable by HostSpan. A client pre-dispatch refusal creates no HostSpan process ID. Do not fabricate an execution result or retry through another authority.
 
 If the trace shows `GET /authorize` and a successful `POST /authorize`, an authorization code exists, but ChatGPT never sends `POST /token`, compare the public OAuth metadata and redirect response against a known-working MCP SDK server before attributing the failure to the client. HostSpan intentionally uses the SDK-compatible root authorization paths and does not add an RFC 9207 `iss` parameter that the working DevSpace flow does not advertise.
 
@@ -159,3 +159,9 @@ If the approval credential is lost or suspected compromised, run `hostspan oauth
 ## Inspector validation
 
 Before ChatGPT interoperability testing, MCP Inspector can be used against the local or tunnel endpoint to verify 2026-07-28 `server/discover`, per-request `tools/list`, schemas, annotations, and tool calls independently of ChatGPT UI behavior. The repository contract suite pins the approved hash for the versioned 11-tool registry, while integration coverage verifies tool calls and OAuth authorization. HostSpan v3 targets the 2026-07-28 contract directly and does not carry an older stateless transport fallback.
+
+## Read-only review and remote work
+
+A read-only reviewer can use `file_read` byte pages and `expected_sha256` to inspect an entire authorized document; a returned page is not evidence of full review. For a remote snapshot, retain source host/path, source hash, capture or source-verification time and copied-file scope alongside the files. A snapshot is not live synchronization; unknown capture time or unverified current source must stay explicit.
+
+An execution-capable caller may use an already-authorized SSH process separately. An SSH shell on another host does not change this daemon's file targets or desktop. Give reviewers target-relative snapshot paths, not `tmux send-keys` instructions. Use `system_status.host` and `target_list` to resolve host/root confusion before a new execution, and preserve existing shared connections.

@@ -137,6 +137,7 @@ function fakeHandlers(calls: string[]): HostSpanToolHandlers {
     file_patch: () => result("file_patch"),
     process_start: () => result("process_start"),
     process_poll: () => result("process_poll"),
+    process_list: () => result("process_list"),
     process_write: () => result("process_write"),
     process_cancel: () => result("process_cancel"),
   };
@@ -154,7 +155,7 @@ function testApp(runtime: HostSpanRuntime, calls: string[]) {
     listen_port: 0,
     allowed_hosts: ["127.0.0.1", "mcp.example.com"],
     oauth,
-    authorization: { processBackend: (processId) => backends.get(processId) },
+    authorization: { ...runtime.authorization, processBackend: (processId) => backends.get(processId) },
     handlers: fakeHandlers(calls),
     responseContext: () => ({ toolset_hash: TOOLSET_HASH, policy_epoch: runtime.config.policy_epoch }),
     status: { health: () => ({ server_version: "test" }), readiness: () => ({ ready: true }) },
@@ -333,8 +334,10 @@ describe("OAuth scope split", () => {
       expect(listedBody.result?.tools?.map((tool) => tool.name)).toEqual(TOOL_NAMES);
 
       expectAllowed(await callTool(app, read.access_token, "system_status", {}), "system_status");
+      expectAllowed(await callTool(app, read.access_token, "process_list", { target_id: "test" }), "process_list");
       expectScopeDenied(await callTool(app, read.access_token, "file_patch", patchArgs()), "hostspan.write");
       expect(calls).not.toContain("file_patch");
+      expect(runtime.audit.recent()).toContainEqual(expect.objectContaining({ process_id: null, metadata: expect.objectContaining({ tool: "file_patch", stage: "authorization", error_reason: "oauth_scope" }) }));
       expectScopeDenied(await callTool(app, read.access_token, "computer", { action: "open" }), "hostspan.computer");
       expect(calls).not.toContain("computer");
       const desktop = issueToken(oauth, approvalSecret, "hostspan.computer").token;

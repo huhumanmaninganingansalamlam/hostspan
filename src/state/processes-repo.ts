@@ -1,5 +1,7 @@
+import { sep } from "node:path";
 import type { HostSpanDatabase } from "./database.js";
 import type { ProcessRecord, ProcessesStore, ProcessState } from "../processes/store.js";
+import type { ProcessListToolInput } from "../tools/schemas.js";
 
 type ProcessSummary = Pick<ProcessRecord, "process_id" | "target_id" | "backend" | "backend_ref" | "state" | "started_at" | "ended_at" | "reason">;
 const PROCESS_SUMMARY_COLUMNS = "process_id,target_id,backend,backend_ref,state,started_at,ended_at,reason";
@@ -158,5 +160,22 @@ export class ProcessesRepo implements ProcessesStore {
          LIMIT ?`,
       )
       .all(limit) as ProcessSummary[];
+  }
+
+  list(input: ProcessListToolInput) {
+    const rows = this.db.prepare(`
+      SELECT process_id,target_id,cwd_relative AS cwd,backend,state,started_at,ended_at,
+             exit_code,reason,output_expires_at
+      FROM processes
+      WHERE target_id=?
+        AND (?='.' OR cwd_relative=? OR substr(cwd_relative,1,length(?))=?)
+        AND (?=0 OR state IN ('accepted','launching','running'))
+        AND (? IS NULL OR process_id < ?)
+      ORDER BY process_id DESC LIMIT ?
+    `).all(input.target_id, input.cwd, input.cwd, input.cwd + sep, input.cwd + sep, Number(input.active_only),
+      input.cursor ?? null, input.cursor ?? null, input.limit + 1) as Array<Record<string, unknown> & { process_id: string }>;
+    const processes = rows.slice(0, input.limit);
+    return { processes, truncated: rows.length > input.limit,
+      ...(rows.length > input.limit ? { cursor: processes.at(-1)?.process_id } : {}) };
   }
 }

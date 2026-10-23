@@ -338,6 +338,11 @@ export class ProcessSupervisor {
     return {
       state: record.state,
       process_id: processId,
+      target_id: record.target_id,
+      cwd: record.cwd_relative,
+      exit_code_scope: "spawned_command",
+      output_expired: outputExpired,
+      has_more_output: stdout.next_cursor < record.stdout_bytes || stderr.next_cursor < record.stderr_bytes,
       stdout: stdout.text,
       stderr: stderr.text,
       next_stdout_cursor: stdout.next_cursor,

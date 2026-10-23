@@ -1,3 +1,5 @@
+import { HostSpanError } from "../errors.js";
+import { errorResult, requestId } from "./result.js";
 import { createMcpFastifyApp } from "@modelcontextprotocol/fastify";
 import { toNodeHandler, type NodeIncomingMessageLike } from "@modelcontextprotocol/node";
 import {
@@ -17,7 +19,23 @@ import {
   type OAuthService,
 } from "../auth/oauth-service.js";
 import { SERVER_VERSION } from "../version.js";
-import { registerHostSpanTools, type HostSpanToolAuthorization, type HostSpanToolHandlers, type ResponseContextProvider } from "./registry.js";
+import { TOOL_DEFINITIONS, TOOL_NAMES, registerHostSpanTools, type HostSpanToolAuthorization, type HostSpanToolHandlers, type ResponseContextProvider } from "./registry.js";
+
+// GHSA-46jr-4wx8-v453: bound schema-validation allocations, including our pre-handler diagnostics.
+const MAX_TOOL_INPUT_ELEMENTS = 10_000;
+function withinInputBudget(input: unknown): boolean {
+  const stack = [input];
+  let count = 0;
+  while (stack.length) {
+    const node = stack.pop();
+    if (!node || typeof node !== "object") continue;
+    for (const value of Object.values(node)) {
+      if (++count > MAX_TOOL_INPUT_ELEMENTS) return false;
+      if (value && typeof value === "object") stack.push(value);
+    }
+  }
+  return true;
+}
 
 export interface ServerStatusProvider {
   health(): Record<string, unknown>;
@@ -72,10 +90,12 @@ export function createMcpServer(
   const server = new McpServer(
     { name: "hostspan", version: SERVER_VERSION },
     {
+      maxToolInputElements: MAX_TOOL_INPUT_ELEMENTS,
       instructions:
         "HostSpan file/process tools use persistent target_id values and target-relative file paths. The computer tool uses its own consented desktop session_id, outside file-root boundaries. " +
         "Generate a fresh random UUIDv7 idempotency key for each new side-effect operation. Keys are shared across all targets and sessions and remain reserved after completion. " +
         "Reuse a key only to retry the identical operation with identical arguments; never reuse example keys or restart a counter in another session. " +
+        "Recover a lost process_id with process_list, not a guessed identifier or a duplicate start. exit_code describes the spawned command; nested test receipts and result files must be checked separately. " +
         "For process_poll/process_write, copy next_stdout_cursor and next_stderr_cursor from that same process's previous response; cursors are independent byte offsets, not character counts. " +
         "file_search.query is a ripgrep regular expression, not a shell command or glob. Escape regex metacharacters when searching literal code. " +
         "process_start.wait_ms controls response waiting only; max_bytes bounds each response. " +
@@ -135,16 +155,14 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
     reply.raw.once("finish", release);
     reply.raw.once("close", release);
   });
-  app.addHook("onRequest", async (request) => {
-    const oauthPath = ["/authorize", "/token", "/register", "/revoke"].some((path) => request.url.startsWith(path));
-    const traceUrl = oauthPath || request.url.startsWith("/.well-known/") ? request.url.split("?", 1)[0] : request.url;
+  app.addHook("preHandler", async (request) => {
+    const traceUrl = request.url.split("?", 1)[0];
+    const body = request.body as { method?: unknown; params?: { name?: unknown } } | undefined;
     options.trace?.("transport.request", {
       method: request.method,
       url: traceUrl,
-      rpc_method:
-        request.body && typeof request.body === "object" && "method" in request.body
-          ? String((request.body as Record<string, unknown>).method)
-          : undefined,
+      rpc_method: typeof body?.method === "string" && ["initialize", "tools/list", "tools/call", "server/discover"].includes(body.method) ? body.method : undefined,
+      tool: TOOL_NAMES.find((name) => name === body?.params?.name),
     });
   });
   app.get("/healthz", async () => ({ status: "ok", ...options.status.health() }));
@@ -160,6 +178,7 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
         const auth = await verifyBearerToken(request.headers.authorization, {
           verifier: oauthVerifier,
           resourceMetadataUrl: options.oauth.resourceMetadataUrl,
+          expectedResource: new URL(options.oauth.publicMcpUrl),
         });
         Object.assign(request.raw, { auth });
       } catch (error) {
@@ -169,6 +188,24 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
             resourceMetadataUrl: options.oauth.resourceMetadataUrl,
           }),
         );
+      }
+    }
+    const body = request.body as { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: { name?: unknown; arguments?: unknown } } | undefined;
+    if (request.method === "POST" && body?.jsonrpc === "2.0" && (typeof body.id === "string" || typeof body.id === "number") && body.method === "tools/call") {
+      const tool = TOOL_DEFINITIONS.find((entry) => entry.name === body.params?.name);
+      if (tool) {
+        // SDK schema failures bypass tool handlers. Preserve their detail and correlate them in our audit.
+        // Valid calls still pass through the SDK's protocol and schema checks.
+        const args = body.params?.arguments ?? {};
+        const parsed = withinInputBudget(args) ? tool.inputSchema.safeParse(args) : undefined;
+        if (!parsed?.success) {
+          const id = requestId();
+          const issues = parsed ? parsed.error.issues.map((issue) => `${issue.path.join(".") || "arguments"}: ${issue.message}`)
+            : [`arguments exceed the ${MAX_TOOL_INPUT_ELEMENTS} element validation budget`];
+          const error = new HostSpanError("VALIDATION_FAILED", `Invalid ${tool.name} arguments: ${issues.join("; ")}`, false, { reason: "invalid_tool_arguments" });
+          options.authorization?.rejected?.(tool.name, {}, id, error, "validation");
+          return reply.send({ jsonrpc: "2.0", id: body.id ?? null, result: errorResult(options.responseContext(), error, id) });
+        }
       }
     }
     reply.hijack();

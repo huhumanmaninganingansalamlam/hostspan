@@ -2,6 +2,15 @@
 
 Entries describe versioned behavior. Publication is established by the corresponding Git tag and GitHub Release; notes alone do not prove publication.
 
+## 0.11.0
+
+- Add read-only `process_list` in `hostspan-v3.5` to recover owned execution IDs by target/cwd without restarting work. Return explicit output-drain/expiry and spawned-command exit semantics in process snapshots.
+- Add lossless Unicode-safe byte continuation and optional SHA-256 consistency checks to `file_read`. Line reads remain available; byte-capped lines can resume at `next_byte` without losing their tail.
+- Correlate argument validation and OAuth scope denials with request IDs. Record bounded read ranges, returned bytes, process output loss and desktop actions without logging file bodies, commands, environment values or images.
+- Report daemon host identity, granted OAuth scopes and the actual desktop backend scope. SSH targets and Android display numbers do not imply GUI control; client-side tool visibility/approval cards remain owned by the client.
+- Update MCP server to 2.3.0, Fastify to 5.12.6, Hono to 4.13.11, Vitest to 4.1.12/Vite 7.3.7, and Electron to 44.5.0 for published security fixes. Keep per-request MCP server creation and bind bearer validation to the configured resource. Bound schema validation to 10,000 aggregate input elements as recommended by GHSA-46jr-4wx8-v453; the existing Fastify 1 MiB HTTP body limit remains.
+- Config/state formats and permissions are unchanged. Refresh client tool metadata after a planned upgrade; do not replace a running daemon while its native jobs are active.
+
 ## 0.10.2
 
 - Invalidate desktop sessions immediately when the OS stops sharing, including during capture. Reopening requests fresh consent instead of returning a closed session as ready. Delivered and uncertain inputs remain protected against replay.
