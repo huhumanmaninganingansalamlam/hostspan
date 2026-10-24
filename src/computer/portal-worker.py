@@ -89,19 +89,27 @@ def options(**values):
     return dbus.Dictionary(values, signature="sv")
 
 
-def request(method, *args, **values):
+class PortalRequestError(RuntimeError):
+    def __init__(self, message, **details):
+        super().__init__(message)
+        self.details = details
+
+
+def request(method, *args, phase, wait_for_consent=False, **values):
     token = "hostspan_" + uuid.uuid4().hex
     sender = bus.get_unique_name()[1:].replace(".", "_")
     path = f"/org/freedesktop/portal/desktop/request/{sender}/{token}"
     pending = GLib.MainLoop()
     response = []
+    timed_out = False
 
     def received(code, result):
         response.extend([int(code), result])
         pending.quit()
 
     def expired():
-        response.extend([2, {}])
+        nonlocal timed_out
+        timed_out = True
         pending.quit()
         try:
             dbus.Interface(bus.get_object(BUS_NAME, path),
@@ -113,19 +121,26 @@ def request(method, *args, **values):
     match = bus.add_signal_receiver(received, signal_name="Response",
                                     dbus_interface="org.freedesktop.portal.Request",
                                     bus_name=BUS_NAME, path=path)
-    timer = GLib.timeout_add_seconds(60, expired)
+    # Start waits for the human until the portal responds or this worker is closed.
+    # Only noninteractive setup has a local deadline; it is never an OS response.
+    timer = None if wait_for_consent else GLib.timeout_add_seconds(60, expired)
     try:
         actual = method(*args, options(handle_token=token, **values))
         if str(actual) != path:
             raise RuntimeError("Portal returned an unexpected request handle")
-        if not response:
+        if not response and not timed_out:
             pending.run()
+        if timed_out:
+            raise PortalRequestError(f"Portal setup timed out locally during {phase}",
+                                     reason="portal_local_timeout", portal_phase=phase)
         if response[0] != 0:
-            raise RuntimeError(f"Portal request denied, canceled or expired (response={response[0]})")
+            raise PortalRequestError(f"Portal returned response={response[0]} during {phase}",
+                                     reason="portal_response", portal_phase=phase,
+                                     portal_response=response[0])
         return response[1]
     finally:
         match.remove()
-        if GLib.MainContext.default().find_source_by_id(timer):
+        if timer is not None and GLib.MainContext.default().find_source_by_id(timer):
             GLib.source_remove(timer)
 
 
@@ -166,20 +181,20 @@ def open_session():
         if not Gst.ElementFactory.find(plugin):
             raise RuntimeError(f"Required GStreamer plugin is unavailable: {plugin}")
     try:
-        created = request(remote.CreateSession, session_handle_token="hostspan_" + uuid.uuid4().hex)
+        created = request(remote.CreateSession, phase="CreateSession", session_handle_token="hostspan_" + uuid.uuid4().hex)
         session = str(created["session_handle"])
         closed_match = bus.add_signal_receiver(
             session_closed, signal_name="Closed",
             dbus_interface="org.freedesktop.portal.Session", bus_name=BUS_NAME, path=session)
-        request(remote.SelectDevices, session, types=dbus.UInt32(3), persist_mode=dbus.UInt32(0))
+        request(remote.SelectDevices, session, phase="SelectDevices", types=dbus.UInt32(3), persist_mode=dbus.UInt32(0))
         # Screen selection is explicit. No restore token or persistent permission is created.
-        request(cast.SelectSources, session, types=dbus.UInt32(1), multiple=False,
+        request(cast.SelectSources, session, phase="SelectSources", types=dbus.UInt32(1), multiple=False,
                 cursor_mode=dbus.UInt32(2))
         try:
             clipboard.RequestClipboard(session, options())
         except dbus.DBusException:
             pass  # Older portals still support observation/pointer/keys; text must fail explicitly.
-        started = request(remote.Start, session, "")
+        started = request(remote.Start, session, "", phase="Start", wait_for_consent=True)
         clipboard_enabled = bool(started.get("clipboard_enabled", False))
         if int(started.get("devices", 0)) & 3 != 3:
             raise RuntimeError("Portal did not grant both pointer and keyboard")
@@ -321,6 +336,8 @@ def reply(command):
         result = {"id": command["id"], "result": dispatch(command)}
     except Exception as error:
         result = {"id": command.get("id"), "error": str(error)}
+        if isinstance(error, PortalRequestError):
+            result["error_details"] = error.details
     print(json.dumps(result, ensure_ascii=True), flush=True)
     return False
 

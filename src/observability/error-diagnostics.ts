@@ -30,6 +30,8 @@ const SAFE_ERROR_REASONS = new Set([
   "patch_rollback_failed",
   "patch_target_not_regular",
   "path_denied_by_policy",
+  "portal_local_timeout",
+  "portal_response",
   "target_missing_exec_profile",
   "unknown_command",
 ]);
@@ -43,6 +45,10 @@ export function auditErrorDiagnostics(error: HostSpanError): Record<string, unkn
   };
   const reason = error.details.reason;
   if (typeof reason === "string" && SAFE_ERROR_REASONS.has(reason)) metadata.error_reason = reason;
+  if (reason === "portal_local_timeout" || reason === "portal_response") {
+    if (["CreateSession", "SelectDevices", "SelectSources", "Start"].includes(error.details.portal_phase as string)) metadata.portal_phase = error.details.portal_phase;
+    if (reason === "portal_response" && Number.isSafeInteger(error.details.portal_response) && Number(error.details.portal_response) >= 0) metadata.portal_response = error.details.portal_response;
+  }
   if (reason === "oauth_scope") {
     const required = Array.isArray(error.details.required_scopes) ? error.details.required_scopes : [error.details.required_scope];
     const granted = Array.isArray(error.details.granted_scopes) ? error.details.granted_scopes : [];

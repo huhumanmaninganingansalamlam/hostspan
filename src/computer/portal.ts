@@ -39,7 +39,7 @@ export class PortalDesktop {
   private pipewireNodeId: number | undefined;
   private size: { width: number; height: number } | undefined;
   private opening: Promise<Record<string, unknown>> | undefined;
-  private openError: string | undefined;
+  private openError: Error | undefined;
   private busy = false;
 
   constructor(private readonly operations: OperationsStore) {}
@@ -54,7 +54,8 @@ export class PortalDesktop {
   status(): Record<string, unknown> {
     if (!this.sessionId) return {
       state: this.openError ? "failed" : "closed",
-      message: this.openError ? `Desktop connection failed: ${this.openError}` : "Desktop control is closed.",
+      message: this.openError ? `Desktop connection failed: ${this.openError.message}` : "Desktop control is closed.",
+      ...(this.openError instanceof HostSpanError ? { error_details: this.openError.details } : {}),
       next_action: { tool: "computer", arguments: { action: "open" } },
     };
     return {
@@ -93,7 +94,7 @@ export class PortalDesktop {
         const line = buffered.slice(0, end);
         buffered = buffered.slice(end + 1);
         try {
-          const reply = JSON.parse(line) as { event?: string; id: string; result?: Record<string, unknown>; error?: string };
+          const reply = JSON.parse(line) as { event?: string; id: string; result?: Record<string, unknown>; error?: string; error_details?: Record<string, unknown> };
           if (reply.event === "closed") {
             this.fail(new Error("Desktop sharing ended. Open computer again to select a screen."));
             return;
@@ -101,7 +102,9 @@ export class PortalDesktop {
           if (!this.pending || reply.id !== this.pending.id) throw new Error("Unexpected desktop worker reply");
           const pending = this.pending;
           this.pending = undefined;
-          if (reply.error) pending.reject(new Error(reply.error));
+          if (reply.error) pending.reject(new HostSpanError(
+            reply.error_details?.reason === "portal_local_timeout" ? "DEADLINE_EXCEEDED" : "INTERNAL_ERROR",
+            reply.error, false, reply.error_details));
           else if (reply.result) pending.resolve(reply.result);
           else pending.reject(new Error("Desktop worker returned no result"));
         } catch (error) {
@@ -119,7 +122,7 @@ export class PortalDesktop {
   private fail(error: Error): void {
     const child = this.child;
     this.child = undefined;
-    this.openError = error.message;
+    this.openError = error;
     this.sessionId = this.observationId = this.size = this.pipewireNodeId = undefined;
     this.opening = undefined;
     this.pending?.reject(error);
@@ -134,8 +137,10 @@ export class PortalDesktop {
     if (!child) throw new Error("Desktop worker did not start");
     return new Promise((resolve, reject) => {
       const id = randomUUID();
-      const timer = setTimeout(() => this.fail(new Error("Desktop worker deadline exceeded; input must not be replayed")),
-        command.action === "open" ? 190_000 : 10_000);
+      // Consent belongs to the live session, not a wall-clock deadline. Caller close,
+      // OS response/revocation and worker failure still end it. Input/capture stay bounded.
+      const timer = command.action === "open" ? undefined : setTimeout(() =>
+        this.fail(new Error("Desktop worker deadline exceeded; input must not be replayed")), 10_000);
       this.pending = {
         id,
         resolve: (result) => { clearTimeout(timer); resolve(result); },
@@ -177,10 +182,9 @@ export class PortalDesktop {
             this.opening = undefined;
           }, (error: unknown) => {
             if (this.sessionId !== sessionId) return;
-            this.openError = error instanceof Error ? error.message : "Desktop open failed";
-            this.fail(new Error(this.openError));
+            this.fail(error instanceof Error ? error : new Error("Desktop open failed"));
           });
-          // Human consent can take a minute. It must not occupy a long MCP request.
+          // Human consent must not occupy a long MCP request.
           return { ...this.status(), observation_required: true };
         } catch (error) {
           this.fail(error instanceof Error ? error : new Error("Desktop open failed"));
@@ -201,7 +205,11 @@ export class PortalDesktop {
           next_action: this.status().next_action };
       }
       if (!this.sessionId || input.session_id !== this.sessionId) {
-        throw new HostSpanError("SCOPE_DENIED", this.openError ? `Desktop connection failed: ${this.openError}. Open computer again to select a screen.` : "Desktop session is not active or belongs to another session. Open computer again.", false, { next_action: this.status().next_action });
+        if (this.openError) throw new HostSpanError(
+          this.openError instanceof HostSpanError ? this.openError.code : "INTERNAL_ERROR",
+          `Desktop connection failed: ${this.openError.message}. Open computer again to select a screen.`, false,
+          { ...(this.openError instanceof HostSpanError ? this.openError.details : {}), next_action: this.status().next_action });
+        throw new HostSpanError("SCOPE_DENIED", "Desktop session is not active or belongs to another session. Open computer again.", false, { next_action: this.status().next_action });
       }
       if (input.action === "close") {
         try { if (!this.opening) await this.call({ action: "close" }); }

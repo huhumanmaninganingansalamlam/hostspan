@@ -41,6 +41,17 @@ describe("audit error diagnostics", () => {
     expect(scopes).toMatchObject({ error_required_scopes: ["hostspan.exec"], error_granted_scopes: ["hostspan.read"] });
     expect(JSON.stringify(scopes)).not.toContain(canary);
   });
+
+  it("distinguishes portal responses from local setup expiry without inventing an OS response", () => {
+    expect(auditErrorDiagnostics(new HostSpanError("INTERNAL_ERROR", "not logged", false, {
+      reason: "portal_response", portal_phase: "Start", portal_response: 2,
+    }))).toMatchObject({ error_reason: "portal_response", portal_phase: "Start", portal_response: 2 });
+    const local = auditErrorDiagnostics(new HostSpanError("DEADLINE_EXCEEDED", "not logged", false, {
+      reason: "portal_local_timeout", portal_phase: "CreateSession", portal_response: 2,
+    }));
+    expect(local).toMatchObject({ error_reason: "portal_local_timeout", portal_phase: "CreateSession" });
+    expect(local).not.toHaveProperty("portal_response");
+  });
 });
 
 it("records GUI location and delivery without screen, window-title, text or key content", () => {
