@@ -3,9 +3,10 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { v7 as uuidv7 } from "uuid";
 import { createOAuthSetup, type OAuthService, type OAuthTokenResponse } from "../../src/auth/oauth-service.js";
+import { ComputerInputSchema, PortalDesktop } from "../../src/computer/portal.js";
 import { createRuntime, type HostSpanRuntime } from "../../src/runtime/create-runtime.js";
 import type { HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
@@ -22,7 +23,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture() {
+function fixture(computer = false) {
   const root = mkdtempSync(join(tmpdir(), "hostspan-oauth-scopes-"));
   roots.push(root);
   const targetRoot = join(root, "repo");
@@ -56,6 +57,7 @@ function fixture() {
       },
     },
     exec_profiles: {},
+    ...(computer ? { computer: { backend: "wayland-portal" as const } } : {}),
   };
   writeConfigAtomic(configPath, config);
   const runtime = createRuntime(configPath);
@@ -467,4 +469,76 @@ describe("OAuth scope split", () => {
       await runtime.close();
     }
   });
+});
+
+it("correlates verified GUI callers, screen and coordinates in existing audit across delivery, replay and rejection", async () => {
+  const { runtime, approvalSecret } = fixture(true);
+  const oauth = runtime.oauth;
+  if (!oauth) throw new Error("OAuth runtime was not initialized.");
+  const app = createHostSpanHttpServer({
+    listen_host: "127.0.0.1", listen_port: 0, allowed_hosts: ["127.0.0.1", "mcp.example.com"],
+    oauth: oauth, handlers: runtime.handlers, authorization: runtime.authorization,
+    responseContext: () => ({ toolset_hash: TOOLSET_HASH, policy_epoch: 5 }),
+    status: { health: () => ({}), readiness: () => ({ ready: true }) },
+  });
+  const session_id = uuidv7();
+  const observation_id = uuidv7();
+  const secret = "HOSTSPAN_SECRET_CANARY_GUI";
+  const desktop = vi.spyOn(PortalDesktop.prototype, "run").mockImplementation(async (raw) => {
+    const input = ComputerInputSchema.parse(raw);
+    if (input.action === "observe") throw new HostSpanError("SCOPE_DENIED", "Sharing ended");
+    return { state: "completed", session_id, observation_id: uuidv7(), desktop_backend: "wayland-portal",
+      desktop_scope: "monitor", pipewire_node_id: 73, window_attribution: "unavailable",
+      coordinate_width: 1680, coordinate_height: 1050, dispatched: true, outcome_verified: false,
+      ...(input.action === "text" ? { replayed: true } : {}), image: Buffer.from(secret).toString("base64"), mime_type: "image/png", window_title: secret };
+  });
+  try {
+    const first = issueToken(oauth, approvalSecret, "hostspan.computer");
+    const second = issueToken(oauth, approvalSecret, "hostspan.computer");
+    const read = issueToken(oauth, approvalSecret, "hostspan.read");
+    const click = { action: "click", session_id, observation_id, x: 512, y: 310, idempotency_key: uuidv7() };
+    const delivered = await callTool(app, first.token.access_token, "computer", click);
+    expect(delivered).toMatchObject({ result: { structuredContent: { dispatched: true } } });
+    const replay = await callTool(app, second.token.access_token, "computer", {
+      action: "text", session_id, observation_id, text: secret, idempotency_key: uuidv7(),
+    });
+    const failed = await callTool(app, first.token.access_token, "computer", { action: "observe", session_id });
+    const denied = await callTool(app, read.token.access_token, "computer", click);
+    const invalid = await callTool(app, first.token.access_token, "computer", { ...click, x: -1 });
+    const events = runtime.audit.recent();
+    const event = (response: typeof delivered, type: string) => events.find((row) =>
+      row.request_id === response.result?.structuredContent?.request_id && row.event_type === type);
+    expect(event(delivered, "request.accepted")).toMatchObject({ metadata: {
+      caller_mode: "oauth", oauth_client_id: first.clientId, action: "click", session_id, observation_id,
+      x: 512, y: 310, button: "left",
+    } });
+    expect(event(delivered, "response.returned")).toMatchObject({ metadata: {
+      caller_mode: "oauth", oauth_client_id: first.clientId, session_id, pipewire_node_id: 73,
+      desktop_scope: "monitor", window_attribution: "unavailable", dispatched: true, outcome_verified: false,
+    } });
+    expect(event(replay, "response.returned")).toMatchObject({ metadata: {
+      oauth_client_id: second.clientId, session_id, replayed: true, outcome_verified: false,
+    } });
+    expect(event(replay, "request.accepted")).toMatchObject({ metadata: { text_bytes: Buffer.byteLength(secret) } });
+    expect(event(failed, "request.aborted")).toMatchObject({ metadata: {
+      oauth_client_id: first.clientId, session_id, stage: "handler", error_code: "SCOPE_DENIED",
+    } });
+    expect(event(denied, "request.aborted")).toMatchObject({ metadata: {
+      oauth_client_id: read.clientId, stage: "authorization", error_reason: "oauth_scope",
+    } });
+    expect(event(invalid, "request.aborted")).toMatchObject({ metadata: {
+      oauth_client_id: first.clientId, stage: "validation", error_code: "VALIDATION_FAILED",
+    } });
+    expect(desktop).toHaveBeenCalledTimes(3);
+    const serialized = JSON.stringify(events);
+    for (const value of [secret, Buffer.from(secret).toString("base64"), first.token.access_token, second.token.access_token, first.token.refresh_token, approvalSecret]) {
+      expect(serialized).not.toContain(value);
+    }
+    await runtime.handlers.computer({ action: "open" }, "local-gui-call");
+    expect(runtime.audit.recent().find((row) => row.request_id === "local-gui-call")).toMatchObject({ metadata: { caller_mode: "local" } });
+  } finally {
+    desktop.mockRestore();
+    await app.close();
+    await runtime.close();
+  }
 });

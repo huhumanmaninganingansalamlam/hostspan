@@ -173,8 +173,18 @@ export function toolsetDocument() {
 
 export const TOOLSET_HASH = `sha256:${createHash("sha256").update(canonicalJson(toolsetDocument())).digest("hex")}`;
 
+export interface ToolCaller {
+  caller_mode: "oauth" | "local";
+  oauth_client_id?: string;
+}
+
+function computerCaller(context: ServerContext): ToolCaller {
+  const auth = context.http?.authInfo;
+  return auth ? { caller_mode: "oauth", oauth_client_id: auth.clientId } : { caller_mode: "local" };
+}
+
 export interface HostSpanToolHandlers {
-  computer(input: ComputerInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
+  computer(input: ComputerInput, requestId: string, caller?: ToolCaller): Promise<Record<string, unknown>> | Record<string, unknown>;
   system_status(input: SystemStatusInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
   target_list(input: TargetListInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
   file_list(input: FileListToolInput, requestId: string): Promise<Record<string, unknown>> | Record<string, unknown>;
@@ -189,7 +199,7 @@ export interface HostSpanToolHandlers {
 }
 
 export interface HostSpanToolAuthorization {
-  rejected?(tool: ToolName, input: Record<string, unknown>, requestId: string, error: HostSpanError, stage: "authorization" | "validation"): void;
+  rejected?(tool: ToolName, input: Record<string, unknown>, requestId: string, error: HostSpanError, stage: "authorization" | "validation", caller?: ToolCaller): void;
   processBackend(processId: string): "native" | "pty" | undefined;
 }
 
@@ -266,11 +276,11 @@ export function registerHostSpanTools(
   context: ResponseContextProvider,
   authorization?: HostSpanToolAuthorization,
 ): void {
-  function checked<T>(tool: ToolName, check: (input: T) => void) {
+  function checked<T>(tool: ToolName, check: (input: T) => void, caller?: ToolCaller) {
     return (input: T, id: string) => {
       try { check(input); }
       catch (error) {
-        authorization?.rejected?.(tool, input as Record<string, unknown>, id, asHostSpanError(error), "authorization");
+        authorization?.rejected?.(tool, input as Record<string, unknown>, id, asHostSpanError(error), "authorization", caller);
         throw error;
       }
     };
@@ -306,7 +316,7 @@ export function registerHostSpanTools(
     invoke(input, handlers.process_cancel.bind(handlers), context, checked("process_cancel", (parsed: ProcessCancelToolInput) => authorizeProcessCancel(requestContext, parsed, authorization))),
   );
   server.registerTool(TOOL_DEFINITIONS[10].name, TOOL_DEFINITIONS[10], (input, requestContext) =>
-    invoke(input, handlers.computer.bind(handlers), context, checked("computer", () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_COMPUTER)), true),
+    invoke(input, (parsed, id) => handlers.computer(parsed, id, computerCaller(requestContext)), context, checked("computer", () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_COMPUTER), computerCaller(requestContext)), true),
   );
   server.registerTool(TOOL_DEFINITIONS[11].name, TOOL_DEFINITIONS[11], (input, requestContext) =>
     invoke(input, handlers.process_list.bind(handlers), context, checked("process_list", () => requireOAuthScope(requestContext, HOSTSPAN_OAUTH_SCOPE_READ))),

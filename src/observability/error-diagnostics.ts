@@ -68,17 +68,33 @@ export function auditRequestDiagnostics(input: Record<string, unknown>): Record<
     if (typeof input[key] === "number") result[key] = input[key];
   }
   if (typeof input.path === "string") result.path_hash = argumentHash({ target_id: input.target_id, path: input.path });
+  // GUI schemas are strict, but retain only bounded identifiers and numeric controls here too.
+  for (const key of ["session_id", "observation_id"]) {
+    if (typeof input[key] === "string" && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(input[key])) result[key] = input[key];
+  }
+  for (const key of ["x", "y", "dx", "dy"]) {
+    if (typeof input[key] === "number" && Number.isFinite(input[key])) result[key] = input[key];
+  }
+  if (["left", "right", "middle"].includes(input.button as string)) result.button = input.button;
+  if (input.action === "text" && typeof input.text === "string") result.text_bytes = Buffer.byteLength(input.text);
   if (typeof input.action === "string" && ["open", "observe", "close", "move", "click", "text", "key", "scroll"].includes(input.action)) result.action = input.action;
   return result;
 }
 
 export function auditResponseDiagnostics(result: Record<string, unknown>): Record<string, unknown> {
   const metadata: Record<string, unknown> = {};
-  for (const key of ["state", "binary", "truncated", "truncated_before", "truncated_after", "returned_bytes", "returned_record_bytes", "match_count", "next_byte", "next_stdout_cursor", "next_stderr_cursor", "stdout_dropped_bytes", "stderr_dropped_bytes", "output_expired", "has_more_output", "exit_code", "input_delivered", "dispatched", "replayed", "observation_required", "coordinate_width", "coordinate_height"]) {
+  for (const key of ["state", "binary", "truncated", "truncated_before", "truncated_after", "returned_bytes", "returned_record_bytes", "match_count", "next_byte", "next_stdout_cursor", "next_stderr_cursor", "stdout_dropped_bytes", "stderr_dropped_bytes", "output_expired", "has_more_output", "exit_code", "input_delivered", "dispatched", "outcome_verified", "replayed", "observation_required", "coordinate_width", "coordinate_height"]) {
     const value = result[key];
     if (value === null || typeof value === "number" || typeof value === "boolean"
       || typeof value === "string" && ["accepted", "launching", "running", "succeeded", "completed", "failed", "cancelled", "timed_out", "orphaned", "unknown", "ready", "closed", "disabled", "awaiting_consent", "processing"].includes(value)) metadata[key] = value;
   }
+  for (const key of ["session_id", "observation_id"]) {
+    if (typeof result[key] === "string" && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(result[key])) metadata[key] = result[key];
+  }
+  if (result.desktop_backend === "wayland-portal") metadata.desktop_backend = result.desktop_backend;
+  if (result.desktop_scope === "monitor") metadata.desktop_scope = result.desktop_scope;
+  if (result.window_attribution === "unavailable") metadata.window_attribution = result.window_attribution;
+  if (typeof result.pipewire_node_id === "number" && Number.isSafeInteger(result.pipewire_node_id) && result.pipewire_node_id >= 0) metadata.pipewire_node_id = result.pipewire_node_id;
   if (result.returned_range && typeof result.returned_range === "object") {
     const range = result.returned_range as Record<string, unknown>;
     for (const key of ["start_line", "end_line", "start_byte", "end_byte", "bytes_scanned"]) {

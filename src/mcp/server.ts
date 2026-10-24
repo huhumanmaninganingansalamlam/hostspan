@@ -20,7 +20,7 @@ import {
 } from "../auth/oauth-service.js";
 import { splitOAuthScopes } from "../auth/oauth-scopes.js";
 import { SERVER_VERSION } from "../version.js";
-import { TOOL_DEFINITIONS, TOOL_NAMES, registerHostSpanTools, type HostSpanToolAuthorization, type HostSpanToolHandlers, type ResponseContextProvider } from "./registry.js";
+import { TOOL_DEFINITIONS, TOOL_NAMES, registerHostSpanTools, type HostSpanToolAuthorization, type HostSpanToolHandlers, type ResponseContextProvider, type ToolCaller } from "./registry.js";
 
 // GHSA-46jr-4wx8-v453: bound schema-validation allocations, including our pre-handler diagnostics.
 const MAX_TOOL_INPUT_ELEMENTS = 10_000;
@@ -174,6 +174,7 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
   });
   if (options.oauth) registerOAuthRoutes(app, options.oauth, options.trace);
   app.all("/mcp", async (request, reply) => {
+    let caller: ToolCaller = { caller_mode: "local" };
     if (options.oauth && oauthVerifier) {
       try {
         const auth = await verifyBearerToken(request.headers.authorization, {
@@ -182,6 +183,7 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
           expectedResource: new URL(options.oauth.publicMcpUrl),
         });
         Object.assign(request.raw, { auth });
+        caller = { caller_mode: "oauth", oauth_client_id: auth.clientId };
       } catch (error) {
         const id = requestId();
         const response = bearerAuthChallengeResponse(error, {
@@ -213,7 +215,7 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
           const issues = parsed ? parsed.error.issues.map((issue) => `${issue.path.join(".") || "arguments"}: ${issue.message}`)
             : [`arguments exceed the ${MAX_TOOL_INPUT_ELEMENTS} element validation budget`];
           const error = new HostSpanError("VALIDATION_FAILED", `Invalid ${tool.name} arguments: ${issues.join("; ")}`, false, { reason: "invalid_tool_arguments" });
-          options.authorization?.rejected?.(tool.name, {}, id, error, "validation");
+          options.authorization?.rejected?.(tool.name, {}, id, error, "validation", tool.name === "computer" ? caller : undefined);
           return reply.send({ jsonrpc: "2.0", id: body.id ?? null, result: errorResult(options.responseContext(), error, id) });
         }
       }

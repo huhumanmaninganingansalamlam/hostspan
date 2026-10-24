@@ -36,12 +36,20 @@ export class PortalDesktop {
   private pending: { id: string; resolve(value: Record<string, unknown>): void; reject(error: Error): void } | undefined;
   private sessionId: string | undefined;
   private observationId: string | undefined;
+  private pipewireNodeId: number | undefined;
   private size: { width: number; height: number } | undefined;
   private opening: Promise<Record<string, unknown>> | undefined;
   private openError: string | undefined;
   private busy = false;
 
   constructor(private readonly operations: OperationsStore) {}
+
+  private desktopTarget(): Record<string, unknown> {
+    // The portal selects a monitor, not an application window or filesystem target.
+    return { desktop_backend: "wayland-portal", desktop_scope: "monitor", window_attribution: "unavailable",
+      ...(this.pipewireNodeId === undefined ? {} : { pipewire_node_id: this.pipewireNodeId }),
+      ...(this.size ? { coordinate_width: this.size.width, coordinate_height: this.size.height } : {}) };
+  }
 
   status(): Record<string, unknown> {
     if (!this.sessionId) return {
@@ -50,7 +58,7 @@ export class PortalDesktop {
       next_action: { tool: "computer", arguments: { action: "open" } },
     };
     return {
-      session_id: this.sessionId, state: this.opening ? "awaiting_consent" : this.pending ? "processing" : "ready",
+      ...this.desktopTarget(), session_id: this.sessionId, state: this.opening ? "awaiting_consent" : this.pending ? "processing" : "ready",
       message: this.opening ? "Select a screen and allow control in the desktop sharing dialog. You can close to cancel."
         : this.pending ? "A desktop action is processing. Wait before sending another input."
         : "Desktop connected. Observe the screen before choosing where to act.",
@@ -112,7 +120,7 @@ export class PortalDesktop {
     const child = this.child;
     this.child = undefined;
     this.openError = error.message;
-    this.sessionId = this.observationId = this.size = undefined;
+    this.sessionId = this.observationId = this.size = this.pipewireNodeId = undefined;
     this.opening = undefined;
     this.pending?.reject(error);
     this.pending = undefined;
@@ -145,7 +153,7 @@ export class PortalDesktop {
     }
     this.size = { width: frame.coordinate_width, height: frame.coordinate_height };
     this.observationId = randomUUID();
-    return { ...frame, session_id: this.sessionId, observation_id: this.observationId,
+    return { ...frame, ...this.desktopTarget(), session_id: this.sessionId, observation_id: this.observationId,
       observed_at: new Date().toISOString(), state: "ready",
       message: "Screen captured. Choose an action using this image; verify its result in the next image." };
   }
@@ -163,8 +171,10 @@ export class PortalDesktop {
         try {
           const opening = this.call({ action: "open" });
           this.opening = opening;
-          void opening.then(() => {
-            if (this.sessionId === sessionId) this.opening = undefined;
+          void opening.then((result) => {
+            if (this.sessionId !== sessionId) return;
+            if (typeof result.pipewire_node_id === "number" && Number.isSafeInteger(result.pipewire_node_id) && result.pipewire_node_id >= 0) this.pipewireNodeId = result.pipewire_node_id;
+            this.opening = undefined;
           }, (error: unknown) => {
             if (this.sessionId !== sessionId) return;
             this.openError = error instanceof Error ? error.message : "Desktop open failed";
@@ -226,7 +236,7 @@ export class PortalDesktop {
           message: "Input delivery is uncertain. Inspect the screen; do not resend automatically.",
           next_action: this.status().next_action };
       }
-      const receipt = { state: "completed", dispatched: true, outcome_verified: false, session_id: this.sessionId,
+      const receipt = { ...this.desktopTarget(), state: "completed", dispatched: true, outcome_verified: false, session_id: this.sessionId,
         ...(input.action === "text" ? { clipboard_modified: true } : {}) };
       this.operations.setState(input.idempotency_key, "completed", receipt);
       try {

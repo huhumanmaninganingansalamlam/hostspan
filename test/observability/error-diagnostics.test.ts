@@ -42,3 +42,20 @@ describe("audit error diagnostics", () => {
     expect(JSON.stringify(scopes)).not.toContain(canary);
   });
 });
+
+it("records GUI location and delivery without screen, window-title, text or key content", () => {
+  const session_id = "36a103f5-dbff-4377-8088-8d7802730c07";
+  const observation_id = "20739df8-eb76-460d-bb7a-bfb48bf956e4";
+  const secret = "HOSTSPAN_SECRET_CANARY_GUI";
+  const request = auditRequestDiagnostics({ action: "click", session_id, observation_id,
+    x: 512, y: 310, button: "left", text: secret, key: secret, window_title: secret });
+  expect(request).toEqual({ action: "click", session_id, observation_id, x: 512, y: 310, button: "left" });
+  const response = auditResponseDiagnostics({ session_id, observation_id, desktop_backend: "wayland-portal",
+    desktop_scope: "monitor", pipewire_node_id: 73, window_attribution: "unavailable", dispatched: true,
+    outcome_verified: false, image: secret, window_title: secret });
+  expect(response).toEqual({ session_id, observation_id, desktop_backend: "wayland-portal", desktop_scope: "monitor",
+    pipewire_node_id: 73, window_attribution: "unavailable", dispatched: true, outcome_verified: false });
+  expect(auditRequestDiagnostics({ action: "text", text: "한글" })).toEqual({ action: "text", text_bytes: 6 });
+  expect(auditRequestDiagnostics({ session_id: secret, observation_id: secret, x: NaN, y: Infinity })).toEqual({});
+  expect(JSON.stringify({ request, response })).not.toContain(secret);
+});

@@ -194,7 +194,7 @@ def open_session():
         # VoidSymbol has no key mapping, so it creates no application key or modifier.
         remote.NotifyKeyboardKeysym(session, options(), dbus.Int32(0xFFFFFF), dbus.UInt32(1))
         remote.NotifyKeyboardKeysym(session, options(), dbus.Int32(0xFFFFFF), dbus.UInt32(0))
-        return {"backend": "wayland-portal", "text_supported": clipboard_enabled, "coordinate_width": stream_size[0],
+        return {"pipewire_node_id": int(stream), "backend": "wayland-portal", "text_supported": clipboard_enabled, "coordinate_width": stream_size[0],
                 "coordinate_height": stream_size[1]}
     except Exception:
         close_session()
