@@ -52,6 +52,21 @@ describe("audit error diagnostics", () => {
     expect(local).toMatchObject({ error_reason: "portal_local_timeout", portal_phase: "CreateSession" });
     expect(local).not.toHaveProperty("portal_response");
   });
+
+  it("retains capture progress for standalone and post-input failures without arbitrary diagnostics", () => {
+    const details = { reason: "portal_capture_no_frame", capture_source_buffers: 0,
+      capture_pipeline_state: "playing", capture_pending_state: "void-pending", capture_eos: false,
+      image: "PRIVATE", pipeline_description: "PRIVATE" };
+    const expected = { error_code: "INTERNAL_ERROR", retryable: true, error_reason: "portal_capture_no_frame",
+      capture_source_buffers: 0, capture_pipeline_state: "playing", capture_pending_state: "void-pending", capture_eos: false };
+    expect(auditErrorDiagnostics(new HostSpanError("INTERNAL_ERROR", "PRIVATE", true, details))).toEqual(expected);
+    expect(auditResponseDiagnostics({ dispatched: true, observation_error_details: details })).toEqual({
+      dispatched: true, observation_diagnostics: expected,
+    });
+    expect(auditErrorDiagnostics(new HostSpanError("INTERNAL_ERROR", "PRIVATE", true, {
+      ...details, capture_source_buffers: -1, capture_pipeline_state: "PRIVATE", capture_pending_state: "PRIVATE",
+    }))).toEqual({ error_code: "INTERNAL_ERROR", retryable: true, error_reason: "portal_capture_no_frame", capture_eos: false });
+  });
 });
 
 it("records GUI location and delivery without screen, window-title, text or key content", () => {

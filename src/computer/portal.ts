@@ -223,7 +223,7 @@ export class PortalDesktop {
         try { return await this.observe(); }
         catch (error) {
           throw new HostSpanError("INTERNAL_ERROR", `Screen capture failed: ${error instanceof Error ? error.message : "unknown error"}`,
-            true, { next_action: this.status().next_action });
+            true, { ...(error instanceof HostSpanError ? error.details : {}), next_action: this.status().next_action });
         }
       }
       if (input.observation_id !== this.observationId) {
@@ -254,6 +254,7 @@ export class PortalDesktop {
       } catch (error) {
         return { ...receipt, observation_required: true,
           observation_error: error instanceof Error ? error.message : "Desktop observation failed",
+          ...(error instanceof HostSpanError ? { observation_error_details: error.details } : {}),
           message: this.sessionId
             ? "Input was sent, but the screen could not be captured. Retry observation only, not the input."
             : "Input was sent, but desktop sharing ended. Open computer again and observe; do not repeat the input.",

@@ -20,6 +20,8 @@ it.skipIf(process.platform !== "linux")("observes after input and never resends 
   const commands: Array<Record<string, unknown>> = [];
   let nextNodeId = 73;
   let failObservation = false;
+  const captureDetails = { reason: "portal_capture_no_frame", capture_source_buffers: 0,
+    capture_pipeline_state: "playing", capture_pending_state: "void-pending", capture_eos: false };
   let failInput = false;
   let failOpen = false;
   let revokeDuringObservation = false;
@@ -38,7 +40,8 @@ it.skipIf(process.platform !== "linux")("observes after input and never resends 
         return;
       }
       if ((command.action === "open" && failOpen) || (command.action === "observe" && failObservation) || (command.action === "text" && failInput)) {
-        worker.stdout.write(`${JSON.stringify({ id: command.id, error: "injected transport failure" })}\n`);
+        worker.stdout.write(`${JSON.stringify({ id: command.id, error: "injected transport failure",
+          ...(command.action === "observe" ? { error_details: captureDetails } : {}) })}\n`);
       } else {
         worker.stdout.write(`${JSON.stringify({ id: command.id, result: command.action === "observe"
           ? { image: "cG5n", mime_type: "image/png", width: 400, height: 300,
@@ -67,6 +70,7 @@ it.skipIf(process.platform !== "linux")("observes after input and never resends 
     failObservation = true;
     const delivered = await desktop.run(input);
     expect(delivered).toMatchObject({ dispatched: true, outcome_verified: false, observation_required: true,
+      observation_error_details: captureDetails,
       session_id: first.session_id, desktop_backend: "wayland-portal", desktop_scope: "monitor",
       pipewire_node_id: 73, window_attribution: "unavailable", coordinate_width: 400, coordinate_height: 300 });
     expect(JSON.parse(String(operations.get("delivered")?.result_json))).toMatchObject({
@@ -74,6 +78,9 @@ it.skipIf(process.platform !== "linux")("observes after input and never resends 
     });
     expect(commands.map((command) => command.action)).toEqual(["open", "observe", "text", "observe"]);
     expect(await desktop.run(input)).toMatchObject({ replayed: true, dispatched: true, session_id: first.session_id, pipewire_node_id: 73 });
+    await expect(desktop.run({ action: "observe", session_id: first.session_id })).rejects.toMatchObject({
+      code: "INTERNAL_ERROR", details: captureDetails,
+    });
     await expect(desktop.run({ ...input, idempotency_key: "stale" })).rejects.toMatchObject({ code: "STALE_CONTENT" });
     failObservation = false;
     const next = await desktop.run({ action: "observe", session_id: first.session_id });
