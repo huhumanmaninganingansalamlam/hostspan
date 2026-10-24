@@ -2,6 +2,11 @@
 
 Entries describe versioned behavior. Publication is established by the corresponding Git tag and GitHub Release; notes alone do not prove publication.
 
+## 0.11.3
+
+- Correlate desktop requests with the verified OAuth client or local caller, session, observation, numeric pointer controls and delivery/replay outcome in the existing audit store. Record text byte counts without storing typed text, key content, screenshots or credentials.
+- Preserve the selected monitor node and coordinate geometry in durable input receipts. Desktop control remains monitor-scoped; foreground window and individual project identity behind a shared OAuth client remain unavailable.
+
 ## 0.11.2
 
 - Correlate rejected bearer authentication and OAuth token exchange outcomes with request IDs. Record granted scopes after successful exchanges and required/granted supported scopes on authorization failures without recording credentials or token values.
