@@ -220,10 +220,19 @@ def observe():
     if not session or pipewire_fd is None:
         raise RuntimeError("Desktop session is closed")
     pipeline = Gst.parse_launch(
-        f"pipewiresrc fd={pipewire_fd} path={int(stream)} do-timestamp=true ! "
+        f"pipewiresrc name=capture_source fd={pipewire_fd} path={int(stream)} do-timestamp=true ! "
         "videoconvert ! pngenc snapshot=true ! appsink name=frame sync=false max-buffers=1 drop=true emit-signals=true")
     capture_wait = GLib.MainLoop()
     samples = []
+    source_buffers = 0
+
+    def source_frame(pad, info):
+        nonlocal source_buffers
+        source_buffers += 1
+        return Gst.PadProbeReturn.OK
+
+    source_pad = pipeline.get_by_name("capture_source").get_static_pad("src")
+    probe = source_pad.add_probe(Gst.PadProbeType.BUFFER, source_frame)
 
     def frame_ready(sink):
         samples.append(sink.emit("pull-sample"))
@@ -240,9 +249,15 @@ def observe():
             capture_wait.run()
         sample = samples[0] if samples else None
         if sample is None:
-            message = pipeline.get_bus().pop_filtered(Gst.MessageType.ERROR)
-            reason = str(message.parse_error()[0]) if message else "No frame within capture deadline"
-            raise RuntimeError(reason)
+            message = pipeline.get_bus().pop_filtered(Gst.MessageType.ERROR | Gst.MessageType.EOS)
+            failed = message is not None and message.type == Gst.MessageType.ERROR
+            _, current, pending = pipeline.get_state(0)
+            raise PortalRequestError(str(message.parse_error()[0]) if failed else "No frame within capture deadline",
+                                     reason="portal_capture_error" if failed else "portal_capture_no_frame",
+                                     capture_source_buffers=source_buffers,
+                                     capture_pipeline_state=current.value_nick,
+                                     capture_pending_state=pending.value_nick,
+                                     capture_eos=message is not None and message.type == Gst.MessageType.EOS)
         buffer = sample.get_buffer()
         if buffer.get_size() > 16 * 1024 * 1024:
             raise RuntimeError("Captured PNG exceeds 16 MiB")
@@ -256,6 +271,7 @@ def observe():
         if GLib.MainContext.default().find_source_by_id(timer):
             GLib.source_remove(timer)
         sink.disconnect(handler)
+        source_pad.remove_probe(probe)
         pipeline.set_state(Gst.State.NULL)
 
 
