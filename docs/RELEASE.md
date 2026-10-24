@@ -2,6 +2,11 @@
 
 Entries describe versioned behavior. Publication is established by the corresponding Git tag and GitHub Release; notes alone do not prove publication.
 
+## 0.11.2
+
+- Correlate rejected bearer authentication and OAuth token exchange outcomes with request IDs. Record granted scopes after successful exchanges and required/granted supported scopes on authorization failures without recording credentials or token values.
+- Preserve existing scope enforcement, normal consent and refresh behavior. Client approval cards and OS desktop consent remain separate from server authentication diagnostics.
+
 ## 0.11.1
 
 - Update Zod 4.6.5 to 4.6.6 for GHSA-mrhx-c7xc-m3w5 and Electron 44.5.0 to 44.9.1 for GHSA-jr5w-w6x2-84p9, using official fixes within the existing major versions. Resolve the actual dependency paths without audit exclusions.

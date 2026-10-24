@@ -179,11 +179,13 @@ describe("OAuth protected MCP", () => {
     const runtime = createRuntime(configPath);
     if (!runtime.oauth) throw new Error("OAuth runtime was not initialized.");
     const oauth = runtime.oauth;
+    const traces: Array<Record<string, unknown>> = [];
     const app = createHostSpanHttpServer({
       listen_host: "127.0.0.1",
       listen_port: 0,
       allowed_hosts: ["127.0.0.1", "mcp.example.com"],
       oauth,
+      trace: (event, metadata) => traces.push({ event, ...metadata }),
       handlers: runtime.handlers,
       responseContext: () => ({ toolset_hash: TOOLSET_HASH, policy_epoch: runtime.config.policy_epoch }),
       status: {
@@ -207,6 +209,10 @@ describe("OAuth protected MCP", () => {
       });
       expect(denied.statusCode).toBe(401);
       expect(denied.headers["www-authenticate"]).toContain("oauth-protected-resource/mcp");
+      expect(traces).toContainEqual(expect.objectContaining({
+        event: "authorization.rejected", stage: "authentication", http_status: 401,
+        request_id: denied.headers["x-hostspan-request-id"],
+      }));
 
       const resourceMetadata = await app.inject({
         method: "GET",
@@ -385,6 +391,19 @@ describe("OAuth protected MCP", () => {
       const listedBody = listed.json() as { result?: { tools?: Array<{ name: string }> } };
       expect(listedBody.result?.tools?.map((tool) => tool.name)).toEqual(TOOL_NAMES);
 
+      oauth.revoke(tokenBody.access_token);
+      const staleAccess = await app.inject({
+        method: "POST", url: "/mcp",
+        headers: { ...host, authorization: `Bearer ${tokenBody.access_token}`, "content-type": "application/json" },
+        payload: { jsonrpc: "2.0", id: "stale", method: "tools/list", params: { _meta: modernMeta() } },
+      });
+      expect(staleAccess.statusCode).toBe(401);
+      expect(staleAccess.headers["www-authenticate"]).toContain('error="invalid_token"');
+      expect(traces).toContainEqual(expect.objectContaining({
+        event: "authorization.rejected", stage: "authentication", error_code: "invalid_token",
+        request_id: staleAccess.headers["x-hostspan-request-id"],
+      }));
+
       const refreshed = await app.inject({
         method: "POST",
         url: "/token",
@@ -399,6 +418,16 @@ describe("OAuth protected MCP", () => {
       const refreshedBody = refreshed.json() as { access_token: string; refresh_token: string };
       expect(refreshedBody.access_token).not.toBe(tokenBody.access_token);
       expect(refreshedBody.refresh_token).not.toBe(tokenBody.refresh_token);
+      const reconnected = await app.inject({
+        method: "POST", url: "/mcp",
+        headers: {
+          ...host, authorization: `Bearer ${refreshedBody.access_token}`, accept: "application/json, text/event-stream",
+          "content-type": "application/json", "mcp-method": "tools/list", "mcp-protocol-version": "2026-07-28",
+        },
+        payload: { jsonrpc: "2.0", id: "reconnected", method: "tools/list", params: { _meta: modernMeta() } },
+      });
+      expect(reconnected.statusCode).toBe(200);
+      expect(reconnected.json().result.tools.map((tool: { name: string }) => tool.name)).toEqual(TOOL_NAMES);
 
       const replayedRefresh = await app.inject({
         method: "POST",
@@ -412,6 +441,17 @@ describe("OAuth protected MCP", () => {
       });
       expect(replayedRefresh.statusCode).toBe(400);
       expect(replayedRefresh.json()).toMatchObject({ error: "invalid_grant" });
+      expect(traces).toContainEqual(expect.objectContaining({
+        event: "oauth.token", outcome: "issued", grant_type: "refresh_token",
+        granted_scopes: ["hostspan.read"], request_id: refreshed.headers["x-hostspan-request-id"],
+      }));
+      expect(traces).toContainEqual(expect.objectContaining({
+        event: "oauth.token", outcome: "rejected", grant_type: "refresh_token",
+        error_code: "invalid_grant", request_id: replayedRefresh.headers["x-hostspan-request-id"],
+      }));
+      const traceText = JSON.stringify(traces);
+      for (const secret of [approvalSecret, code, verifier, tokenBody.access_token, tokenBody.refresh_token,
+        refreshedBody.access_token, refreshedBody.refresh_token]) expect(traceText).not.toContain(secret);
     } finally {
       await app.close();
       await runtime.close();
