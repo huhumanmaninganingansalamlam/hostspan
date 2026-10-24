@@ -14,12 +14,14 @@ it.skipIf(process.platform !== "linux")("observes after input and never resends 
   const db = openDatabase(":memory:");
   const operations = new OperationsRepo(db);
   const commands: Array<Record<string, unknown>> = [];
+  let nextNodeId = 73;
   let failObservation = false;
   let failInput = false;
   let failOpen = false;
   let revokeDuringObservation = false;
   let currentWorker: ChildProcessWithoutNullStreams;
   vi.mocked(spawn).mockImplementation(() => {
+  const nodeId = nextNodeId++;
   const worker = Object.assign(new EventEmitter(), {
     stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
   });
@@ -37,7 +39,7 @@ it.skipIf(process.platform !== "linux")("observes after input and never resends 
         worker.stdout.write(`${JSON.stringify({ id: command.id, result: command.action === "observe"
           ? { image: "cG5n", mime_type: "image/png", width: 400, height: 300,
             coordinate_width: 400, coordinate_height: 300 }
-          : { dispatched: true } })}\n`);
+          : { dispatched: true, pipewire_node_id: nodeId } })}\n`);
       }
     });
   });
@@ -60,9 +62,14 @@ it.skipIf(process.platform !== "linux")("observes after input and never resends 
       text: "한글-END", idempotency_key: "delivered" };
     failObservation = true;
     const delivered = await desktop.run(input);
-    expect(delivered).toMatchObject({ dispatched: true, outcome_verified: false, observation_required: true });
+    expect(delivered).toMatchObject({ dispatched: true, outcome_verified: false, observation_required: true,
+      session_id: first.session_id, desktop_backend: "wayland-portal", desktop_scope: "monitor",
+      pipewire_node_id: 73, window_attribution: "unavailable", coordinate_width: 400, coordinate_height: 300 });
+    expect(JSON.parse(String(operations.get("delivered")?.result_json))).toMatchObject({
+      session_id: first.session_id, pipewire_node_id: 73, outcome_verified: false,
+    });
     expect(commands.map((command) => command.action)).toEqual(["open", "observe", "text", "observe"]);
-    expect(await desktop.run(input)).toMatchObject({ replayed: true, dispatched: true });
+    expect(await desktop.run(input)).toMatchObject({ replayed: true, dispatched: true, session_id: first.session_id, pipewire_node_id: 73 });
     await expect(desktop.run({ ...input, idempotency_key: "stale" })).rejects.toMatchObject({ code: "STALE_CONTENT" });
     failObservation = false;
     const next = await desktop.run({ action: "observe", session_id: first.session_id });
@@ -72,7 +79,7 @@ it.skipIf(process.platform !== "linux")("observes after input and never resends 
     desktop.dispose();
     const commandCount = commands.length;
     expect(await desktop.run(uncertain)).toMatchObject({ state: "unknown" });
-    expect(await desktop.run(input)).toMatchObject({ replayed: true, dispatched: true });
+    expect(await desktop.run(input)).toMatchObject({ replayed: true, dispatched: true, session_id: first.session_id, pipewire_node_id: 73 });
     expect(commands).toHaveLength(commandCount);
     failOpen = true;
     await desktop.run({ action: "open" });
@@ -86,12 +93,13 @@ it.skipIf(process.platform !== "linux")("observes after input and never resends 
     currentWorker!.stdout.emit("data", '{"event":"closed"}\n');
     expect(desktop.status()).toMatchObject({ state: "failed", next_action: { arguments: { action: "open" } } });
     await expect(desktop.run({ action: "observe", session_id: reopened.session_id })).rejects.toMatchObject({ code: "SCOPE_DENIED" });
-    expect(await desktop.run(input)).toMatchObject({ replayed: true, dispatched: true });
+    expect(await desktop.run(input)).toMatchObject({ replayed: true, dispatched: true, session_id: first.session_id, pipewire_node_id: 73 });
     const restored = await desktop.run({ action: "open" });
     expect(restored.session_id).not.toBe(reopened.session_id);
     await Promise.resolve();
     const fresh = await desktop.run({ action: "observe", session_id: restored.session_id });
     expect(fresh).toMatchObject({ state: "ready" });
+    expect(fresh.pipewire_node_id).not.toBe(73);
     failInput = false;
     revokeDuringObservation = true;
     const closingInput = { ...input, session_id: restored.session_id, observation_id: fresh.observation_id, idempotency_key: "closing" };

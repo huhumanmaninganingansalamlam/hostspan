@@ -16,7 +16,7 @@ import { fileRead } from "../files/read.js";
 import { fileSearch } from "../files/search.js";
 import { ripgrepExecutable } from "../files/ripgrep.js";
 import { asHostSpanError } from "../errors.js";
-import { TOOL_NAMES, TOOLSET_HASH, type HostSpanToolAuthorization, type HostSpanToolHandlers } from "../mcp/registry.js";
+import { TOOL_NAMES, TOOLSET_HASH, type HostSpanToolAuthorization, type HostSpanToolHandlers, type ToolCaller } from "../mcp/registry.js";
 import type {
   FileListToolInput,
   FilePatchToolInput,
@@ -284,10 +284,12 @@ export function createRuntime(
     input: unknown,
     requestId: string,
     run: () => Promise<T> | T,
+    caller?: ToolCaller,
   ): Promise<T> => {
     const started = Date.now();
     const inputRecord = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
     const metadata = {
+      ...caller,
       tool,
       argument_hash: argumentHash(input),
       target_id: typeof inputRecord.target_id === "string" ? inputRecord.target_id : undefined,
@@ -302,7 +304,7 @@ export function createRuntime(
       audit.append({
         request_id: requestId,
         event_type: "response.returned",
-        metadata: { tool, total_ms: Date.now() - started, ...auditResponseDiagnostics(result) },
+        metadata: { ...caller, tool, total_ms: Date.now() - started, ...auditResponseDiagnostics(result) },
         ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
         ...(processId ? { process_id: processId } : {}),
       });
@@ -314,7 +316,7 @@ export function createRuntime(
         request_id: requestId,
         event_type: "request.aborted",
         metadata: {
-          tool, stage: "handler", ...auditErrorDiagnostics(known), total_ms: Date.now() - started,
+          ...caller, tool, stage: "handler", ...auditErrorDiagnostics(known), total_ms: Date.now() - started,
           ...auditRequestDiagnostics(inputRecord),
           ...(known.code === "CURSOR_EXPIRED" ? {
             stdout_cursor: inputRecord.stdout_cursor,
@@ -329,10 +331,10 @@ export function createRuntime(
   };
 
   const handlers: HostSpanToolHandlers = {
-    computer: (input, requestId) => traced("computer", input, requestId, () => {
+    computer: (input, requestId, caller = { caller_mode: "local" }) => traced("computer", input, requestId, () => {
       if (!computer) throw new HostSpanError("SCOPE_DENIED", "Desktop control is off. Run hostspan computer enable with the intended --config, then explicitly restart that daemon to apply it.");
       return computer.run(input);
-    }),
+    }, caller),
     system_status: (_input: SystemStatusInput, requestId: string) =>
       traced("system_status", {}, requestId, () => {
         const searchReady = searchBackendReady();
@@ -422,9 +424,9 @@ export function createRuntime(
   };
 
   const authorization: HostSpanToolAuthorization = {
-    rejected: (tool, input, requestId, error, stage) => {
+    rejected: (tool, input, requestId, error, stage, caller) => {
       audit.append({ request_id: requestId, event_type: "request.aborted", metadata: {
-        tool, stage, ...auditErrorDiagnostics(error), ...auditRequestDiagnostics(input),
+        ...caller, tool, stage, ...auditErrorDiagnostics(error), ...auditRequestDiagnostics(input),
       } });
     },
     processBackend: (processId) => {
