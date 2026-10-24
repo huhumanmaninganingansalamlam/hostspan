@@ -2,6 +2,11 @@
 
 Entries describe versioned behavior. Publication is established by the corresponding Git tag and GitHub Release; notes alone do not prove publication.
 
+## 0.11.4
+
+- Keep human portal screen selection pending for the existing desktop session until the OS responds, the caller closes it or the worker ends. Remove the local consent expiry and parent open watchdog; capture and input deadlines remain bounded.
+- Distinguish real portal response codes from local setup timeouts in desktop failures and existing audit diagnostics. Preserve caller-close cleanup, OS cancellation/revocation and input replay protection.
+
 ## 0.11.3
 
 - Correlate desktop requests with the verified OAuth client or local caller, session, observation, numeric pointer controls and delivery/replay outcome in the existing audit store. Record text byte counts without storing typed text, key content, screenshots or credentials.
