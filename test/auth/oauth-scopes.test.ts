@@ -342,7 +342,10 @@ describe("OAuth scope split", () => {
       expectAllowed(await callTool(app, read.access_token, "process_list", { target_id: "test" }), "process_list");
       expectScopeDenied(await callTool(app, read.access_token, "file_patch", patchArgs()), "hostspan.write");
       expect(calls).not.toContain("file_patch");
-      expect(runtime.audit.recent()).toContainEqual(expect.objectContaining({ process_id: null, metadata: expect.objectContaining({ tool: "file_patch", stage: "authorization", error_reason: "oauth_scope" }) }));
+      expect(runtime.audit.recent()).toContainEqual(expect.objectContaining({ process_id: null, metadata: expect.objectContaining({
+        tool: "file_patch", stage: "authorization", error_reason: "oauth_scope",
+        error_required_scopes: ["hostspan.write"], error_granted_scopes: ["hostspan.read"],
+      }) }));
       const deniedDesktop = await callTool(app, read.access_token, "computer", { action: "open" });
       expectScopeDenied(deniedDesktop, "hostspan.computer");
       const challenges = deniedDesktop.result?._meta?.["mcp/www_authenticate"];
@@ -360,6 +363,25 @@ describe("OAuth scope split", () => {
       expect(oauth.verifyAccessToken(read.access_token)?.scopes).toEqual(["hostspan.read"]);
       expect(oauth.verifyAccessToken(desktop.access_token)?.scopes).toEqual(["hostspan.read", "hostspan.computer"]);
       expectAllowed(await callTool(app, desktop.access_token, "computer", { action: "open" }), "computer");
+
+      // Reauthorization must preserve execution scopes, including through normal refresh.
+      const previous = issueToken(oauth, approvalSecret, "hostspan.read hostspan.write hostspan.exec hostspan.terminal", readGrant.clientId).token;
+      const needsComputer = await callTool(app, previous.access_token, "computer", { action: "open" });
+      const requestedScope = /scope="([^"]+)"/.exec(needsComputer.result?._meta?.["mcp/www_authenticate"]?.[0] ?? "")?.[1];
+      expect(requestedScope?.split(" ")).toEqual(["hostspan.read", "hostspan.write", "hostspan.exec", "hostspan.terminal", "hostspan.computer"]);
+      const consented = issueToken(oauth, approvalSecret, requestedScope, readGrant.clientId).token;
+      const refreshed = await app.inject({
+        method: "POST", url: "/token",
+        headers: { host: "mcp.example.com", "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({ grant_type: "refresh_token", refresh_token: consented.refresh_token, client_id: readGrant.clientId }).toString(),
+      });
+      expect(refreshed.statusCode).toBe(200);
+      const renewed = refreshed.json() as OAuthTokenResponse;
+      expect(renewed.scope).toBe(requestedScope);
+      for (const token of [consented, renewed]) {
+        expectAllowed(await callTool(app, token.access_token, "computer", { action: "open" }), "computer");
+        expectAllowed(await callTool(app, token.access_token, "process_start", startArgs(false)), "process_start");
+      }
 
       expectAllowed(await callTool(app, write.access_token, "file_patch", patchArgs()), "file_patch");
       expectScopeDenied(

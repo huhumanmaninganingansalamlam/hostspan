@@ -35,5 +35,10 @@ describe("audit error diagnostics", () => {
     expect(request).toMatchObject({ start_byte: 17, max_bytes: 5, action: "text", path_hash: expect.any(String) });
     expect(response).toMatchObject({ state: "failed", exit_code: 1, returned_bytes: 5, truncated_after: true, next_byte: 22, returned_start_byte: 17, returned_end_byte: 22, stdout_returned_bytes: Buffer.byteLength(canary), has_more_output: true });
     expect(JSON.stringify({ request, response })).not.toContain(canary);
+    const scopes = auditErrorDiagnostics(new HostSpanError("SCOPE_DENIED", canary, false, {
+      reason: "oauth_scope", required_scopes: ["hostspan.exec", canary], granted_scopes: [canary, "hostspan.read"],
+    }));
+    expect(scopes).toMatchObject({ error_required_scopes: ["hostspan.exec"], error_granted_scopes: ["hostspan.read"] });
+    expect(JSON.stringify(scopes)).not.toContain(canary);
   });
 });

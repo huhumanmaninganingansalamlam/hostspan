@@ -18,6 +18,7 @@ import {
   OAuthHttpError,
   type OAuthService,
 } from "../auth/oauth-service.js";
+import { splitOAuthScopes } from "../auth/oauth-scopes.js";
 import { SERVER_VERSION } from "../version.js";
 import { TOOL_DEFINITIONS, TOOL_NAMES, registerHostSpanTools, type HostSpanToolAuthorization, type HostSpanToolHandlers, type ResponseContextProvider } from "./registry.js";
 
@@ -171,7 +172,7 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
     if (!readiness.ready) reply.code(503);
     return readiness;
   });
-  if (options.oauth) registerOAuthRoutes(app, options.oauth);
+  if (options.oauth) registerOAuthRoutes(app, options.oauth, options.trace);
   app.all("/mcp", async (request, reply) => {
     if (options.oauth && oauthVerifier) {
       try {
@@ -182,11 +183,20 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
         });
         Object.assign(request.raw, { auth });
       } catch (error) {
+        const id = requestId();
+        const response = bearerAuthChallengeResponse(error, {
+          resourceMetadataUrl: options.oauth.resourceMetadataUrl,
+        });
+        const body = request.body as { params?: { name?: unknown } } | undefined;
+        options.trace?.("authorization.rejected", {
+          request_id: id, stage: "authentication", http_status: response.status,
+          error_code: error instanceof OAuthError ? error.code : "server_error",
+          tool: TOOL_NAMES.find((name) => name === body?.params?.name),
+        });
+        reply.header("x-hostspan-request-id", id);
         return sendWebResponse(
           reply,
-          bearerAuthChallengeResponse(error, {
-            resourceMetadataUrl: options.oauth.resourceMetadataUrl,
-          }),
+          response,
         );
       }
     }
@@ -264,7 +274,7 @@ function oauthErrorPayload(error: unknown): { status: number; payload: Record<st
   return { status: 500, payload: { error: "server_error", error_description: "OAuth request failed." } };
 }
 
-function registerOAuthRoutes(app: FastifyInstance, oauth: OAuthService): void {
+function registerOAuthRoutes(app: FastifyInstance, oauth: OAuthService, trace?: HostSpanHttpServerOptions["trace"]): void {
   const cors = (reply: FastifyReply) =>
     reply
       .header("access-control-allow-origin", "*")
@@ -325,13 +335,26 @@ function registerOAuthRoutes(app: FastifyInstance, oauth: OAuthService): void {
     }
   });
   app.post("/token", async (request, reply) => {
+    const id = requestId();
+    reply.header("x-hostspan-request-id", id);
+    let grantType = "unsupported";
     try {
+      const form = requestForm(request.body);
+      const requestedGrant = form.get("grant_type");
+      if (requestedGrant === "authorization_code" || requestedGrant === "refresh_token") grantType = requestedGrant;
+      const token = oauth.exchangeToken(form);
+      trace?.("oauth.token", {
+        request_id: id, grant_type: grantType, outcome: "issued", granted_scopes: splitOAuthScopes(token.scope),
+      });
       return cors(reply)
         .header("cache-control", "no-store")
         .header("pragma", "no-cache")
-        .send(oauth.exchangeToken(requestForm(request.body)));
+        .send(token);
     } catch (error) {
       const result = oauthErrorPayload(error);
+      trace?.("oauth.token", {
+        request_id: id, grant_type: grantType, outcome: "rejected", error_code: result.payload.error,
+      });
       return cors(reply)
         .code(result.status)
         .header("cache-control", "no-store")

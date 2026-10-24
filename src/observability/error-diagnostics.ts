@@ -1,4 +1,5 @@
 import type { HostSpanError } from "../errors.js";
+import { HOSTSPAN_OAUTH_SCOPES } from "../auth/oauth-scopes.js";
 import { argumentHash } from "../state/operations-repo.js";
 
 const SAFE_ERROR_REASONS = new Set([
@@ -42,6 +43,12 @@ export function auditErrorDiagnostics(error: HostSpanError): Record<string, unkn
   };
   const reason = error.details.reason;
   if (typeof reason === "string" && SAFE_ERROR_REASONS.has(reason)) metadata.error_reason = reason;
+  if (reason === "oauth_scope") {
+    const required = Array.isArray(error.details.required_scopes) ? error.details.required_scopes : [error.details.required_scope];
+    const granted = Array.isArray(error.details.granted_scopes) ? error.details.granted_scopes : [];
+    metadata.error_required_scopes = HOSTSPAN_OAUTH_SCOPES.filter((scope) => required.includes(scope));
+    metadata.error_granted_scopes = HOSTSPAN_OAUTH_SCOPES.filter((scope) => granted.includes(scope));
+  }
   const resource = error.details.resource;
   if (typeof resource === "string" && SAFE_ERROR_RESOURCES.has(resource)) metadata.error_resource = resource;
   if (error.code === "CURSOR_EXPIRED") {
