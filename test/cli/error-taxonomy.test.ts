@@ -36,7 +36,9 @@ describe("CLI error taxonomy", () => {
     const configPath = configFixture();
     const before = loadConfig(configPath);
     expect(await main(["computer", "enable", "--json", "--config", configPath])).toBe(0);
-    expect(loadConfig(configPath)).toEqual({ ...before, computer: { backend: "wayland-portal" } });
+    expect(loadConfig(configPath)).toEqual({ ...before, computer: {
+      backend: process.platform === "darwin" || process.platform === "win32" ? "native" : "wayland-portal",
+    } });
     const enabled = readFileSync(configPath, "utf8");
     expect(await main(["computer", "status", "--config", configPath])).toBe(0);
     expect(readFileSync(configPath, "utf8")).toBe(enabled);

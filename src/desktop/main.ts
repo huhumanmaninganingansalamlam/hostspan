@@ -6,6 +6,8 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, type IpcMainInvokeEvent
 import {
   addLocalWorkspace,
   buildAdminSnapshot,
+  computerRuntimeState,
+  setComputerEnabled,
   removeLocalWorkspace,
   resolveTerminalSession,
   type AddWorkspaceInput,
@@ -27,7 +29,7 @@ import {
   requireString,
   requireWorkspaceInput,
 } from "./ipc-security.js";
-import { ensureDesktopConfig } from "./first-run.js";
+import { prepareDesktopConfig } from "./first-run.js";
 import { trayMenuStateKey } from "./tray-menu-state.js";
 import { dashboardHtml } from "./dashboard.js";
 
@@ -35,6 +37,7 @@ declare global {
   interface Window {
     hostspan: {
       snapshot(): Promise<unknown>;
+      setComputer(enabled: boolean): Promise<unknown>;
       daemon(action: "start" | "stop" | "restart"): Promise<unknown>;
       doctor(): Promise<unknown>;
       chooseWorkspace(): Promise<{ canceled: boolean; path?: string }>;
@@ -49,7 +52,7 @@ declare global {
   }
 }
 
-const configPath = resolve(defaultConfigPath());
+let configPath = resolve(defaultConfigPath());
 if (process.platform === "linux") app.commandLine.appendSwitch("disable-gpu");
 const cliPath = fileURLToPath(new URL("../cli/index.js", import.meta.url));
 const mainPath = fileURLToPath(new URL("./main.js", import.meta.url));
@@ -171,11 +174,14 @@ function refreshLinuxAutoStart(): void {
 }
 
 type AdminSnapshot = ReturnType<typeof buildAdminSnapshot>;
-type DesktopSnapshot = AdminSnapshot & { auto_start: boolean };
+type DesktopSnapshot = Omit<AdminSnapshot, "computer"> & {
+  computer: AdminSnapshot["computer"] & { runtime: Record<string, unknown> }; auto_start: boolean;
+};
 
 async function snapshot(): Promise<DesktopSnapshot> {
   const base = buildAdminSnapshot(configPath, { recent: 40 });
-  return { ...base, auto_start: getAutoStart() };
+  const runtime = await computerRuntimeState(configPath);
+  return { ...base, computer: { ...base.computer, runtime }, auto_start: getAutoStart() };
 }
 
 function checkedServiceAction(action: "start" | "stop") {
@@ -203,7 +209,8 @@ async function confirmDaemonRestart(): Promise<boolean> {
   const activePty = current.active_processes.filter((process) => process.backend === "pty").length;
   const impact = [
     "HostSpan loads target and policy configuration once when the daemon starts.",
-    "Restarting is the intentional boundary that applies workspace additions, removals, and capability changes atomically.",
+    "Restarting applies saved workspace, capability, and computer-use settings atomically.",
+    "Finish current desktop calls and return shared desktop ownership before restarting. Restart ends HostSpan desktop sharing; Linux sharing needs OS consent again. Enabling computer-use does not open a portal.",
     activeNative > 0 ? `${activeNative} active native process(es) will be stopped.` : "No active native process will be stopped.",
     activePty > 0 ? `${activePty} durable PTY session(s) will remain alive and reconnect after restart.` : "No live PTY session needs recovery.",
   ].join("\n\n");
@@ -301,6 +308,12 @@ ipcMain.handle("hostspan:daemon", async (event, rawAction: unknown) => {
   await refreshUi();
   return result;
 });
+ipcMain.handle("hostspan:set-computer", async (event, rawEnabled: unknown) => {
+  assertDashboardSender(event);
+  setComputerEnabled(configPath, requireBoolean(rawEnabled, "computer"));
+  await refreshUi();
+  return { saved: true };
+});
 ipcMain.handle("hostspan:doctor", (event) => {
   assertDashboardSender(event);
   return doctorReport();
@@ -355,7 +368,7 @@ app.on("window-all-closed", () => undefined);
 void app.whenReady().then(async () => {
   try {
     prepareDesktopEnvironment();
-    ensureDesktopConfig(configPath);
+    configPath = prepareDesktopConfig(app.getPath("userData"));
     refreshLinuxAutoStart();
     if (process.platform === "win32") {
       const config = loadConfig(configPath);

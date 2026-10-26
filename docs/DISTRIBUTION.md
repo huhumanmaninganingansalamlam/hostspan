@@ -28,7 +28,7 @@ All variants preserve the canonical path. Missing or invalid tray assets produce
 
 ## Optional desktop-control runtime
 
-The Linux Wayland GUI helper is included in CLI `dist/src/computer/portal-worker.py` and unpacked beside Electron's ASAR so system Python can execute it. Installed CLI and desktop smoke compare it with the candidate source. PyGObject/dbus-python, GStreamer/PipeWire plugins and a user-session portal backend are host prerequisites, not bundled services. See the README for activation and consent. Packaging PASS does not imply an interactive GUI grant or Windows/macOS GUI support.
+Desktop helpers are included under CLI `dist/src/computer/` and unpacked beside Electron's ASAR. Linux uses `portal-worker.py` with host PyGObject/dbus-python, GStreamer/PipeWire and a user-session portal backend. macOS 14+ uses a bundled universal ScreenCaptureKit/CoreGraphics executable; building it from source requires Xcode's Swift toolchain. Windows uses `native-windows.ps1` in the logged-in user's desktop. Packaged smoke checks helper availability and the native close protocol without requesting screen access or sending input. macOS desktop packages and CLI packages built on macOS include the universal helper. The published Linux-built portable CLI does not include it; use the normal macOS desktop package for Mac computer control. See the README for activation, SSH forwarding and OS permission requirements. Packaging PASS does not imply interactive GUI permission or an observed input result.
 
 ## Local packaging
 
@@ -80,7 +80,7 @@ The `--platform`, `--arch`, and `--out-dir` overrides are for static package val
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs the complete core gate and dependency audit on branch pushes and pull requests across Linux x64, Windows x64, macOS Apple Silicon, and macOS Intel. Pull requests additionally run fresh CLI package smoke, unpacked Electron packaging, and packaged-runtime smoke on all four platforms, so native package regressions fail before merge. Direct `dev` pushes additionally run Windows fresh-prefix CLI package smoke before release promotion; other branch pushes and desktop packaging retain their existing conditions. Pull-request installer jobs additionally build Windows x64 NSIS and macOS arm64/x64 DMGs and run installed-runtime smoke in `RUNNER_TEMP` without publishing; the release workflow builds and validates all release artifacts before publication, and tag pushes do not trigger ordinary CI.
+`.github/workflows/ci.yml` runs the complete core gate and dependency audit on branch pushes and pull requests across Linux x64, Windows x64, macOS Apple Silicon, and macOS Intel. Pull requests additionally run fresh CLI package smoke, unpacked Electron packaging, and packaged-runtime smoke on all four platforms, so native package regressions fail before merge. Direct `dev` pushes additionally run Windows fresh-prefix CLI package smoke before release promotion; other branch pushes and desktop packaging retain their existing conditions. Pull-request installer jobs additionally build Windows x64 NSIS and macOS arm64/x64 DMGs and run installed-runtime smoke in `RUNNER_TEMP` without publishing. The release workflow builds and validates all release artifacts before publication, and tag pushes do not trigger ordinary CI.
 
 `.github/workflows/release.yml` runs on a `v*` tag or manual dispatch for an existing tag. It:
 

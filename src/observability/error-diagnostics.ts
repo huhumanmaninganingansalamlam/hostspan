@@ -110,7 +110,9 @@ export function auditResponseDiagnostics(result: Record<string, unknown>): Recor
   for (const key of ["session_id", "observation_id"]) {
     if (typeof result[key] === "string" && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(result[key])) metadata[key] = result[key];
   }
-  if (result.desktop_backend === "wayland-portal") metadata.desktop_backend = result.desktop_backend;
+  if (["wayland-portal", "macos-native", "windows-native"].includes(result.desktop_backend as string)) metadata.desktop_backend = result.desktop_backend;
+  if (typeof result.display_id === "string" && /^[A-Za-z0-9_.\\:-]{1,128}$/.test(result.display_id)) metadata.display_id = result.display_id;
+  if (["screen_recording", "accessibility"].includes(result.required_os_permission as string)) metadata.required_os_permission = result.required_os_permission;
   if (result.desktop_scope === "monitor") metadata.desktop_scope = result.desktop_scope;
   if (result.window_attribution === "unavailable") metadata.window_attribution = result.window_attribution;
   if (typeof result.pipewire_node_id === "number" && Number.isSafeInteger(result.pipewire_node_id) && result.pipewire_node_id >= 0) metadata.pipewire_node_id = result.pipewire_node_id;
