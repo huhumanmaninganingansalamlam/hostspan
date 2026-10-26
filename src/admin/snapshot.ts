@@ -1,4 +1,5 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
+import { desktopBackend, supportedDesktopSession } from "../computer/portal.js";
 import { basename, join, resolve } from "node:path";
 import { createNativeExecProfile } from "../config/defaults.js";
 import { loadConfig } from "../config/loader.js";
@@ -10,11 +11,57 @@ import { AuditRepo } from "../state/audit-repo.js";
 import { DB_SCHEMA_VERSION, openReadOnlyDatabase, readTargetSnapshots } from "../state/database.js";
 import { ProcessesRepo } from "../state/processes-repo.js";
 import { targetConfigDigest, TargetRegistry } from "../targets/registry.js";
-import { daemonStatus } from "../daemon/control.js";
-import { SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
+import { daemonStatus, requestDaemonComputer } from "../daemon/control.js";
+import { PROTOCOL_VERSION, SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
 
 export interface AdminSnapshotOptions {
   recent?: number;
+}
+
+/** Configuration is applied by the existing explicit daemon restart boundary. */
+export function setComputerEnabled(configPath: string, enabled: boolean): void {
+  const config = loadConfig(configPath);
+  if (Boolean(config.computer) === enabled) return;
+  if (enabled) config.computer = { backend: desktopBackend() };
+  else delete config.computer;
+  writeConfigAtomic(configPath, config);
+}
+
+/** Authenticated status only: never opens, observes, or changes a desktop session. */
+export async function computerRuntimeState(configPath: string): Promise<Record<string, unknown>> {
+  if (!daemonStatus(configPath).running) return { enabled: false, state: "stopped" };
+  try {
+    let result: Record<string, unknown>;
+    try {
+      result = await requestDaemonComputer(configPath, { action: "status" });
+    } catch {
+      // Older running daemons have no computer-status IPC. Read their existing
+      // loopback MCP status without restarting live desktop workers or using OAuth secrets.
+      const config = loadConfig(configPath);
+      const host = config.server.listen_host;
+      if (!["127.0.0.1", "localhost", "::1"].includes(host)) throw new Error("Local status unavailable.");
+      const response = await fetch(`http://${host === "::1" ? "[::1]" : host}:${config.server.listen_port}/mcp`, {
+        method: "POST", redirect: "error", signal: AbortSignal.timeout(2_000),
+        headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream",
+          "MCP-Protocol-Version": PROTOCOL_VERSION, "Mcp-Method": "tools/call", "Mcp-Name": "system_status" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: "desktop-settings-status", method: "tools/call",
+          params: { name: "system_status", arguments: {}, _meta: {
+            "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": { name: "hostspan-settings", version: SERVER_VERSION },
+          } } }),
+      });
+      if (!response.ok) throw new Error("Local status unavailable.");
+      const envelope = await response.json() as { result?: Record<string, unknown> };
+      result = envelope.result ?? {};
+    }
+    const content = result.structuredContent as { backends?: { computer?: Record<string, unknown> } } | undefined;
+    const computer = content?.backends?.computer;
+    if (typeof computer?.configured !== "boolean") throw new Error("Desktop status was not returned.");
+    return { ...computer, enabled: computer.configured };
+  } catch {
+    return { enabled: null, state: "unknown", message: "Cannot verify the running desktop setting. Refresh before acting." };
+  }
 }
 
 export interface AddWorkspaceInput {
@@ -195,10 +242,10 @@ export function buildAdminSnapshot(configPath: string, options: AdminSnapshotOpt
     computer: {
       profile: resolvedConfigPath,
       configured: Boolean(config.computer),
-      supported_session: process.platform === "linux" && process.env.XDG_SESSION_TYPE === "wayland",
+      supported_session: supportedDesktopSession(),
       message: config.computer
-        ? "Desktop control is configured. Ask the connected assistant to open computer, select a screen, then observe and act. Configuration changes require an explicit daemon restart."
-        : "Desktop control is off. Run hostspan computer enable with this profile to configure it.",
+        ? "Saved ON. Apply with an explicit daemon restart when current desktop work has ended. Enabling never opens a screen-sharing dialog."
+        : "Saved OFF (the default). Apply changes with an explicit daemon restart when current desktop work has ended.",
     },
     listen: { host: config.server.listen_host, port: config.server.listen_port },
     targets: targets.list().map((target) => {

@@ -4,7 +4,10 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { createConnection, createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { loadConfig } from "../config/loader.js";
-import { HostSpanError } from "../errors.js";
+import { asHostSpanError, HostSpanError } from "../errors.js";
+import { ComputerInputSchema, type ComputerInput } from "../computer/portal.js";
+
+export type DaemonComputerInput = ComputerInput | { action: "status" };
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
@@ -28,6 +31,7 @@ function daemonControlPaths(configPath: string): { address: string; token_path: 
 export async function startDaemonControlServer(
   configPath: string,
   onShutdown: () => void,
+  onComputer?: (input: DaemonComputerInput) => Promise<unknown>,
 ): Promise<{ address: string; close(): Promise<void> }> {
   const control = daemonControlPaths(configPath);
   mkdirSync(dirname(control.token_path), { recursive: true, mode: 0o700 });
@@ -57,17 +61,33 @@ export async function startDaemonControlServer(
     socket.setTimeout(2_000, () => socket.destroy());
     socket.on("error", () => socket.destroy());
     let input = "";
-    socket.on("data", (chunk: string) => {
+    let handled = false;
+    socket.on("data", async (chunk: string) => {
+      if (handled) return;
       input += chunk;
-      if (input.length > 4_096) {
+      if (Buffer.byteLength(input) > 32_768) {
         socket.destroy();
         return;
       }
       const newline = input.indexOf("\n");
       if (newline < 0) return;
+      handled = true;
       try {
-        const request = JSON.parse(input.slice(0, newline)) as { token?: string; action?: string };
-        if (request.token !== token || request.action !== "shutdown") {
+        const request = JSON.parse(input.slice(0, newline)) as { token?: string; action?: string; input?: unknown };
+        if (request.token !== token) {
+          socket.end(`${JSON.stringify({ ok: false })}\n`);
+          return;
+        }
+        if (request.action === "computer" && onComputer) {
+          const status = request.input && typeof request.input === "object" &&
+            Object.keys(request.input).length === 1 && "action" in request.input && request.input.action === "status";
+          const parsed = status ? { success: true as const, data: { action: "status" as const } } : ComputerInputSchema.safeParse(request.input);
+          if (!parsed.success) throw new HostSpanError("VALIDATION_FAILED", "Invalid computer arguments.");
+          socket.setTimeout(15_000);
+          socket.end(`${JSON.stringify({ ok: true, result: await onComputer(parsed.data) })}\n`);
+          return;
+        }
+        if (request.action !== "shutdown") {
           socket.end(`${JSON.stringify({ ok: false })}\n`);
           return;
         }
@@ -76,8 +96,10 @@ export async function startDaemonControlServer(
           shutdownRequested = true;
           setImmediate(onShutdown);
         }
-      } catch {
-        socket.end(`${JSON.stringify({ ok: false })}\n`);
+      } catch (error) {
+        const known = asHostSpanError(error);
+        socket.end(`${JSON.stringify({ ok: false, error: { code: known.code, message: known.message,
+          retryable: known.retryable, details: known.details } })}\n`);
       }
     });
   });
@@ -119,7 +141,7 @@ export async function startDaemonControlServer(
   };
 }
 
-export async function requestDaemonShutdown(configPath: string): Promise<{ ok: true; pid: number } | null> {
+async function requestDaemonControl(configPath: string, request: Record<string, unknown>, timeoutMs = 2_000): Promise<Record<string, unknown> | null> {
   const control = daemonControlPaths(configPath);
   if (!existsSync(control.token_path)) return null;
   let token: string;
@@ -130,9 +152,9 @@ export async function requestDaemonShutdown(configPath: string): Promise<{ ok: t
   }
   if (!token) return null;
 
-  return new Promise<{ ok: true; pid: number } | null>((resolveRequest) => {
+  return new Promise<Record<string, unknown> | null>((resolveRequest) => {
     let settled = false;
-    const finish = (receipt: { ok: true; pid: number } | null) => {
+    const finish = (receipt: Record<string, unknown> | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -140,18 +162,18 @@ export async function requestDaemonShutdown(configPath: string): Promise<{ ok: t
       resolveRequest(receipt);
     };
     const socket = createConnection(control.address);
-    const timer = setTimeout(() => finish(null), 2_000);
+    const timer = setTimeout(() => finish(null), timeoutMs);
     timer.unref();
     let response = "";
     socket.setEncoding("utf8");
-    socket.once("connect", () => socket.write(`${JSON.stringify({ token, action: "shutdown" })}\n`));
+    socket.once("connect", () => socket.write(`${JSON.stringify({ ...request, token })}\n`));
     socket.on("data", (chunk: string) => {
       response += chunk;
+      if (response.length > 24 * 1024 * 1024) { finish(null); return; }
       const newline = response.indexOf("\n");
       if (newline < 0) return;
       try {
-        const parsed = JSON.parse(response.slice(0, newline)) as { ok?: boolean; pid?: number };
-        finish(parsed.ok === true && Number.isInteger(parsed.pid) && (parsed.pid ?? 0) > 0 ? { ok: true, pid: parsed.pid as number } : null);
+        finish(JSON.parse(response.slice(0, newline)) as Record<string, unknown>);
       } catch {
         finish(null);
       }
@@ -161,6 +183,20 @@ export async function requestDaemonShutdown(configPath: string): Promise<{ ok: t
       if (!settled) finish(null);
     });
   });
+}
+
+export async function requestDaemonShutdown(configPath: string): Promise<{ ok: true; pid: number } | null> {
+  const receipt = await requestDaemonControl(configPath, { action: "shutdown" });
+  return receipt?.ok === true && typeof receipt.pid === "number" && Number.isInteger(receipt.pid) && receipt.pid > 0
+    ? { ok: true, pid: receipt.pid } : null;
+}
+
+export async function requestDaemonComputer(configPath: string, input: DaemonComputerInput): Promise<Record<string, unknown>> {
+  const receipt = await requestDaemonControl(configPath, { action: "computer", input }, 15_000);
+  if (receipt?.ok === true && receipt.result && typeof receipt.result === "object") return receipt.result as Record<string, unknown>;
+  const error = receipt?.error as { code: HostSpanError["code"]; message: string; retryable: boolean; details: Record<string, unknown> } | undefined;
+  if (error) throw new HostSpanError(error.code, error.message, error.retryable, error.details);
+  throw new HostSpanError("TARGET_NOT_READY", "The running daemon did not return a computer result. It may need an update; input delivery is unknown. Do not replay input automatically.");
 }
 
 function readPidFile(path: string): number | null {

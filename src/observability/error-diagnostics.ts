@@ -32,13 +32,15 @@ const SAFE_ERROR_REASONS = new Set([
   "path_denied_by_policy",
   "portal_local_timeout",
   "portal_response",
+  "portal_capture_error",
+  "portal_capture_no_frame",
   "target_missing_exec_profile",
   "unknown_command",
 ]);
 
 const SAFE_ERROR_RESOURCES = new Set(["file_search", "process_output_spool"]);
 
-export function auditErrorDiagnostics(error: HostSpanError): Record<string, unknown> {
+export function auditErrorDiagnostics(error: Pick<HostSpanError, "code" | "retryable" | "details">): Record<string, unknown> {
   const metadata: Record<string, unknown> = {
     error_code: error.code,
     retryable: error.retryable,
@@ -48,6 +50,13 @@ export function auditErrorDiagnostics(error: HostSpanError): Record<string, unkn
   if (reason === "portal_local_timeout" || reason === "portal_response") {
     if (["CreateSession", "SelectDevices", "SelectSources", "Start"].includes(error.details.portal_phase as string)) metadata.portal_phase = error.details.portal_phase;
     if (reason === "portal_response" && Number.isSafeInteger(error.details.portal_response) && Number(error.details.portal_response) >= 0) metadata.portal_response = error.details.portal_response;
+  }
+  if (reason === "portal_capture_error" || reason === "portal_capture_no_frame") {
+    if (Number.isSafeInteger(error.details.capture_source_buffers) && Number(error.details.capture_source_buffers) >= 0) metadata.capture_source_buffers = error.details.capture_source_buffers;
+    for (const key of ["capture_pipeline_state", "capture_pending_state"]) {
+      if (["null", "ready", "paused", "playing", "void-pending"].includes(error.details[key] as string)) metadata[key] = error.details[key];
+    }
+    if (typeof error.details.capture_eos === "boolean") metadata.capture_eos = error.details.capture_eos;
   }
   if (reason === "oauth_scope") {
     const required = Array.isArray(error.details.required_scopes) ? error.details.required_scopes : [error.details.required_scope];
@@ -89,6 +98,10 @@ export function auditRequestDiagnostics(input: Record<string, unknown>): Record<
 
 export function auditResponseDiagnostics(result: Record<string, unknown>): Record<string, unknown> {
   const metadata: Record<string, unknown> = {};
+  if (result.observation_error_details && typeof result.observation_error_details === "object") {
+    metadata.observation_diagnostics = auditErrorDiagnostics({ code: "INTERNAL_ERROR", retryable: true,
+      details: result.observation_error_details as Record<string, unknown> });
+  }
   for (const key of ["state", "binary", "truncated", "truncated_before", "truncated_after", "returned_bytes", "returned_record_bytes", "match_count", "next_byte", "next_stdout_cursor", "next_stderr_cursor", "stdout_dropped_bytes", "stderr_dropped_bytes", "output_expired", "has_more_output", "exit_code", "input_delivered", "dispatched", "outcome_verified", "replayed", "observation_required", "coordinate_width", "coordinate_height"]) {
     const value = result[key];
     if (value === null || typeof value === "number" || typeof value === "boolean"
@@ -97,7 +110,9 @@ export function auditResponseDiagnostics(result: Record<string, unknown>): Recor
   for (const key of ["session_id", "observation_id"]) {
     if (typeof result[key] === "string" && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(result[key])) metadata[key] = result[key];
   }
-  if (result.desktop_backend === "wayland-portal") metadata.desktop_backend = result.desktop_backend;
+  if (["wayland-portal", "macos-native", "windows-native"].includes(result.desktop_backend as string)) metadata.desktop_backend = result.desktop_backend;
+  if (typeof result.display_id === "string" && /^[A-Za-z0-9_.\\:-]{1,128}$/.test(result.display_id)) metadata.display_id = result.display_id;
+  if (["screen_recording", "accessibility"].includes(result.required_os_permission as string)) metadata.required_os_permission = result.required_os_permission;
   if (result.desktop_scope === "monitor") metadata.desktop_scope = result.desktop_scope;
   if (result.window_attribution === "unavailable") metadata.window_attribution = result.window_attribution;
   if (typeof result.pipewire_node_id === "number" && Number.isSafeInteger(result.pipewire_node_id) && result.pipewire_node_id >= 0) metadata.pipewire_node_id = result.pipewire_node_id;

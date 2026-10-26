@@ -371,6 +371,22 @@ const desktopHelper = join(`${asarPath}.unpacked`, "dist", "src", "computer", "p
 if (!readFileSync(desktopHelper).equals(readFileSync(join(root, "src", "computer", "portal-worker.py")))) {
 	throw new Error("Unpacked desktop helper does not match the candidate source");
 }
+if (targetPlatform === "darwin" || targetPlatform === "win32") {
+	const helper = join(`${asarPath}.unpacked`, "dist", "src", "computer",
+		targetPlatform === "darwin" ? "native-macos" : "native-windows.ps1");
+	if (targetPlatform === "win32" && !readFileSync(helper).equals(readFileSync(join(root, "src", "computer", "native-windows.ps1")))) {
+		throw new Error("Windows desktop helper does not match the candidate source");
+	}
+	if (targetPlatform === process.platform && targetArch === process.arch) {
+		const result = spawnSync(targetPlatform === "darwin" ? helper : "powershell.exe",
+			targetPlatform === "darwin" ? [] : ["-NoProfile", "-Sta", "-File", helper], {
+				input: '{"id":"packaged-close","action":"close"}\n', encoding: "utf8", timeout: 30_000,
+			});
+		if (result.status !== 0 || JSON.parse(result.stdout.trim()).result?.closed !== true) {
+			throw new Error(`Packaged native desktop helper failed: ${result.status}`);
+		}
+	}
+}
 const { executable, cli, runtime, nativeModule, ptyModule, ripgrepModule, jobModule } = packagedPaths(asarPath, targetPlatform);
 if (!existsSync(executable))
 	throw new Error(`Packaged executable not found: ${executable}`);

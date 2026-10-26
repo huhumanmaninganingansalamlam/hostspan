@@ -13,7 +13,7 @@ export function dashboardHtml(): string {
 <div class="row"><h1 class="grow">HostSpan</h1><button id="doctor" class="secondary">Run Doctor</button><button id="restart" class="secondary">Restart</button><button id="refresh" class="secondary">Refresh</button><button id="toggle">Start</button></div>
 <div id="message" class="message" role="status" aria-live="polite"></div><details id="errorDetails" hidden><summary>Technical details</summary><pre id="errorText"></pre></details>
 <div id="summary" class="card">Loading…</div>
-<div class="card"><div class="cardhead"><b>Desktop control</b></div><div id="computer">Loading…</div></div>
+<div class="card"><div class="cardhead"><b>Computer use</b><button id="computerToggle">Loading…</button></div><div id="computer">Loading…</div></div>
 <div class="card"><div class="cardhead"><b>Health</b><span id="healthState" class="muted">Run Doctor for full checks.</span></div><div id="health"></div></div>
 <div class="card"><div class="cardhead"><b>Targets / Workspaces</b><button id="addWorkspace">Add Workspace</button></div><div id="targets"></div></div>
 <div class="card"><div class="cardhead"><b>Current activity</b><span id="activityCount" class="muted"></span></div><div id="activity"></div></div>
@@ -58,7 +58,10 @@ function updateWorkspaceSuggestions(path){
 function render(s){
   snapshot=s;
   const running=!!s.daemon?.running;
-  e('computer').innerHTML='<b>'+(s.computer?.configured?'Configured':'Off')+'</b><p>'+esc(s.computer?.message)+'</p><div class="muted">Profile: '+esc(s.computer?.profile)+'</div><div class="muted">Linux Wayland · screen sharing consent required. After input, check the returned image. If delivery is uncertain, observe before retrying.</div>';
+  const saved=!!s.computer?.configured,active=s.computer?.runtime?.enabled;
+  const pending=running&&(active==null||active!==saved);
+  e('computerToggle').textContent='Save '+(saved?'OFF':'ON');
+  e('computer').innerHTML='<b>Current: '+(!running?'OFF (daemon stopped)':active==null?'UNKNOWN':active?'ON':'OFF')+'</b> · Saved: '+(saved?'ON':'OFF')+(pending?' <span class="warn">Restart required — current setting still applies.</span>':'')+'<p>Default OFF. Controls desktop images and pointer/keyboard input. File, process and terminal permissions are separate.</p><p>'+esc(s.computer?.message)+'</p><div class="muted">Session: '+esc(s.computer?.runtime?.state??'unknown')+'. Finish current desktop calls and return shared ownership before Restart. Restart ends desktop sharing. OS consent is still required; saving ON never opens a dialog.</div><div class="muted">Profile: '+esc(s.computer?.profile)+'</div>';
   e('toggle').textContent=running?'Stop':'Start';
   e('toggle').className=running?'secondary':'';
   e('restart').disabled=!running;
@@ -81,6 +84,7 @@ async function attach(id,ro){try{await window.hostspan.attach(id,ro)}catch(err){
 e('refresh').onclick=async()=>{e('refresh').disabled=true;setMessage('Refreshing…');try{render(await window.hostspan.snapshot());setMessage('Status refreshed.')}catch(err){setMessage((err.message||String(err))+' Click Refresh to retry.',true)}finally{e('refresh').disabled=false}};
 e('toggle').onclick=async()=>{const action=snapshot?.daemon?.running?'stop':'start';e('toggle').disabled=true;setMessage(action==='start'?'Starting…':'Stopping…');try{const result=await window.hostspan.daemon(action);setMessage(result?.cancelled?'Action cancelled.':'HostSpan '+(action==='stop'?'stopped.':'started.'));await refresh()}catch(err){setMessage((err.message||String(err))+' Refresh status before retrying.',true)}finally{e('toggle').disabled=false}};
 e('restart').onclick=async()=>{try{const result=await window.hostspan.daemon('restart');if(result?.cancelled){setMessage('Restart cancelled.');return}setMessage('HostSpan restarted.');await refresh()}catch(err){setMessage(err.message||String(err),true)}};
+e('computerToggle').onclick=async()=>{e('computerToggle').disabled=true;try{await window.hostspan.setComputer(!snapshot?.computer?.configured);setMessage('Computer-use setting saved. '+(snapshot?.daemon?.running?'Current setting still applies. Finish current desktop work, then use Restart to apply.':'It will apply when HostSpan starts.'));await refresh()}catch(err){setMessage(err.message||String(err),true)}finally{e('computerToggle').disabled=false}};
 e('doctor').onclick=async()=>{e('doctor').disabled=true;try{e('healthState').textContent='Checking…';renderHealth(await window.hostspan.doctor())}catch(err){e('healthState').textContent='Check failed. Run Doctor to retry.';e('healthState').className='bad';setMessage(err.message||String(err),true)}finally{e('doctor').disabled=false}};
 e('addWorkspace').onclick=()=>{resetWorkspaceDialog();e('workspaceDialog').showModal()};
 e('cancelWorkspace').onclick=()=>e('workspaceDialog').close();

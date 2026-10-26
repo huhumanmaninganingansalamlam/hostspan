@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 
 contextBridge.exposeInMainWorld("hostspan", {
   snapshot: () => ipcRenderer.invoke("hostspan:snapshot"),
+  setComputer: (enabled: boolean) => ipcRenderer.invoke("hostspan:set-computer", enabled),
   daemon: (action: "start" | "stop" | "restart") => ipcRenderer.invoke("hostspan:daemon", action),
   doctor: () => ipcRenderer.invoke("hostspan:doctor"),
   chooseWorkspace: () => ipcRenderer.invoke("hostspan:choose-workspace"),

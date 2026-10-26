@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSyn
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createOAuthSetup, rotateOAuthApprovalSecret } from "../auth/oauth-service.js";
-import { addLocalWorkspace, buildAdminSnapshot, removeLocalWorkspace, resolveTerminalSession } from "../admin/snapshot.js";
+import { addLocalWorkspace, buildAdminSnapshot, computerRuntimeState, removeLocalWorkspace, resolveTerminalSession, setComputerEnabled } from "../admin/snapshot.js";
 import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath, oauthApprovalSecretPath } from "../config/paths.js";
 import { createInitialConfig } from "../config/defaults.js";
@@ -21,10 +21,12 @@ import { ProcessesRepo } from "../state/processes-repo.js";
 import { TargetRegistry } from "../targets/registry.js";
 import { PROTOCOL_VERSION, SERVER_VERSION } from "../version.js";
 import { runDoctor } from "../diagnostics/doctor.js";
-import { daemonStatus, removeDaemonPid, startDaemon, startDaemonControlServer, stopDaemon, writeDaemonPid } from "../daemon/control.js";
+import { daemonStatus, removeDaemonPid, requestDaemonComputer, startDaemon, startDaemonControlServer, stopDaemon, writeDaemonPid } from "../daemon/control.js";
 import { installSystemdService, runServiceCommand } from "../services/systemd.js";
 import { runSmoke } from "./smoke.js";
 import { createRuntime, runtimeReadiness } from "../runtime/create-runtime.js";
+import { ComputerInputSchema, supportedDesktopSession } from "../computer/portal.js";
+import { errorResult, requestId, successResult } from "../mcp/result.js";
 
 function flag(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -66,7 +68,7 @@ function isLoopbackHost(host: string): boolean {
 }
 
 function usage(): string {
-  return `HostSpan ${SERVER_VERSION}\n\nCommands:\n  init [--config PATH]\n  serve [--config PATH]\n  daemon start|stop|status [--config PATH]\n  doctor [--config PATH]\n  computer status|enable|disable [--json] [--config PATH]\n    Configure desktop control; use the connected MCP assistant to observe and act.\n  smoke --target TARGET [--config PATH]\n  status [--verbose] [--config PATH]\n  admin snapshot [--recent N] [--config PATH]\n  terminal list|attach --process PROCESS_ID [--read-only] [--config PATH]\n  targets list|add|remove ... [--config PATH]\n  oauth init --public-url https://host/mcp [--config PATH]\n  oauth status [--config PATH]\n  oauth rotate-secret [--config PATH]\n  policy validate [--config PATH]\n  print-toolset\n  logs [--follow] [--config PATH]\n  support-export [PATH] [--config PATH]\n  service install|start|stop|restart|status [--config PATH]\n  --version\n`;
+  return `HostSpan ${SERVER_VERSION}\n\nCommands:\n  init [--config PATH]\n  serve [--config PATH]\n  daemon start|stop|status [--config PATH]\n  doctor [--config PATH]\n  computer status|enable|disable [--json] [--config PATH]\n  computer inspect [--config PATH]\n  computer call --input JSON [--config PATH]\n    Use this profile owner's authenticated daemon and existing desktop session.\n  smoke --target TARGET [--config PATH]\n  status [--verbose] [--config PATH]\n  admin snapshot [--recent N] [--config PATH]\n  terminal list|attach --process PROCESS_ID [--read-only] [--config PATH]\n  targets list|add|remove ... [--config PATH]\n  oauth init --public-url https://host/mcp [--config PATH]\n  oauth status [--config PATH]\n  oauth rotate-secret [--config PATH]\n  policy validate [--config PATH]\n  print-toolset\n  logs [--follow] [--config PATH]\n  support-export [PATH] [--config PATH]\n  service install|start|stop|restart|status [--config PATH]\n  --version\n`;
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
@@ -87,28 +89,45 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   const configPath = resolve(flag(argv, "--config") ?? defaultConfigPath());
   if (command === "computer") {
     const action = argv[1] ?? "status";
-    if (!["status", "enable", "disable"].includes(action)) throw cliValidationError("computer requires status, enable, or disable");
+    if (action === "inspect") {
+      print(await requestDaemonComputer(configPath, { action: "status" }));
+      return 0;
+    }
+    if (action === "call") {
+      const raw = flag(argv, "--input");
+      let input: unknown;
+      try { input = JSON.parse(raw ?? ""); }
+      catch { throw cliValidationError("computer call requires --input JSON"); }
+      const parsed = ComputerInputSchema.safeParse(input);
+      if (!parsed.success) throw cliValidationError("Invalid computer arguments.");
+      const result = await requestDaemonComputer(configPath, parsed.data);
+      print(result);
+      return result.isError ? 1 : 0;
+    }
+    if (!["status", "enable", "disable"].includes(action)) throw cliValidationError("computer requires status, enable, disable, inspect, or call");
     const config = loadConfig(configPath);
     const changed = action !== "status" && Boolean(config.computer) !== (action === "enable");
     if (changed) {
-      if (action === "enable") config.computer = { backend: "wayland-portal" };
-      else delete config.computer;
-      writeConfigAtomic(configPath, config);
+      setComputerEnabled(configPath, action === "enable");
     }
     const running = daemonStatus(configPath).running;
-    const configured = Boolean(config.computer);
-    const supported = process.platform === "linux" && process.env.XDG_SESSION_TYPE === "wayland";
+    const configured = action === "status" ? Boolean(config.computer) : action === "enable";
+    const runtime = await computerRuntimeState(configPath);
+    const restartRequired = running && (runtime.enabled === null || runtime.enabled !== configured);
+    const supported = typeof runtime.supported_session === "boolean" ? runtime.supported_session : supportedDesktopSession();
     const message = changed ? `Desktop control ${configured ? "enabled" : "disabled"} in this profile.`
       : `Desktop control is ${configured ? "configured" : "off"}.`;
-    const next = changed && running ? "Restart this daemon explicitly when safe to apply the change. Existing work was not interrupted."
-      : configured ? "Start HostSpan in your logged-in Wayland session. Ask your MCP assistant to open computer, select a screen in the OS dialog, then observe and act."
+    const next = restartRequired ? "Restart this daemon explicitly when safe to apply the change. Existing work was not interrupted."
+      : configured && running ? "Computer-use is ON in the running daemon. Existing OS permissions and session state still apply."
+      : configured ? "Start HostSpan in your logged-in desktop. Ask your MCP assistant to open computer, complete any OS permission dialog, then observe and act."
       : "Run hostspan computer enable with the same --config to enable desktop control.";
-    const result = { configured, supported_session: supported, changed, daemon_running: running,
+    const result = { configured, enabled_by_default: false, runtime, restart_required: restartRequired,
+      supported_session: supported, changed, daemon_running: running,
       message, next, config_path: configPath,
       runtime_note: "This describes saved configuration, not an active desktop grant. Remote callers also need hostspan.computer.",
-      ...(!supported && configured ? { limitation: "GUI control currently requires Linux Wayland; Windows/macOS/X11 are not supported." } : {}) };
+      ...(!supported && configured ? { limitation: "This session does not provide a supported interactive desktop." } : {}) };
     if (has(argv, "--json")) print(result);
-    else process.stdout.write(`${message}\n${next}\n${result.runtime_note}\n${result.limitation ?? ""}\nProfile: ${configPath}\n`);
+    else process.stdout.write(`${message}\nRunning computer-use: ${runtime.enabled === null ? "UNKNOWN" : runtime.enabled ? "ON" : "OFF"}${restartRequired ? " (restart required to apply saved setting)" : ""}\n${next}\n${result.runtime_note}\n${result.limitation ?? ""}\nProfile: ${configPath}\n`);
     return 0;
   }
   if (command === "daemon") {
@@ -241,7 +260,17 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const control = await (async () => {
       let started: Awaited<ReturnType<typeof startDaemonControlServer>> | undefined;
       try {
-        started = await startDaemonControlServer(configPath, requestShutdown);
+        started = await startDaemonControlServer(configPath, requestShutdown, async (input) => {
+          const id = requestId();
+          const context = { toolset_hash: TOOLSET_HASH, policy_epoch: runtime.config.policy_epoch };
+          try {
+            const result = input.action === "status" ? await runtime.handlers.system_status({}, id)
+              : await runtime.handlers.computer(input, id, { caller_mode: "local" });
+            return successResult(context, result, id, true);
+          } catch (error) {
+            return errorResult(context, error, id, true);
+          }
+        });
         runtime.activate();
         return started;
       } catch (error) {

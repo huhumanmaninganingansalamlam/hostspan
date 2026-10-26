@@ -137,7 +137,7 @@ export const HostSpanConfigSchema = z
       })
       .strict(),
     terminal: TerminalConfigSchema.optional(),
-    computer: z.object({ backend: z.literal("wayland-portal") }).strict().optional(),
+    computer: z.object({ backend: z.enum(["wayland-portal", "native"]) }).strict().optional(),
     oauth: OAuthConfigSchema.optional(),
     targets: z.record(z.string().min(1), TargetConfigSchema),
     exec_profiles: z.record(z.string().min(1), ExecProfileSchema),

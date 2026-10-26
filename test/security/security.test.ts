@@ -2,14 +2,15 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { createServer } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { v7 as uuidv7 } from "uuid";
 import { PolicyGlobSchema, TerminalConfigSchema, type HostSpanConfig } from "../../src/config/schema.js";
 import { loadConfig } from "../../src/config/loader.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
-import { daemonStatus, requestDaemonShutdown, startDaemonControlServer } from "../../src/daemon/control.js";
+import { daemonStatus, requestDaemonComputer, requestDaemonShutdown, startDaemonControlServer } from "../../src/daemon/control.js";
+import { HostSpanError } from "../../src/errors.js";
 import { main } from "../../src/cli/index.js";
 import { createRuntime } from "../../src/runtime/create-runtime.js";
 import { HostSpanLogger } from "../../src/observability/logger.js";
@@ -63,6 +64,45 @@ function fixture(options: { terminal?: boolean } = {}): { root: string; configPa
 }
 
 describe("security and operational boundaries", () => {
+  it("uses the authenticated running daemon for CLI computer calls and preserves denials", async () => {
+    const { root, configPath } = fixture();
+    const calls: unknown[] = [];
+    let transportDenial = true;
+    const control = await startDaemonControlServer(configPath, () => {}, async (input) => {
+      calls.push(input);
+      if (!transportDenial) return { isError: true, structuredContent: { request_id: "req_cli_denied", error: { code: "SCOPE_DENIED" } } };
+      throw new HostSpanError("SCOPE_DENIED", "Desktop control is off.");
+    });
+    try {
+      const denied = await new Promise<string>((resolveReply, reject) => {
+        const socket = createConnection(control.address);
+        let reply = "";
+        socket.on("error", reject);
+        socket.on("connect", () => socket.write(`${JSON.stringify({ token: "incorrect", action: "computer", input: { action: "open" } })}\n`));
+        socket.on("data", (chunk) => { reply += chunk.toString(); });
+        socket.on("end", () => resolveReply(reply));
+      });
+      expect(JSON.parse(denied)).toEqual({ ok: false });
+      expect(calls).toEqual([]);
+      await expect(requestDaemonComputer(configPath, { action: "open" })).rejects.toMatchObject({ code: "SCOPE_DENIED" });
+      expect(calls).toEqual([{ action: "open" }]);
+      await expect(main(["computer", "call", "--input", '{"action":"open","extra":true}', "--config", configPath]))
+        .rejects.toMatchObject({ code: "VALIDATION_FAILED" });
+      expect(calls).toHaveLength(1);
+      transportDenial = false;
+      const output = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+      try {
+        expect(await main(["computer", "call", "--input", '{"action":"open"}', "--config", configPath])).toBe(1);
+        const payload = JSON.parse(String(output.mock.calls[0]?.[0]));
+        expect(payload.structuredContent).toEqual({ request_id: "req_cli_denied", error: { code: "SCOPE_DENIED" } });
+      } finally {
+        output.mockRestore();
+      }
+      expect(readFileSync(join(root, "state", "daemon-control-token"), "utf8").trim()).not.toBe("");
+    } finally {
+      await control.close();
+    }
+  });
   it("releases daemon listeners and credentials when runtime activation fails", async () => {
     const { root, configPath } = fixture();
     const probe = createServer();

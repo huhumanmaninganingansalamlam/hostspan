@@ -14,7 +14,8 @@ from dbus.mainloop.glib import DBusGMainLoop
 import gi
 
 gi.require_version("Gst", "1.0")
-from gi.repository import GLib, Gst
+gi.require_version("Gtk", "3.0")
+from gi.repository import GLib, Gst, Gtk, Gdk
 
 DBusGMainLoop(set_as_default=True)
 Gst.init(None)
@@ -35,6 +36,56 @@ clipboard_enabled = False
 clipboard_text = b""
 paste_wait = None
 paste_transferred = False
+activity_window = None
+activity_label = None
+activity_timer = None
+
+
+def activity(active=None):
+    """Local, noninteractive status; never display caller text or steal focus."""
+    global activity_window, activity_label, activity_timer
+    if activity_timer is not None:
+        GLib.source_remove(activity_timer)
+        activity_timer = None
+    if active is None:
+        if activity_window:
+            activity_window.destroy()
+            activity_window = activity_label = None
+        return False
+    if activity_window is None:
+        # Wayland toplevels cannot honor accept_focus=False. Use the existing
+        # XWayland display for this noninteractive badge; capture/input stay portal-native.
+        display_name = os.environ.get("DISPLAY")
+        display = Gdk.Display.open(display_name) if display_name else None
+        if display is None or display.get_name() != display_name:
+            raise RuntimeError("The non-focusing activity indicator requires the desktop X11 display")
+        activity_window = Gtk.Window(title="HostSpan computer use")
+        activity_window.set_screen(display.get_default_screen())
+        activity_window.set_decorated(False)
+        activity_window.set_accept_focus(False)
+        activity_window.set_focus_on_map(False)
+        activity_window.set_keep_above(True)
+        activity_window.set_skip_taskbar_hint(True)
+        activity_window.set_skip_pager_hint(True)
+        activity_window.set_type_hint(Gdk.WindowTypeHint.NOTIFICATION)
+        activity_window.connect("realize", lambda window: window.get_window().set_pass_through(True))
+        activity_label = Gtk.Label()
+        activity_label.set_margin_start(14)
+        activity_label.set_margin_end(14)
+        activity_label.set_margin_top(8)
+        activity_label.set_margin_bottom(8)
+        activity_window.add(activity_label)
+    activity_label.set_text("● HostSpan · Using this computer" if active else "HostSpan · Activity finished")
+    activity_window.show_all()
+    activity_window.get_display().flush()
+    if not active:
+        def hide():
+            global activity_timer
+            activity_timer = None
+            activity_window.hide()
+            return False
+        activity_timer = GLib.timeout_add(1000, hide)
+    return False
 
 
 def selection_transfer(handle, mime, serial):
@@ -147,6 +198,7 @@ def request(method, *args, phase, wait_for_consent=False, **values):
 def close_session():
     global session, stream, stream_size, pipewire_fd, closed_match, clipboard_enabled, clipboard_text
     previous, session = session, None
+    activity()
     stream = stream_size = None
     clipboard_enabled = False
     clipboard_text = b""
@@ -220,10 +272,19 @@ def observe():
     if not session or pipewire_fd is None:
         raise RuntimeError("Desktop session is closed")
     pipeline = Gst.parse_launch(
-        f"pipewiresrc fd={pipewire_fd} path={int(stream)} do-timestamp=true ! "
+        f"pipewiresrc name=capture_source fd={pipewire_fd} path={int(stream)} do-timestamp=true ! "
         "videoconvert ! pngenc snapshot=true ! appsink name=frame sync=false max-buffers=1 drop=true emit-signals=true")
     capture_wait = GLib.MainLoop()
     samples = []
+    source_buffers = 0
+
+    def source_frame(pad, info):
+        nonlocal source_buffers
+        source_buffers += 1
+        return Gst.PadProbeReturn.OK
+
+    source_pad = pipeline.get_by_name("capture_source").get_static_pad("src")
+    probe = source_pad.add_probe(Gst.PadProbeType.BUFFER, source_frame)
 
     def frame_ready(sink):
         samples.append(sink.emit("pull-sample"))
@@ -240,9 +301,15 @@ def observe():
             capture_wait.run()
         sample = samples[0] if samples else None
         if sample is None:
-            message = pipeline.get_bus().pop_filtered(Gst.MessageType.ERROR)
-            reason = str(message.parse_error()[0]) if message else "No frame within capture deadline"
-            raise RuntimeError(reason)
+            message = pipeline.get_bus().pop_filtered(Gst.MessageType.ERROR | Gst.MessageType.EOS)
+            failed = message is not None and message.type == Gst.MessageType.ERROR
+            _, current, pending = pipeline.get_state(0)
+            raise PortalRequestError(str(message.parse_error()[0]) if failed else "No frame within capture deadline",
+                                     reason="portal_capture_error" if failed else "portal_capture_no_frame",
+                                     capture_source_buffers=source_buffers,
+                                     capture_pipeline_state=current.value_nick,
+                                     capture_pending_state=pending.value_nick,
+                                     capture_eos=message is not None and message.type == Gst.MessageType.EOS)
         buffer = sample.get_buffer()
         if buffer.get_size() > 16 * 1024 * 1024:
             raise RuntimeError("Captured PNG exceeds 16 MiB")
@@ -256,14 +323,16 @@ def observe():
         if GLib.MainContext.default().find_source_by_id(timer):
             GLib.source_remove(timer)
         sink.disconnect(handler)
+        source_pad.remove_probe(probe)
         pipeline.set_state(Gst.State.NULL)
 
 
-def key(keysym):
+def key(code, physical=False):
+    notify = remote.NotifyKeyboardKeycode if physical else remote.NotifyKeyboardKeysym
     try:
-        remote.NotifyKeyboardKeysym(session, options(), dbus.Int32(keysym), dbus.UInt32(1))
+        notify(session, options(), dbus.Int32(code), dbus.UInt32(1))
     finally:
-        remote.NotifyKeyboardKeysym(session, options(), dbus.Int32(keysym), dbus.UInt32(0))
+        notify(session, options(), dbus.Int32(code), dbus.UInt32(0))
 
 
 def dispatch(command):
@@ -320,9 +389,26 @@ def dispatch(command):
                 GLib.source_remove(timer)
             paste_wait = None
     elif action == "key":
-        key({"Enter": 0xFF0D, "Tab": 0xFF09, "Escape": 0xFF1B, "Backspace": 0xFF08,
-             "Delete": 0xFFFF, "Left": 0xFF51, "Up": 0xFF52, "Right": 0xFF53,
-             "Down": 0xFF54, "Home": 0xFF50, "End": 0xFF57}[command["key"]])
+        physical = {"KeyA": 30, "KeyB": 48, "KeyC": 46, "KeyD": 32, "KeyE": 18, "KeyF": 33,
+                    "KeyG": 34, "KeyH": 35, "KeyI": 23, "KeyJ": 36, "KeyK": 37, "KeyL": 38,
+                    "KeyM": 50, "KeyN": 49, "KeyO": 24, "KeyP": 25, "KeyQ": 16, "KeyR": 19,
+                    "KeyS": 31, "KeyT": 20, "KeyU": 22, "KeyV": 47, "KeyW": 17, "KeyX": 45,
+                    "KeyY": 21, "KeyZ": 44}
+        symbols = {"Enter": 0xFF0D, "Tab": 0xFF09, "Escape": 0xFF1B, "Backspace": 0xFF08,
+                   "Delete": 0xFFFF, "Left": 0xFF51, "Up": 0xFF52, "Right": 0xFF53,
+                   "Down": 0xFF54, "Home": 0xFF50, "End": 0xFF57}
+        name = command["key"]
+        modifiers = command.get("modifiers", [])
+        if name not in physical and name not in symbols or modifiers not in ([], ["Shift"]):
+            raise ValueError("Unsupported key or modifiers")
+        shifted = modifiers == ["Shift"]
+        try:
+            if shifted:
+                remote.NotifyKeyboardKeycode(session, options(), dbus.Int32(42), dbus.UInt32(1))
+            key(physical[name] if name in physical else symbols[name], physical=name in physical)
+        finally:
+            if shifted:
+                remote.NotifyKeyboardKeycode(session, options(), dbus.Int32(42), dbus.UInt32(0))
     elif action == "scroll":
         remote.NotifyPointerAxis(session, options(finish=True), float(command["dx"]), float(command["dy"]))
     else:
@@ -332,12 +418,19 @@ def dispatch(command):
 
 
 def reply(command):
+    using_desktop = False
     try:
+        if session and command.get("action") in ("observe", "move", "click", "key", "text", "scroll"):
+            activity(True)
+            using_desktop = True
         result = {"id": command["id"], "result": dispatch(command)}
     except Exception as error:
         result = {"id": command.get("id"), "error": str(error)}
         if isinstance(error, PortalRequestError):
             result["error_details"] = error.details
+    finally:
+        if using_desktop and session:
+            activity(False)
     print(json.dumps(result, ensure_ascii=True), flush=True)
     return False
 

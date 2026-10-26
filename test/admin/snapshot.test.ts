@@ -1,9 +1,9 @@
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import Database from "better-sqlite3";
-import { addLocalWorkspace, buildAdminSnapshot, removeLocalWorkspace } from "../../src/admin/snapshot.js";
+import { addLocalWorkspace, buildAdminSnapshot, computerRuntimeState, removeLocalWorkspace, setComputerEnabled } from "../../src/admin/snapshot.js";
 import {
   daemonStatus,
   removeDaemonPid,
@@ -12,6 +12,8 @@ import {
   stopDaemon,
   writeDaemonPid,
 } from "../../src/daemon/control.js";
+import { PortalDesktop } from "../../src/computer/portal.js";
+import { createInitialConfig } from "../../src/config/defaults.js";
 import { createRuntime } from "../../src/runtime/create-runtime.js";
 import { loadConfig } from "../../src/config/loader.js";
 import { runDoctor } from "../../src/diagnostics/doctor.js";
@@ -68,6 +70,91 @@ function fixture() {
 }
 
 describe("local admin snapshot", () => {
+  it("defaults computer-use OFF and applies explicit ON/OFF only at the restart boundary", async () => {
+    const { configPath } = fixture();
+    expect(createInitialConfig().computer).toBeUndefined();
+    const before = loadConfig(configPath);
+    const run = vi.spyOn(PortalDesktop.prototype, "run").mockResolvedValue({ state: "ready" });
+    let runtime = createRuntime(configPath);
+    const denied = async () => {
+      const session_id = "0199e78d-4c00-7000-8000-000000000901";
+      for (const input of [{ action: "open" as const }, { action: "observe" as const, session_id },
+        { action: "key" as const, key: "Enter" as const, session_id, observation_id: session_id, idempotency_key: "off-key" },
+        { action: "click" as const, button: "left" as const, x: 0, y: 0, session_id, observation_id: session_id, idempotency_key: "off-click" }]) {
+        await expect(runtime.handlers.computer(input, "req_off")).rejects.toMatchObject({ code: "SCOPE_DENIED" });
+      }
+    };
+    try {
+      await denied();
+      setComputerEnabled(configPath, true);
+      await denied(); // Saved ON must not masquerade as applied ON.
+      expect(run).not.toHaveBeenCalled(); // Saving ON never opens a portal/consent dialog.
+      await runtime.close();
+      runtime = createRuntime(configPath);
+      expect(run).not.toHaveBeenCalled(); // Starting enabled also never opens a portal.
+      await runtime.handlers.computer({ action: "open" }, "req_explicit_open");
+      expect(run).toHaveBeenCalledTimes(1);
+      setComputerEnabled(configPath, false);
+      expect((await runtime.handlers.system_status({}, "req_pending_off") as { backends: { computer: { configured: boolean } } }).backends.computer.configured).toBe(true);
+      await runtime.close();
+      runtime = createRuntime(configPath);
+      await denied();
+      expect((await runtime.handlers.system_status({}, "req_applied_off") as { backends: { computer: { state: string } } }).backends.computer.state).toBe("disabled");
+      expect(loadConfig(configPath)).toEqual(before); // Terminal/targets/policy unchanged.
+    } finally {
+      await runtime.close();
+      run.mockRestore();
+    }
+  });
+
+  it("reports effective state independently of saved state and fails unknown rather than claiming OFF", async () => {
+    const { configPath } = fixture();
+    writeDaemonPid(configPath);
+    const inputs: unknown[] = [];
+    const control = await startDaemonControlServer(configPath, () => {}, async (input) => {
+      inputs.push(input);
+      return { structuredContent: { backends: { computer: { configured: true, state: "ready", session_id: "preserved" } } } };
+    });
+    try {
+      expect(buildAdminSnapshot(configPath).computer.configured).toBe(false);
+      expect(await computerRuntimeState(configPath)).toMatchObject({ enabled: true, state: "ready", session_id: "preserved" });
+      expect(inputs).toEqual([{ action: "status" }]);
+      await control.close();
+      expect(await computerRuntimeState(configPath)).toMatchObject({ enabled: null, state: "unknown" });
+    } finally {
+      removeDaemonPid(configPath);
+    }
+    expect(await computerRuntimeState(configPath)).toMatchObject({ enabled: false, state: "stopped" });
+  });
+
+  it("reads only existing loopback system_status when a running older daemon lacks computer IPC", async () => {
+    const { configPath } = fixture();
+    writeDaemonPid(configPath);
+    const control = await startDaemonControlServer(configPath, () => {});
+    const fetchStatus = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      result: { structuredContent: { backends: { computer: { configured: true, state: "ready", session_id: "original" } } } },
+    })));
+    try {
+      expect(await computerRuntimeState(configPath)).toMatchObject({ enabled: true, session_id: "original" });
+      expect(fetchStatus).toHaveBeenCalledTimes(1);
+      const [url, options] = fetchStatus.mock.calls[0] ?? [];
+      expect(url).toBe("http://127.0.0.1:39393/mcp");
+      expect(JSON.parse(String(options?.body))).toMatchObject({ method: "tools/call", params: { name: "system_status", arguments: {} } });
+      fetchStatus.mockResolvedValue(new Response("", { status: 401 }));
+      expect(await computerRuntimeState(configPath)).toMatchObject({ enabled: null, state: "unknown" });
+      const config = loadConfig(configPath);
+      config.server.listen_host = "192.0.2.1";
+      writeConfigAtomic(configPath, config);
+      fetchStatus.mockClear();
+      expect(await computerRuntimeState(configPath)).toMatchObject({ enabled: null, state: "unknown" });
+      expect(fetchStatus).not.toHaveBeenCalled();
+    } finally {
+      fetchStatus.mockRestore();
+      await control.close();
+      removeDaemonPid(configPath);
+    }
+  });
+
   it("runs Doctor without creating or migrating the durable state database", async () => {
     const { configPath, dataDir } = fixture();
     const statePath = join(dataDir, "state.db");

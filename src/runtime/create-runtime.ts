@@ -1,4 +1,4 @@
-import { PortalDesktop } from "../computer/portal.js";
+import { PortalDesktop, desktopBackend, supportedDesktopSession } from "../computer/portal.js";
 import { HostSpanError } from "../errors.js";
 import { spawnSync } from "node:child_process";
 import { hostname } from "node:os";
@@ -153,7 +153,9 @@ export function createRuntime(
   const db = openDatabase(join(config.server.data_dir, "state.db"));
   const operations = new OperationsRepo(db);
   const processes = new ProcessesRepo(db);
-  const computer = config.computer ? new PortalDesktop(operations) : undefined;
+  const computer = config.computer ? new PortalDesktop(operations, config.computer.backend) : undefined;
+  let computerSession: { session_id: string; initiated_at: string; initiated_request_id: string; initiated_by: ToolCaller;
+    last_request_id: string; last_request_at: string; last_action: string } | undefined;
   const transactions = new TransactionsRepo(db);
   const audit = new AuditRepo(db, {
     maxAgeDays: config.retention.audit_days,
@@ -331,9 +333,19 @@ export function createRuntime(
   };
 
   const handlers: HostSpanToolHandlers = {
-    computer: (input, requestId, caller = { caller_mode: "local" }) => traced("computer", input, requestId, () => {
+    computer: (input, requestId, caller = { caller_mode: "local" }) => traced("computer", input, requestId, async () => {
       if (!computer) throw new HostSpanError("SCOPE_DENIED", "Desktop control is off. Run hostspan computer enable with the intended --config, then explicitly restart that daemon to apply it.");
-      return computer.run(input);
+      const result = await computer.run(input);
+      const sessionId = computer.status().session_id;
+      if (typeof sessionId === "string") {
+        const now = new Date().toISOString();
+        if (computerSession?.session_id !== sessionId) computerSession = {
+          session_id: sessionId, initiated_at: now, initiated_request_id: requestId, initiated_by: { ...caller },
+          last_request_id: requestId, last_request_at: now, last_action: input.action,
+        };
+        else Object.assign(computerSession, { last_request_id: requestId, last_request_at: now, last_action: input.action });
+      } else computerSession = undefined;
+      return result;
     }, caller),
     system_status: (_input: SystemStatusInput, requestId: string) =>
       traced("system_status", {}, requestId, () => {
@@ -354,9 +366,11 @@ export function createRuntime(
               ready: processReady,
             },
             terminal: { name: "hostspan_pty", ready: terminalReady, configured: Boolean(config.terminal) },
-            computer: { name: "wayland-portal", configured: Boolean(computer),
-              supported_session: process.platform === "linux" && process.env.XDG_SESSION_TYPE === "wayland",
-              scope: "daemon_desktop_portal_selection", display_selection: "OS_consent",
+            computer: { name: config.computer?.backend ?? desktopBackend(), configured: Boolean(computer),
+              ...(computerSession?.session_id === computer?.status().session_id ? { session_activity: computerSession } : {}),
+              project_attribution: "unavailable",
+              supported_session: supportedDesktopSession(),
+              scope: "daemon_desktop", display_selection: config.computer?.backend === "native" ? "primary_display" : "OS_consent",
               remote_ssh_desktop: false, display_enumeration: false,
               ...(computer ? computer.status() : { state: "disabled", message: "Desktop control is off. Use hostspan computer enable to configure it." }) },
             search_concurrency: searchLimiter.snapshot(),

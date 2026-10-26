@@ -2,6 +2,14 @@
 
 Entries describe versioned behavior. Publication is established by the corresponding Git tag and GitHub Release; notes alone do not prove publication.
 
+## 0.12.0
+
+- Keep computer-use OFF in new profiles and expose Save ON/OFF plus saved, applied, pending-restart and unknown status in the existing dashboard and CLI. Applying a change remains an explicit safe daemon restart; enabling never opens an OS consent dialog. File/process/terminal permissions stay separate, and existing explicit ON profiles are preserved.
+- Show a nonfocusing, pointer-transparent activity indicator while desktop automation runs, then finish and hide it on return. Add physical letter keys and balanced Shift handling, keep slow capture replies on their original session, invalidate stale frame readiness after capture failure, and verify actual Windows pointer placement before click delivery.
+- Add native macOS 14+ ScreenCaptureKit/CoreGraphics and interactive Windows GDI/SendInput desktop helpers to the existing computer session, observation and input-replay lifecycle. Keep OS permission and Windows Session 0 restrictions explicit.
+- Bundle the universal macOS helper in native desktop packages and CLI packages built on macOS. The Linux-built portable CLI does not include that helper; the normal macOS desktop package provides Mac computer control. Guest loopback MCP can be carried through existing private-IP SSH without changing non-loopback OAuth requirements.
+- Preserve safe capture failure diagnostics through standalone observation and post-input capture, including source buffers, GStreamer state and EOS. The recurring shared Wayland no-frame cause remains unconfirmed.
+
 ## 0.11.4
 
 - Keep human portal screen selection pending for the existing desktop session until the OS responds, the caller closes it or the worker ends. Remove the local consent expiry and parent open watchdog; capture and input deadlines remain bounded.
