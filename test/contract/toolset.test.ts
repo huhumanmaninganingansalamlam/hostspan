@@ -18,7 +18,10 @@ const modernMeta = {
   "io.modelcontextprotocol/clientCapabilities": {},
 };
 
-const HOSTSPAN_V3_5_APPROVED_TOOLSET_HASH = "sha256:29de3738393749c0bdd3b081121bf1d3adb5dde5fd9d752471503842cd0cdf7e";
+// Windows alone advertises Alt/Meta for native app-switch chords.
+const HOSTSPAN_V3_5_APPROVED_TOOLSET_HASH = process.platform === "win32"
+  ? "sha256:8d08249ef4c5b85c09a16f04143f341e75d1b161eae7312bb06b0ccaf630f499"
+  : "sha256:29de3738393749c0bdd3b081121bf1d3adb5dde5fd9d752471503842cd0cdf7e";
 
 async function toolsListOnce(handler: ReturnType<typeof createMcpHandler>, id: number, version = "2026-07-28"): Promise<Array<Record<string, unknown>>> {
   const modern = version === "2026-07-28";
