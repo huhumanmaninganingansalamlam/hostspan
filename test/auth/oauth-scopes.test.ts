@@ -147,7 +147,7 @@ function fakeHandlers(calls: string[]): HostSpanToolHandlers {
   };
 }
 
-function testApp(runtime: HostSpanRuntime, calls: string[], traces?: Array<Record<string, unknown>>) {
+function testApp(runtime: HostSpanRuntime, calls: string[], traces?: Array<Record<string, unknown>>, overrides: Partial<HostSpanToolHandlers> = {}) {
   const oauth = runtime.oauth;
   if (!oauth) throw new Error("OAuth runtime was not initialized.");
   const backends = new Map<string, "native" | "pty">([
@@ -160,7 +160,7 @@ function testApp(runtime: HostSpanRuntime, calls: string[], traces?: Array<Recor
     allowed_hosts: ["127.0.0.1", "mcp.example.com"],
     oauth,
     authorization: { ...runtime.authorization, processBackend: (processId) => backends.get(processId) },
-    handlers: fakeHandlers(calls),
+    handlers: { ...fakeHandlers(calls), ...overrides },
     responseContext: () => ({ toolset_hash: TOOLSET_HASH, policy_epoch: runtime.config.policy_epoch }),
     status: { health: () => ({ server_version: "test" }), readiness: () => ({ ready: true }) },
     ...(traces ? { trace: (event: string, metadata: Record<string, unknown>) => traces.push({ event, ...metadata }) } : {}),
@@ -281,6 +281,96 @@ it("keeps invalid response waits distinct from insufficient scope without dispat
     await runtime.close();
   }
 });
+
+it("records bounded HTTP completion and close-before-finish over real local sockets", async () => {
+  const http = await import("node:http");
+  const { runtime, approvalSecret } = fixture();
+  const oauth = runtime.oauth;
+  if (!oauth) throw new Error("OAuth runtime was not initialized.");
+  const traces: Array<Record<string, unknown>> = [];
+  const calls: string[] = [];
+  let hold = false;
+  let entered!: () => void;
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { entered = resolve; });
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const app = testApp(runtime, calls, traces, { file_patch: async () => {
+    calls.push("fixture-file_patch");
+    if (hold) { entered(); await held; }
+    return { tool: "file_patch" };
+  } });
+  const grant = issueToken(oauth, approvalSecret, "hostspan.write");
+  const secret = "PRIVATE_HTTP_CANARY";
+  try {
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const headers = (version: string, authenticated = true) => ({ host: "mcp.example.com",
+      accept: "application/json, text/event-stream", "content-type": "application/json",
+      "mcp-method": "tools/call", "mcp-name": "file_patch", "mcp-protocol-version": version,
+      ...(authenticated ? { authorization: `Bearer ${grant.token.access_token}` } : {}),
+    });
+    const payload = (version: string, key: string) => ({ jsonrpc: "2.0", id: secret, method: "tools/call",
+      params: { name: "file_patch", arguments: { ...patchArgs(), idempotency_key: key, dry_run: true },
+        ...(version === "2026-07-28" ? { _meta: modernMeta() } : {}) } });
+    for (const [version, media, era] of [["2026-07-28", "application/json", "modern"], ["2025-11-25", "text/event-stream", "legacy"]] as const) {
+      const key = uuidv7();
+      const response = await fetch(`${address}/mcp`, { method: "POST", headers: headers(version),
+        body: JSON.stringify(payload(version, key)), signal: AbortSignal.timeout(5_000) });
+      await response.text();
+      expect(response.status).toBe(200);
+      await vi.waitFor(() => expect(traces.some((row) => row.event === "transport.response" && row.idempotency_key === key)).toBe(true));
+      const terminal = traces.filter((row) => row.event === "transport.response" && row.idempotency_key === key);
+      expect(terminal).toHaveLength(1);
+      expect(terminal[0]).toMatchObject({ outcome: "finished", headers_sent: true, writable_finished: true,
+        http_status: 200, content_type: "unobserved", http_auth_challenge_present: "unobserved",
+        prepared_response_source: "sdk", prepared_response_status: 200, prepared_response_content_type: media, prepared_response_http_auth_challenge_present: false,
+        requested_protocol_header: version, selected_protocol_version: "unobserved", response_envelope_validity: "unobserved" });
+      expect(traces).toContainEqual(expect.objectContaining({ event: "transport.sdk_selected", idempotency_key: key,
+        transport_request_id: terminal[0]?.transport_request_id, sdk_era: era }));
+    }
+    const unauthKey = uuidv7();
+    const unauth = await fetch(`${address}/mcp`, { method: "POST", headers: headers("2026-07-28", false),
+      body: JSON.stringify(payload("2026-07-28", unauthKey)), signal: AbortSignal.timeout(5_000) });
+    await unauth.text();
+    expect(unauth.status).toBe(401);
+    await vi.waitFor(() => expect(traces.some((row) => row.event === "transport.response" && row.idempotency_key === unauthKey)).toBe(true));
+    expect(traces).toContainEqual(expect.objectContaining({ event: "transport.response", idempotency_key: unauthKey,
+      http_status: 401, prepared_response_source: "fastify", prepared_response_http_auth_challenge_present: true,
+      request_id: unauth.headers.get("x-hostspan-request-id") }));
+
+    hold = true;
+    const abortedKey = uuidv7();
+    const client = http.request(`${address}/mcp`, { method: "POST", headers: headers("2026-07-28") });
+    client.on("error", () => undefined);
+    client.end(JSON.stringify(payload("2026-07-28", abortedKey)));
+    await pending;
+    // A legacy response completes while the modern request is still in its handler.
+    hold = false;
+    const concurrentKey = uuidv7();
+    const concurrent = await fetch(`${address}/mcp`, { method: "POST", headers: headers("2025-11-25"),
+      body: JSON.stringify(payload("2025-11-25", concurrentKey)), signal: AbortSignal.timeout(5_000) });
+    await concurrent.text();
+    expect(concurrent.status).toBe(200);
+    expect(traces).toContainEqual(expect.objectContaining({ event: "transport.sdk_selected", idempotency_key: concurrentKey, sdk_era: "legacy" }));
+    expect(traces).toContainEqual(expect.objectContaining({ event: "transport.sdk_selected", idempotency_key: abortedKey, sdk_era: "modern" }));
+    const closed = new Promise<void>((resolve) => client.once("close", resolve));
+    client.destroy();
+    await closed;
+    await vi.waitFor(() => expect(traces.some((row) => row.event === "transport.response" && row.idempotency_key === abortedKey)).toBe(true));
+    const aborted = traces.filter((row) => row.event === "transport.response" && row.idempotency_key === abortedKey);
+    expect(aborted).toHaveLength(1);
+    expect(aborted[0]).toMatchObject({ outcome: "closed_before_finish", headers_sent: false, writable_finished: false,
+      http_status: null, content_type: null, http_auth_challenge_present: null });
+    expect(traces).toContainEqual(expect.objectContaining({ event: "transport.response", idempotency_key: concurrentKey,
+      outcome: "finished", prepared_response_content_type: "text/event-stream", http_status: 200 }));
+    const terminal = JSON.stringify(traces.filter((row) => row.event === "transport.response" || row.event === "transport.sdk_selected"));
+    expect(terminal).not.toContain(secret);
+    expect(terminal).not.toContain(grant.token.access_token);
+  } finally {
+    release();
+    await app.close();
+    await runtime.close();
+  }
+}, 15_000);
 
 it("preserves advertised granular grants and enforces exec separately from terminal", async () => {
   const { runtime, approvalSecret } = fixture();

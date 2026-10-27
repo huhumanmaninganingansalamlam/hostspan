@@ -9,11 +9,13 @@ import {
   McpServer,
   OAuthError,
   OAuthErrorCode,
+  SUPPORTED_PROTOCOL_VERSIONS,
   verifyBearerToken,
   type OAuthTokenVerifier,
 } from "@modelcontextprotocol/server";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { isIP } from "node:net";
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   OAuthAuthorizationRedirectError,
   OAuthHttpError,
@@ -21,7 +23,7 @@ import {
 } from "../auth/oauth-service.js";
 import { splitOAuthScopes } from "../auth/oauth-scopes.js";
 import { auditInvocationIdentifiers } from "../observability/error-diagnostics.js";
-import { SERVER_VERSION } from "../version.js";
+import { PROTOCOL_VERSION, SERVER_VERSION } from "../version.js";
 import { TOOL_DEFINITIONS, TOOL_NAMES, registerHostSpanTools, type HostSpanToolAuthorization, type HostSpanToolHandlers, type ResponseContextProvider, type ToolCaller } from "./registry.js";
 
 // GHSA-46jr-4wx8-v453: bound schema-validation allocations, including our pre-handler diagnostics.
@@ -72,6 +74,18 @@ function normalizeAllowedHost(host: string): string {
   const trimmed = host.trim();
   if (trimmed.startsWith("[") && trimmed.endsWith("]")) return trimmed.toLowerCase();
   return isIP(trimmed) === 6 ? `[${trimmed.toLowerCase()}]` : trimmed.toLowerCase();
+}
+
+function requestedProtocol(value: unknown): string | null {
+  if (value === undefined) return null;
+  return typeof value === "string" && (value === PROTOCOL_VERSION || SUPPORTED_PROTOCOL_VERSIONS.includes(value))
+    ? value : "unrecognized";
+}
+
+function observedMediaType(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  const media = typeof value === "string" ? value.split(";", 1)[0]?.trim().toLowerCase() : undefined;
+  return media === "application/json" || media === "text/event-stream" ? media : "other";
 }
 
 export function resolveAllowedHosts(listenHost: string, configured: string[] = []): string[] {
@@ -125,19 +139,68 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
   const reportTransportError = (error: Error) => {
     options.trace?.("transport.error", { message: error.message });
   };
+  type Observation = { transport_request_id: string; idempotency_key?: string; request_id?: string; response_source?: "sdk" | "fastify"; response_status?: number; response_media?: string | null; response_auth_challenge?: boolean };
+  const observations = new WeakMap<object, Observation>();
+  const servingRequest = new AsyncLocalStorage<Observation>();
   const mcpHandler = createMcpHandler(
-    () => createMcpServer(options.handlers, options.responseContext, options.authorization),
+    (context) => {
+      const invocation = servingRequest.getStore();
+      if (invocation) options.trace?.("transport.sdk_selected", {
+        transport_request_id: invocation.transport_request_id, ...auditInvocationIdentifiers(invocation), sdk_era: context.era,
+      });
+      return createMcpServer(options.handlers, options.responseContext, options.authorization);
+    },
     {
       onerror: reportTransportError,
       responseMode: "auto",
     },
   );
-  const nodeHandler = toNodeHandler(mcpHandler, { onerror: reportTransportError });
+  const nodeHandler = toNodeHandler({ fetch: async (request, context) => {
+    const response = await mcpHandler.fetch(request, context);
+    const observation = servingRequest.getStore();
+    if (observation) {
+      // Supported fetch Response headers; leave its body/stream and all headers unchanged.
+      observation.response_source = "sdk";
+      observation.response_status = response.status;
+      observation.response_media = observedMediaType(response.headers.get("content-type"));
+      observation.response_auth_challenge = response.headers.has("www-authenticate");
+    }
+    return response;
+  } }, { onerror: reportTransportError });
   const maxInflightMcpRequests = options.max_inflight_mcp_requests ?? 128;
   let inflightMcpRequests = 0;
   app.addHook("onRequest", async (request, reply) => {
     const path = request.url.split("?", 1)[0];
     if (path !== "/mcp") return;
+    const observation: Observation = { transport_request_id: request.id };
+    observations.set(request, observation);
+    let observed = false;
+    const observeResponse = (outcome: "finished" | "closed_before_finish") => {
+      if (observed) return;
+      observed = true;
+      const body = request.body as { params?: { arguments?: unknown; _meta?: Record<string, unknown> } } | undefined;
+      const id = reply.raw.getHeader("x-hostspan-request-id") ?? observation.request_id;
+      const type = reply.raw.getHeader("content-type");
+      const media = type !== undefined ? observedMediaType(type) : "unobserved";
+      options.trace?.("transport.response", {
+        transport_request_id: request.id, ...auditInvocationIdentifiers(body?.params?.arguments),
+        ...(typeof id === "string" && /^req_[0-9a-f]{32}$/i.test(id) ? { request_id: id } : {}),
+        requested_protocol_header: requestedProtocol(request.headers["mcp-protocol-version"]),
+        requested_protocol_envelope: requestedProtocol(body?.params?._meta?.["io.modelcontextprotocol/protocolVersion"]),
+        selected_protocol_version: "unobserved", response_envelope_validity: "unobserved",
+        outcome, headers_sent: reply.raw.headersSent, writable_finished: reply.raw.writableFinished,
+        http_status: reply.raw.headersSent ? reply.raw.statusCode : null,
+        content_type: reply.raw.headersSent ? media : null,
+        http_auth_challenge_present: reply.raw.headersSent ? (reply.raw.hasHeader("www-authenticate") ? true : "unobserved") : null,
+        prepared_response_source: observation.response_source ?? "unobserved",
+        prepared_response_status: observation.response_status ?? "unobserved",
+        prepared_response_content_type: observation.response_media === undefined ? "unobserved" : observation.response_media,
+        prepared_response_http_auth_challenge_present: observation.response_auth_challenge ?? "unobserved",
+        mcp_auth_challenge_present: "unobserved",
+      });
+    };
+    reply.raw.once("finish", () => observeResponse("finished"));
+    reply.raw.once("close", () => observeResponse("closed_before_finish"));
     if (inflightMcpRequests >= maxInflightMcpRequests) {
       return reply
         .code(503)
@@ -157,6 +220,18 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
     };
     reply.raw.once("finish", release);
     reply.raw.once("close", release);
+  });
+  app.addHook("onSend", async (request, reply, payload) => {
+    const observation = observations.get(request);
+    if (observation) {
+      observation.response_source = "fastify";
+      observation.response_status = reply.statusCode;
+      observation.response_media = observedMediaType(reply.getHeader("content-type"));
+      observation.response_auth_challenge = reply.hasHeader("www-authenticate");
+      const id = reply.getHeader("x-hostspan-request-id");
+      if (typeof id === "string" && /^req_[0-9a-f]{32}$/i.test(id)) observation.request_id = id;
+    }
+    return payload;
   });
   app.addHook("preHandler", async (request) => {
     const traceUrl = request.url.split("?", 1)[0];
@@ -240,7 +315,10 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
       }
     }
     reply.hijack();
-    await nodeHandler(request.raw as unknown as NodeIncomingMessageLike, reply.raw, request.body);
+    const observation = observations.get(request) ?? { transport_request_id: request.id };
+    Object.assign(observation, invocation);
+    await servingRequest.run(observation, () =>
+      nodeHandler(request.raw as unknown as NodeIncomingMessageLike, reply.raw, request.body));
   });
   app.addHook("onClose", async () => {
     await mcpHandler.close();
