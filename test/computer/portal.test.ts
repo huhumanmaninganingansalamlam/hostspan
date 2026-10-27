@@ -28,6 +28,33 @@ it.skipIf(process.platform !== "linux")("waits for actual consent and balances p
   execFileSync("python3", ["-I", "test/computer/portal-request.py"], { stdio: "pipe" });
 });
 
+it.skipIf(process.platform !== "win32")("validates Windows chords and releases keys on failure without OS input", () => {
+  execFileSync("powershell.exe", ["-NoProfile", "-Sta", "-File", "test/computer/native-windows-key.ps1"], { stdio: "pipe" });
+});
+
+it("advertises Alt and Meta only on Windows and rejects duplicate or unsupported modifiers", async () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  const key = { action: "key", key: "KeyE", session_id: "00000000-0000-4000-8000-000000000001",
+    observation_id: "00000000-0000-4000-8000-000000000002", idempotency_key: "windows-chord" };
+  try {
+    for (const os of ["win32", "linux", "darwin"]) {
+      Object.defineProperty(process, "platform", { value: os });
+      vi.resetModules();
+      const schema = (await import("../../src/computer/portal.js")).ComputerInputSchema;
+      for (const modifiers of [["Meta"], ["Alt"], ["Shift", "Alt", "Meta"]]) {
+        expect(schema.safeParse({ ...key, modifiers }).success).toBe(os === "win32");
+      }
+      expect(schema.safeParse({ ...key, key: "Tab", modifiers: ["Alt"] }).success).toBe(os === "win32");
+      for (const modifiers of [["Alt", "Alt"], ["Meta", "Meta"], ["Control"], ["Win"], ["meta"], "Meta", null]) {
+        expect(schema.safeParse({ ...key, modifiers }).success).toBe(false);
+      }
+    }
+  } finally {
+    if (platform) Object.defineProperty(process, "platform", platform);
+    vi.resetModules();
+  }
+});
+
 it("accepts physical key positions and optional Shift without changing legacy arguments", () => {
   const legacy = { action: "key", key: "Enter", session_id: "00000000-0000-4000-8000-000000000001",
     observation_id: "00000000-0000-4000-8000-000000000002", idempotency_key: "legacy-key" };

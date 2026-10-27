@@ -59,7 +59,7 @@ public static class HostSpanInput {
             throw new InvalidOperationException("Pointer did not reach the requested position; no click was sent");
     }
     public static void Key(ushort key, bool up) {
-        Send(new Input { type=1, data=new Data { keyboard=new Keyboard { key=key, flags=(up ? 2u : 0u) | ((key >= 33 && key <= 46) ? 1u : 0u) } } });
+        Send(new Input { type=1, data=new Data { keyboard=new Keyboard { key=key, flags=(up ? 2u : 0u) | ((key >= 33 && key <= 46 || key == 91) ? 1u : 0u) } } });
     }
     public static void ScanKey(ushort scan, bool up) {
         Send(new Input { type=1, data=new Data { keyboard=new Keyboard { scan=scan, flags=8u | (up ? 2u : 0u) } } });
@@ -198,19 +198,29 @@ function Dispatch($command) {
                 KeyS=31;KeyT=20;KeyU=22;KeyV=47;KeyW=17;KeyX=45;KeyY=21;KeyZ=44}
             if (-not $keys.ContainsKey($command.key) -and -not $physical.ContainsKey($command.key)) { throw 'Unsupported key' }
             if ($null -ne $command.modifiers -and ($command.modifiers -isnot [array] -or
-                $command.modifiers.Count -gt 1 -or ($command.modifiers.Count -eq 1 -and $command.modifiers[0] -cne 'Shift'))) {
+                $command.modifiers.Count -gt 3 -or
+                @($command.modifiers | Where-Object { $_ -isnot [string] -or $_ -cnotin @('Shift','Alt','Meta') }).Count -gt 0 -or
+                @($command.modifiers | Select-Object -Unique).Count -ne $command.modifiers.Count)) {
                 throw 'Unsupported modifiers'
             }
             $shifted=$command.modifiers -contains 'Shift'
+            $alt=$command.modifiers -contains 'Alt'
+            $meta=$command.modifiers -contains 'Meta'
             try {
                 if ($shifted) { [HostSpanInput]::ScanKey(42,$false) }
                 try {
-                    if ($physical.ContainsKey($command.key)) { [HostSpanInput]::ScanKey($physical[$command.key],$false) }
-                    else { [HostSpanInput]::Key($keys[$command.key],$false) }
-                } finally {
-                    if ($physical.ContainsKey($command.key)) { [HostSpanInput]::ScanKey($physical[$command.key],$true) }
-                    else { [HostSpanInput]::Key($keys[$command.key],$true) }
-                }
+                    if ($alt) { [HostSpanInput]::Key(18,$false) }
+                    try {
+                        if ($meta) { [HostSpanInput]::Key(91,$false) }
+                        try {
+                            if ($physical.ContainsKey($command.key)) { [HostSpanInput]::ScanKey($physical[$command.key],$false) }
+                            else { [HostSpanInput]::Key($keys[$command.key],$false) }
+                        } finally {
+                            if ($physical.ContainsKey($command.key)) { [HostSpanInput]::ScanKey($physical[$command.key],$true) }
+                            else { [HostSpanInput]::Key($keys[$command.key],$true) }
+                        }
+                    } finally { if ($meta) { [HostSpanInput]::Key(91,$true) } }
+                } finally { if ($alt) { [HostSpanInput]::Key(18,$true) } }
             } finally { if ($shifted) { [HostSpanInput]::ScanKey(42,$true) } }
         }
         'text' {
