@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { canonicalJson } from "../canonical-json.js";
-import type { McpServer, ServerContext, ToolAnnotations } from "@modelcontextprotocol/server";
+import { isSpecType, type McpServer, type ServerContext, type ToolAnnotations } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import {
   HOSTSPAN_OAUTH_SCOPE_COMPUTER,
@@ -158,16 +158,25 @@ export const TOOL_NAMES = TOOL_DEFINITIONS.map((tool) => tool.name);
 
 export type ToolName = (typeof TOOL_DEFINITIONS)[number]["name"];
 
+export function listedTools() {
+  return TOOL_DEFINITIONS.map((tool) => {
+    const descriptor = {
+      name: tool.name,
+      description: tool.description,
+      inputSchema: { ...z.toJSONSchema(tool.inputSchema, { io: "input" }), type: "object" as const },
+      annotations: tool.annotations,
+      securitySchemes: tool._meta.securitySchemes,
+      _meta: tool._meta,
+    };
+    if (!isSpecType.Tool(descriptor)) throw new Error(`Invalid tool descriptor: ${tool.name}`);
+    return descriptor;
+  });
+}
+
 export function toolsetDocument() {
   return {
     toolset_version: TOOLSET_VERSION,
-    tools: TOOL_DEFINITIONS.map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      input_schema: z.toJSONSchema(tool.inputSchema),
-      annotations: tool.annotations,
-      _meta: tool._meta,
-    })),
+    tools: listedTools().map(({ inputSchema, ...tool }) => ({ ...tool, input_schema: inputSchema })),
   };
 }
 

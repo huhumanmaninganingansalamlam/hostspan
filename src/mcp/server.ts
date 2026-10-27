@@ -24,7 +24,7 @@ import {
 import { splitOAuthScopes } from "../auth/oauth-scopes.js";
 import { auditInvocationIdentifiers } from "../observability/error-diagnostics.js";
 import { PROTOCOL_VERSION, SERVER_VERSION } from "../version.js";
-import { TOOL_DEFINITIONS, TOOL_NAMES, registerHostSpanTools, type HostSpanToolAuthorization, type HostSpanToolHandlers, type ResponseContextProvider, type ToolCaller } from "./registry.js";
+import { TOOL_DEFINITIONS, TOOL_NAMES, listedTools, registerHostSpanTools, type HostSpanToolAuthorization, type HostSpanToolHandlers, type ResponseContextProvider, type ToolCaller } from "./registry.js";
 
 // GHSA-46jr-4wx8-v453: bound schema-validation allocations, including our pre-handler diagnostics.
 const MAX_TOOL_INPUT_ELEMENTS = 10_000;
@@ -122,6 +122,9 @@ export function createMcpServer(
     },
   );
   registerHostSpanTools(server, handlers, responseContext, authorization);
+  // SDK 2's high-level registration omits canonical securitySchemes. Keep discovery
+  // on its public handler API; tool invocation still uses the original SDK handlers.
+  server.server.setRequestHandler("tools/list", () => ({ tools: listedTools() }));
   return server;
 }
 

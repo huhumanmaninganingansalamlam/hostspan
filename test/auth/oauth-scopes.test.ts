@@ -398,8 +398,10 @@ it("preserves advertised granular grants and enforces exec separately from termi
       payload: { jsonrpc: "2.0", id: 1, method: "tools/list", params: { _meta: modernMeta() } },
     });
     expect(listed.statusCode).toBe(200);
-    const tools = listed.json().result.tools as Array<{ name: string; _meta?: { securitySchemes?: unknown } }>;
+    const tools = listed.json().result.tools as Array<{ name: string; securitySchemes?: unknown; _meta?: { securitySchemes?: unknown } }>;
     for (const name of ["process_start", "process_cancel"]) {
+      expect(tools.find((tool) => tool.name === name)?.securitySchemes)
+        .toEqual([{ type: "oauth2", scopes: ["hostspan.exec", "hostspan.terminal"] }]);
       expect(tools.find((tool) => tool.name === name)?._meta?.securitySchemes)
         .toEqual([{ type: "oauth2", scopes: ["hostspan.exec", "hostspan.terminal"] }]);
     }
