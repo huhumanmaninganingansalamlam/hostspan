@@ -148,6 +148,10 @@ HostSpan records transport requests and accepted tool calls, plus pre-handler `v
 
 For an authenticated call with an out-of-range `wait_ms`, HostSpan returns HTTP 200 with an MCP tool error (`isError: true`, `VALIDATION_FAILED`, reason `invalid_tool_arguments`) identifying the allowed bound. It sends no OAuth challenge for that argument error; correct the argument under the existing authority. A genuine `SCOPE_DENIED` with reason `oauth_scope` remains a separate authorization failure.
 
+Client tool approval (including “Always allow”) does not add OAuth scopes. `process_start` requires `hostspan.exec` for non-TTY execution and `hostspan.terminal` for `tty=true`; its static OAuth metadata has no unconditional scope because the requirement depends on the arguments. Inspect the existing grant through `system_status.authorization`, rather than treating terminal authority as exec authority.
+
+Retain the original UUIDv7 idempotency key and any returned HostSpan request ID when reporting a failed invocation. HostSpan records only valid UUIDv7 keys in ingress and early-rejection diagnostics; a per-HTTP `transport_request_id` joins ingress to authentication/validation rejection, and validation errors return `x-hostspan-request-id`. Scope rejections retain the key in audit diagnostics and the request ID in the typed tool result. These records do not include tokens, command bodies, environment values, or arbitrary client request IDs; an invocation without a valid key cannot be found by that key.
+
 If the trace shows `GET /authorize` and a successful `POST /authorize`, an authorization code exists, but ChatGPT never sends `POST /token`, compare the public OAuth metadata and redirect response against a known-working MCP SDK server before attributing the failure to the client. HostSpan intentionally uses the SDK-compatible root authorization paths and does not add an RFC 9207 `iss` parameter that the working DevSpace flow does not advertise.
 
 If a request arrived but failed, use `request_id`, `idempotency_key`, `process_id`, and structured error code to identify the stage.

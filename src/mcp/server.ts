@@ -20,6 +20,7 @@ import {
   type OAuthService,
 } from "../auth/oauth-service.js";
 import { splitOAuthScopes } from "../auth/oauth-scopes.js";
+import { auditInvocationIdentifiers } from "../observability/error-diagnostics.js";
 import { SERVER_VERSION } from "../version.js";
 import { TOOL_DEFINITIONS, TOOL_NAMES, registerHostSpanTools, type HostSpanToolAuthorization, type HostSpanToolHandlers, type ResponseContextProvider, type ToolCaller } from "./registry.js";
 
@@ -159,8 +160,10 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
   });
   app.addHook("preHandler", async (request) => {
     const traceUrl = request.url.split("?", 1)[0];
-    const body = request.body as { method?: unknown; params?: { name?: unknown } } | undefined;
+    const body = request.body as { method?: unknown; params?: { name?: unknown; arguments?: unknown } } | undefined;
     options.trace?.("transport.request", {
+      transport_request_id: request.id,
+      ...auditInvocationIdentifiers(body?.params?.arguments),
       method: request.method,
       url: traceUrl,
       rpc_method: typeof body?.method === "string" && ["initialize", "tools/list", "tools/call", "server/discover"].includes(body.method) ? body.method : undefined,
@@ -175,6 +178,8 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
   });
   if (options.oauth) registerOAuthRoutes(app, options.oauth, options.trace);
   app.all("/mcp", async (request, reply) => {
+    const body = request.body as { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: { name?: unknown; arguments?: unknown } } | undefined;
+    const invocation = auditInvocationIdentifiers(body?.params?.arguments);
     let caller: ToolCaller = { caller_mode: "local" };
     if (options.oauth && oauthVerifier) {
       try {
@@ -190,8 +195,8 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
         const response = bearerAuthChallengeResponse(error, {
           resourceMetadataUrl: options.oauth.resourceMetadataUrl,
         });
-        const body = request.body as { params?: { name?: unknown } } | undefined;
         options.trace?.("authorization.rejected", {
+          transport_request_id: request.id, ...invocation,
           request_id: id, stage: "authentication", http_status: response.status,
           error_code: error instanceof OAuthError ? error.code : "server_error",
           tool: TOOL_NAMES.find((name) => name === body?.params?.name),
@@ -203,7 +208,6 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
         );
       }
     }
-    const body = request.body as { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: { name?: unknown; arguments?: unknown } } | undefined;
     if (request.method === "POST" && body?.jsonrpc === "2.0" && (typeof body.id === "string" || typeof body.id === "number") && body.method === "tools/call") {
       const tool = TOOL_DEFINITIONS.find((entry) => entry.name === body.params?.name);
       const route = classifyInboundRequest({
@@ -223,7 +227,10 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
           const issues = parsed ? parsed.error.issues.map((issue) => `${issue.path.join(".") || "arguments"}: ${issue.message}`)
             : [`arguments exceed the ${MAX_TOOL_INPUT_ELEMENTS} element validation budget`];
           const error = new HostSpanError("VALIDATION_FAILED", `Invalid ${tool.name} arguments: ${issues.join("; ")}`, false, { reason: "invalid_tool_arguments" });
-          options.authorization?.rejected?.(tool.name, {}, id, error, "validation", tool.name === "computer" ? caller : undefined);
+          options.authorization?.rejected?.(tool.name, invocation, id, error, "validation", tool.name === "computer" ? caller : undefined);
+          options.trace?.("validation.rejected", { transport_request_id: request.id, ...invocation,
+            request_id: id, tool: tool.name, stage: "validation", error_code: error.code, reason: "invalid_tool_arguments" });
+          reply.header("x-hostspan-request-id", id);
           // This direct reply bypasses the SDK's modern wire-result stamp.
           return reply.send({ jsonrpc: "2.0", id: body.id ?? null, result: {
             ...errorResult(options.responseContext(), error, id),

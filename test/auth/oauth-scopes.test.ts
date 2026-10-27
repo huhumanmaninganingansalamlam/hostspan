@@ -147,7 +147,7 @@ function fakeHandlers(calls: string[]): HostSpanToolHandlers {
   };
 }
 
-function testApp(runtime: HostSpanRuntime, calls: string[]) {
+function testApp(runtime: HostSpanRuntime, calls: string[], traces?: Array<Record<string, unknown>>) {
   const oauth = runtime.oauth;
   if (!oauth) throw new Error("OAuth runtime was not initialized.");
   const backends = new Map<string, "native" | "pty">([
@@ -163,6 +163,7 @@ function testApp(runtime: HostSpanRuntime, calls: string[]) {
     handlers: fakeHandlers(calls),
     responseContext: () => ({ toolset_hash: TOOLSET_HASH, policy_epoch: runtime.config.policy_epoch }),
     status: { health: () => ({ server_version: "test" }), readiness: () => ({ ready: true }) },
+    ...(traces ? { trace: (event: string, metadata: Record<string, unknown>) => traces.push({ event, ...metadata }) } : {}),
   });
 }
 
@@ -275,6 +276,98 @@ it("keeps invalid response waits distinct from insufficient scope without dispat
     expectAllowed(allowed, "system_status");
     expect(allowed.result?.resultType).toBe("complete");
     expect(calls).toEqual(["system_status"]);
+  } finally {
+    await app.close();
+    await runtime.close();
+  }
+});
+
+it("preserves advertised granular grants and enforces exec separately from terminal", async () => {
+  const { runtime, approvalSecret } = fixture();
+  const oauth = runtime.oauth;
+  if (!oauth) throw new Error("OAuth runtime was not initialized.");
+  const calls: string[] = [];
+  const app = testApp(runtime, calls);
+  try {
+    for (const path of ["/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource"]) {
+      const metadata = await app.inject({ method: "GET", url: path, headers: { host: "mcp.example.com" } });
+      expect(metadata.statusCode).toBe(200);
+      expect(metadata.json().scopes_supported).toEqual([
+        "hostspan.computer", "hostspan.read", "hostspan.write", "hostspan.exec", "hostspan.terminal",
+      ]);
+    }
+    // The static tool metadata requires OAuth; its argument-dependent scope is enforced on each call.
+    expect(toolsetDocument().tools.find((tool) => tool.name === "process_start")?._meta.securitySchemes)
+      .toEqual([{ type: "oauth2", scopes: [] }]);
+    const scopes = ["hostspan.computer", "hostspan.read", "hostspan.write", "hostspan.terminal"];
+    const grant = issueToken(oauth, approvalSecret, scopes.join(" "));
+    expect(oauth.verifyAccessToken(grant.token.access_token)?.scopes).toEqual(scopes);
+    const status = await callTool(app, grant.token.access_token, "system_status", {});
+    expect(status.result?.structuredContent?.authorization).toMatchObject({ mode: "oauth", granted_scopes: scopes });
+    const denied = await callTool(app, grant.token.access_token, "process_start", { ...startArgs(false), wait_ms: 1_000 });
+    expectScopeDenied(denied, "hostspan.exec");
+    expect(denied.result?._meta?.["mcp/www_authenticate"]?.[0]).toContain('error="insufficient_scope"');
+    expect(calls).toEqual(["system_status"]);
+    expectAllowed(await callTool(app, grant.token.access_token, "process_start", startArgs(true)), "process_start");
+    expect(calls).toEqual(["system_status", "process_start"]);
+  } finally {
+    await app.close();
+    await runtime.close();
+  }
+});
+
+it("correlates early authentication, validation and scope rejects without retaining payloads", async () => {
+  const { runtime, approvalSecret } = fixture();
+  const oauth = runtime.oauth;
+  if (!oauth) throw new Error("OAuth runtime was not initialized.");
+  const calls: string[] = [];
+  const traces: Array<Record<string, unknown>> = [];
+  const app = testApp(runtime, calls, traces);
+  const secret = "HOSTSPAN_SECRET_CANARY_EARLY_REJECT";
+  const grant = issueToken(oauth, approvalSecret, "hostspan.read");
+  const inject = (idempotency_key: string, wait_ms: number, authenticated = true) => app.inject({
+    method: "POST", url: "/mcp",
+    headers: { host: "mcp.example.com", accept: "application/json, text/event-stream",
+      "content-type": "application/json", "mcp-method": "tools/call", "mcp-name": "process_start",
+      "mcp-protocol-version": "2026-07-28",
+      ...(authenticated ? { authorization: `Bearer ${grant.token.access_token}` } : {}),
+    },
+    payload: { jsonrpc: "2.0", id: secret, method: "tools/call", params: { name: "process_start",
+      arguments: { ...startArgs(false), idempotency_key, wait_ms, argv: [secret], env: { SECRET: secret } }, _meta: modernMeta() } },
+  });
+  try {
+    const unauthKey = uuidv7();
+    const unauth = await inject(unauthKey, 10_000, false);
+    expect(unauth.statusCode).toBe(401);
+    expect(unauth.headers["www-authenticate"]).toContain("Bearer");
+    const ingress = traces.find((row) => row.event === "transport.request" && row.idempotency_key === unauthKey);
+    expect(ingress).toMatchObject({ transport_request_id: expect.any(String), tool: "process_start" });
+    expect(traces).toContainEqual(expect.objectContaining({ event: "authorization.rejected",
+      idempotency_key: unauthKey, transport_request_id: ingress?.transport_request_id,
+      request_id: unauth.headers["x-hostspan-request-id"], stage: "authentication", http_status: 401 }));
+
+    for (const wait_ms of [10_000, 1_000]) {
+      const key = uuidv7();
+      const response = await inject(key, wait_ms);
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["www-authenticate"]).toBeUndefined();
+      const result = response.json().result;
+      const validation = wait_ms > 1_500;
+      expect(result).toMatchObject({ resultType: "complete", isError: true, structuredContent: { error: {
+        code: validation ? "VALIDATION_FAILED" : "SCOPE_DENIED",
+      } } });
+      expect(Boolean(result._meta?.["mcp/www_authenticate"])).toBe(!validation);
+      expect(runtime.audit.recent()).toContainEqual(expect.objectContaining({ request_id: result.structuredContent.request_id,
+        metadata: expect.objectContaining({ idempotency_key: key, tool: "process_start", stage: validation ? "validation" : "authorization" }) }));
+      if (validation) {
+        expect(response.headers["x-hostspan-request-id"]).toBe(result.structuredContent.request_id);
+        expect(traces).toContainEqual(expect.objectContaining({ event: "validation.rejected", idempotency_key: key,
+          request_id: result.structuredContent.request_id, transport_request_id: expect.any(String) }));
+      }
+    }
+    await inject(secret, 10_000);
+    expect(JSON.stringify({ traces, audit: runtime.audit.recent() })).not.toContain(secret);
+    expect(calls).toEqual([]);
   } finally {
     await app.close();
     await runtime.close();
