@@ -29,7 +29,7 @@ export interface ProcessesStore {
       Partial<Pick<ProcessRecord, "backend" | "backend_ref" | "deadline_at" | "max_output_bytes">>,
   ): void;
   markRunning(processId: string, pid: number | null, pgid: number | null): boolean;
-  markTerminal(processId: string, state: ProcessState, exitCode: number | null, signal: string | null, reason: string | null, expiresAt?: string): void;
+  markTerminal(processId: string, state: ProcessState, exitCode: number | null, signal: string | null, reason: string | null, expiresAt?: string, endedAt?: string): void;
   addBytes(processId: string, stream: "stdout" | "stderr", bytes: number): void;
   setBytes(processId: string, stream: "stdout" | "stderr", bytes: number): void;
   get(processId: string): ProcessRecord | undefined;

@@ -26,6 +26,7 @@ interface WorkerStatus {
   exit_code: number | null;
   signal: string | null;
   reason: string | null;
+  ended_at?: string;
   columns: number;
   rows: number;
   output_bytes: number;
@@ -522,6 +523,7 @@ export class PtySessionManager implements InteractiveSessionManager {
       exit_code: dead ? status.exit_code : null,
       signal: dead ? status.signal : null,
       reason: dead ? status.reason : null,
+      ...(dead && status.ended_at && Number.isFinite(Date.parse(status.ended_at)) ? { ended_at: status.ended_at } : {}),
       pid: status.pty_pid,
       columns: status.columns,
       rows: status.rows,

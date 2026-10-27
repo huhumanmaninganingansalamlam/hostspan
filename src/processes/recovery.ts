@@ -106,6 +106,7 @@ export function recoverProcesses(
             afterClose.signal,
             "deadline_exceeded_during_restart",
             expiresAt(record.output_expires_at),
+            afterClose.ended_at,
           );
           operations.setState(record.idempotency_key, "timed_out", {
             state: "timed_out",
@@ -183,7 +184,7 @@ export function recoverProcesses(
           recovered.push({ process_id: record.process_id, state: "unknown" });
           continue;
         }
-        processes.markTerminal(record.process_id, terminalState, settled.exit_code, settled.signal, reason, expiresAt(record.output_expires_at));
+        processes.markTerminal(record.process_id, terminalState, settled.exit_code, settled.signal, reason, expiresAt(record.output_expires_at), settled.ended_at);
         operations.setState(record.idempotency_key, terminalState, {
           state: terminalState,
           process_id: record.process_id,

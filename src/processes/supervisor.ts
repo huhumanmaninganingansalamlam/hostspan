@@ -142,6 +142,7 @@ export class ProcessSupervisor {
     exitCode: number | null,
     signal: string | null,
     reason: string | null,
+    endedAt?: string,
   ): void {
     const current = this.options.processes.get(processId);
     if (!current || TERMINAL_STATES.has(current.state)) {
@@ -152,7 +153,7 @@ export class ProcessSupervisor {
       return;
     }
     const expiresAt = this.expiresAt();
-    this.options.processes.markTerminal(processId, state, exitCode, signal, reason, expiresAt);
+    this.options.processes.markTerminal(processId, state, exitCode, signal, reason, expiresAt, endedAt);
     const result = {
       state,
       process_id: processId,
@@ -205,7 +206,7 @@ export class ProcessSupervisor {
       this.finalize(processId, "unknown", record.exit_code, record.term_signal, "interactive_session_still_running_after_terminate");
       return "unknown";
     }
-    this.finalize(processId, state, settled.exit_code, settled.signal, reason);
+    this.finalize(processId, state, settled.exit_code, settled.signal, reason, settled.ended_at);
     // Confirmed process death survives a failure to observe the final output.
     const drained = await this.options.terminal.waitForOutputDrain(processId);
     this.options.processes.setBytes(processId, "stdout", drained.bytes);
@@ -400,11 +401,11 @@ export class ProcessSupervisor {
         return;
       }
       if (settled.reason === "deadline_exceeded") {
-        this.finalize(processId, "timed_out", settled.exit_code, settled.signal, "deadline_exceeded");
+        this.finalize(processId, "timed_out", settled.exit_code, settled.signal, "deadline_exceeded", settled.ended_at);
         return;
       }
       if (settled.reason === "cancel_requested") {
-        this.finalize(processId, "cancelled", settled.exit_code, settled.signal, "cancel_requested");
+        this.finalize(processId, "cancelled", settled.exit_code, settled.signal, "cancel_requested", settled.ended_at);
         return;
       }
       if (settled.exit_code === null) {
@@ -417,6 +418,7 @@ export class ProcessSupervisor {
         settled.exit_code,
         settled.signal,
         settled.exit_code === 0 ? null : "nonzero_exit",
+        settled.ended_at,
       );
     }
   }

@@ -7,6 +7,7 @@ export interface InteractiveSessionSnapshot {
   pid: number | null;
   columns: number | null;
   rows: number | null;
+  ended_at?: string;
 }
 
 export interface StartInteractiveSessionInput {

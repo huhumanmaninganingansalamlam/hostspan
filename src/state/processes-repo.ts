@@ -38,10 +38,10 @@ export class ProcessesRepo implements ProcessesStore {
     return result.changes === 1;
   }
 
-  markTerminal(processId: string, state: ProcessState, exitCode: number | null, signal: string | null, reason: string | null, expiresAt?: string): void {
+  markTerminal(processId: string, state: ProcessState, exitCode: number | null, signal: string | null, reason: string | null, expiresAt?: string, endedAt?: string): void {
     this.db
       .prepare("UPDATE processes SET state=?,exit_code=?,term_signal=?,reason=?,ended_at=?,output_expires_at=? WHERE process_id=?")
-      .run(state, exitCode, signal, reason, new Date().toISOString(), expiresAt ?? null, processId);
+      .run(state, exitCode, signal, reason, endedAt ?? new Date().toISOString(), expiresAt ?? null, processId);
   }
 
   setState(processId: string, state: ProcessState, reason?: string): void {
