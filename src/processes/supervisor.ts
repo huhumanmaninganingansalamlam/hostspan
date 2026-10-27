@@ -540,10 +540,13 @@ export class ProcessSupervisor {
         return this.snapshot(processId, 0, 0, responseBytes);
       }
       if (!this.options.processes.markRunning(processId, started.pid, null)) {
-        sessionManager.closeSync(session);
         const current = this.options.processes.get(processId);
-        if (!current) throw new HostSpanError("PROCESS_UNKNOWN", "PTY process record disappeared during launch.");
-        return this.snapshot(processId, 0, 0, responseBytes);
+        // Reconciliation may already have accepted this exact child while start awaited its worker.
+        if (current?.state !== "running" || current.backend_ref !== session || current.pid !== started.pid) {
+          sessionManager.closeSync(session);
+          if (!current) throw new HostSpanError("PROCESS_UNKNOWN", "PTY process record disappeared during launch.");
+          return this.snapshot(processId, 0, 0, responseBytes);
+        }
       }
       this.options.operations.setState(input.idempotency_key, "running", { state: "running", process_id: processId, backend: "pty" });
       this.options.logger?.info("process.started", { request_id: requestId, process_id: processId, pid: started.pid, backend: "pty", session });
