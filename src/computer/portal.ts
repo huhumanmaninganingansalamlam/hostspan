@@ -87,7 +87,7 @@ export class PortalDesktop {
         : this.backend === "native" ? "Connecting to this computer's logged-in desktop."
         : "Select a screen and allow control in the desktop sharing dialog. You can close to cancel."
         : this.pending.size || this.observing ? "A desktop action is processing. Wait before sending another input."
-        : this.captureError ? `Desktop capture unavailable: ${this.captureError.message}. Observe again or close this session before normal recovery.`
+        : this.captureError ? `Desktop capture unavailable: ${this.captureError.message}`
         : "Desktop connected. Observe the screen before choosing where to act.",
       frame_ready: !!this.observationId && !this.captureError && !this.observing,
       ...(this.captureError instanceof HostSpanError ? { error_details: this.captureError.details } : {}),
@@ -147,7 +147,7 @@ export class PortalDesktop {
           this.pending.delete(reply.id);
           if (reply.error) pending.reject(new HostSpanError(
             reply.error_details?.reason === "portal_local_timeout" ? "DEADLINE_EXCEEDED"
-              : reply.error_details?.reason === "macos_gui_launch_required" ? "TARGET_NOT_READY" : "INTERNAL_ERROR",
+              : ["macos_gui_launch_required", "macos_desktop_locked"].includes(String(reply.error_details?.reason)) ? "TARGET_NOT_READY" : "INTERNAL_ERROR",
             reply.error, false, reply.error_details));
           else if (reply.result) pending.resolve(reply.result);
           else pending.reject(new Error("Desktop worker returned no result"));
@@ -318,6 +318,16 @@ export class PortalDesktop {
       try {
         await this.call(input);
       } catch (error) {
+        if (error instanceof HostSpanError && error.code === "TARGET_NOT_READY"
+          && error.details.reason === "macos_desktop_locked") {
+          this.captureError = error;
+          if (error.details.dispatched === false) {
+            const rejected = new HostSpanError(error.code, error.message, true,
+              { ...error.details, next_action: this.status().next_action });
+            this.operations.setState(input.idempotency_key, "failed", undefined, rejected);
+            throw rejected;
+          }
+        }
         return { state: "unknown", dispatched: "unknown", observation_required: true,
           error: error instanceof Error ? error.message : "Desktop input failed",
           message: "Input delivery is uncertain. Inspect the screen; do not resend automatically.",

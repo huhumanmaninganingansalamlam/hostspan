@@ -1,13 +1,28 @@
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, expect, it, vi } from "vitest";
 import { ComputerInputSchema, PortalDesktop } from "../../src/computer/portal.js";
+import { errorResult } from "../../src/mcp/result.js";
 import { openDatabase } from "../../src/state/database.js";
 import { OperationsRepo } from "../../src/state/operations-repo.js";
 
 vi.mock("node:child_process", async (original) => ({ ...await original<typeof import("node:child_process")>(), spawn: vi.fn() }));
 afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks(); vi.useRealTimers(); });
+
+it.skipIf(process.platform !== "darwin")("rejects locked desktop use without capture, input, consent or session loss", () => {
+  const directory = mkdtempSync(join(tmpdir(), "hostspan-desktop-availability-"));
+  try {
+    const fixture = join(directory, "availability-test");
+    execFileSync("xcrun", ["swiftc", "-parse-as-library", "-D", "HOSTSPAN_DESKTOP_AVAILABILITY_TEST",
+      "src/computer/native-macos.swift", "test/computer/native-macos-availability.swift", "-o", fixture],
+    { stdio: "pipe", timeout: 90_000 });
+    expect(execFileSync(fixture, { encoding: "utf8", timeout: 10_000 })).toContain("PASS:");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 110_000);
 
 it.skipIf(process.platform !== "linux")("waits for actual consent and balances physical keys without clipboard access", () => {
   execFileSync("python3", ["-I", "test/computer/portal-request.py"], { stdio: "pipe" });
@@ -34,6 +49,9 @@ it("uses the native helper with the same session, observation and cancellation c
   Object.defineProperty(process, "platform", { value: "win32" });
   const commands: Array<Record<string, unknown>> = [];
   let capturePending = true;
+  let desktopLocked = false;
+  let inputErrorDetails: Record<string, unknown> | undefined;
+  const lockDetails = { reason: "macos_desktop_locked", dispatched: false };
   const pendingCaptureDetails = { reason: "native_capture_pending", capture_phase: "screen_capture", retry_after_ms: 1000 };
   function makeWorker() {
     const worker = Object.assign(new EventEmitter(), {
@@ -42,6 +60,13 @@ it("uses the native helper with the same session, observation and cancellation c
     worker.stdin.on("data", (data: Buffer) => {
       const command = JSON.parse(data.toString()) as Record<string, unknown>;
       commands.push(command);
+      const details = command.action === "observe" && desktopLocked ? lockDetails
+        : command.action === "key" ? inputErrorDetails : undefined;
+      if (details) {
+        queueMicrotask(() => worker.stdout.write(`${JSON.stringify({ id: command.id,
+          error: "Desktop capture and input unavailable", error_details: details })}\n`));
+        return;
+      }
       if (command.action === "observe" && capturePending) {
         capturePending = false;
         queueMicrotask(() => worker.stdout.write(`${JSON.stringify({ id: command.id,
@@ -105,6 +130,47 @@ it("uses the native helper with the same session, observation and cancellation c
     expect(commands).toHaveLength(commandCount);
     expect(await desktop.run({ action: "observe", session_id: opened.session_id })).toMatchObject({
       session_id: opened.session_id, state: "ready" });
+
+    desktopLocked = true;
+    const lockedCapture = await desktop.run({ action: "observe", session_id: opened.session_id }).catch((error: unknown) => error);
+    expect(lockedCapture).toMatchObject({ code: "TARGET_NOT_READY", details: lockDetails });
+    expect(errorResult({ toolset_hash: "fixture", policy_epoch: 1 }, lockedCapture)).toMatchObject({
+      isError: true, structuredContent: { error: { code: "TARGET_NOT_READY", details: lockDetails } },
+    });
+    expect(errorResult({ toolset_hash: "fixture", policy_epoch: 1 }, lockedCapture)).not.toHaveProperty("_meta");
+    expect(desktop.status()).toMatchObject({ state: "unavailable", frame_ready: false, session_id: opened.session_id });
+    expect(desktop.status()).not.toHaveProperty("required_os_permission");
+    expect(desktop.status().next_action).toMatchObject({ arguments: { action: "observe", session_id: opened.session_id } });
+    desktopLocked = false;
+    image = await desktop.run({ action: "observe", session_id: opened.session_id });
+    inputErrorDetails = lockDetails;
+    const rejectedKey = { ...physical, observation_id: image.observation_id, idempotency_key: "locked-before-key" };
+    await expect(desktop.run(rejectedKey)).rejects.toMatchObject({ code: "TARGET_NOT_READY", details: lockDetails });
+    expect(oldOperations.getState(rejectedKey.idempotency_key)).toBe("failed");
+    expect(desktop.status()).toMatchObject({ state: "unavailable", frame_ready: false, session_id: opened.session_id });
+    const afterRejection = commands.length;
+    await expect(desktop.run(rejectedKey)).rejects.toMatchObject({ code: "TARGET_NOT_READY", details: lockDetails });
+    expect(commands).toHaveLength(afterRejection);
+    inputErrorDetails = undefined;
+    image = await desktop.run({ action: "observe", session_id: opened.session_id });
+    expect(image).toMatchObject({ state: "ready", session_id: opened.session_id });
+    desktopLocked = true;
+    const sentKey = { ...physical, observation_id: image.observation_id, idempotency_key: "sent-before-lock" };
+    expect(await desktop.run(sentKey)).toMatchObject({ state: "completed", dispatched: true,
+      observation_required: true, observation_error_details: lockDetails });
+    expect(oldOperations.getState(sentKey.idempotency_key)).toBe("completed");
+    const afterSent = commands.length;
+    expect(await desktop.run(sentKey)).toMatchObject({ replayed: true, dispatched: true });
+    expect(commands).toHaveLength(afterSent);
+    desktopLocked = false;
+    image = await desktop.run({ action: "observe", session_id: opened.session_id });
+    // A missing explicit no-dispatch guarantee must retain ambiguity and never replay.
+    inputErrorDetails = { reason: "macos_desktop_locked" };
+    const uncertainKey = { ...physical, observation_id: image.observation_id, idempotency_key: "uncertain-key" };
+    expect(await desktop.run(uncertainKey)).toMatchObject({ state: "unknown", dispatched: "unknown" });
+    const afterUncertain = commands.length;
+    expect(await desktop.run(uncertainKey)).toMatchObject({ state: "unknown", dispatched: "unknown" });
+    expect(commands).toHaveLength(afterUncertain);
     expect(worker.kill).not.toHaveBeenCalled();
     expect(await desktop.run({ action: "close", session_id: opened.session_id })).toMatchObject({ state: "closed" });
     expect(worker.kill).toHaveBeenCalledOnce();

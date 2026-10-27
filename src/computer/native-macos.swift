@@ -4,7 +4,9 @@ import ImageIO
 import ScreenCaptureKit
 
 // Private JSON-lines helper, launched by the logged-in HostSpan desktop runtime.
+#if !HOSTSPAN_DESKTOP_AVAILABILITY_TEST
 @main
+#endif
 struct DesktopWorker {
     static var opened = false
     static var displayID = CGMainDisplayID()
@@ -133,6 +135,20 @@ struct DesktopWorker {
         NSError(domain: "HostSpanDesktop", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 
+    @MainActor
+    static func requireUnlockedDesktop(_ session: [String: Any]? = CGSessionCopyCurrentDictionary() as? [String: Any]) throws {
+        if session?["CGSSessionScreenIsLocked"] as? Bool == true {
+            // Discard a capture retained after an earlier bounded observe; never return it after unlock.
+            capture?.cancel()
+            capture = nil
+            activity(nil)
+            throw NSError(domain: "HostSpanDesktop", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Desktop capture and input are unavailable while the macOS console is locked. Keep this session and observe again when the desktop is available.",
+                "error_details": ["reason": "macos_desktop_locked", "dispatched": false]
+            ])
+        }
+    }
+
     static func requireGUILaunch(for permission: String) throws {
         let environment = ProcessInfo.processInfo.environment
         if environment["SSH_CONNECTION"] != nil || environment["SSH_TTY"] != nil {
@@ -191,8 +207,9 @@ struct DesktopWorker {
             return geometry()
         }
         guard opened else { throw failure("Desktop session is closed") }
+        try requireUnlockedDesktop()
         activity(true)
-        defer { if capture?.process.isRunning != true { activity(false) } }
+        defer { if capture?.process.isRunning != true && activityPanel != nil { activity(false) } }
         if action == "observe" {
             guard #available(macOS 14.0, *) else { throw failure("Native capture is unavailable") }
             guard CGPreflightScreenCaptureAccess() else { throw failure("Screen Recording permission was revoked") }
@@ -205,7 +222,9 @@ struct DesktopWorker {
                 // The system rectangle capture includes system UI, unlike window composition.
                 if capture == nil { capture = try DisplayCapture(displayID: displayID) }
                 guard let pending = capture else { throw failure("Could not start display capture") }
-                guard await pending.ready(until: responseDeadline) else {
+                let ready = await pending.ready(until: responseDeadline)
+                try requireUnlockedDesktop()
+                guard ready else {
                     throw capturePending()
                 }
                 capture = nil
@@ -229,6 +248,8 @@ struct DesktopWorker {
                 let filter = SCContentFilter(display: display, excludingWindows: [])
                 image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
             }
+            // The console may have locked while capture was awaiting its result.
+            try requireUnlockedDesktop()
             guard let png = capturedPNG ?? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
                 throw failure("Could not encode captured PNG")
             }
