@@ -131,6 +131,8 @@ A breaking contract must use a new toolset version rather than silently changing
 
 Targets with the explicit `terminal` capability may start `process_start` with `tty=true`. ChatGPT then uses the same durable `process_id` with `process_poll`, `process_write`, and `process_cancel`. `process_write` can send text, control keys such as `C-c`, and resize updates, and every write carries its own UUIDv7 idempotency key. The HostSpan PTY session worker survives daemon restart; an ambiguous write that crosses a crash boundary is reported as unknown rather than replayed automatically.
 
+`process_start.wait_ms` accepts integer milliseconds from 0 to 1500 (default 1200). This short response-wait budget does not limit the command's execution time. If it is still running, keep the returned `process_id` and continue with `process_poll`, whose `wait_ms` also accepts 0–1500 (default 0); do not start the command again to wait longer. Use `deadline_ms` only when execution should actually be stopped after that duration.
+
 An `exec` target can run native non-interactive programs. A target with `terminal` can also host a writable shell, REPL, or TUI. Both paths run as the HostSpan OS user; deadline, output, concurrency, and idempotency controls remain enforced. Enable these capabilities only on targets where that authority is acceptable.
 
 ## Distinguish client-side blocking from server failures
@@ -143,6 +145,8 @@ hostspan support-export ./hostspan-support.json
 ```
 
 HostSpan records transport requests and accepted tool calls, plus pre-handler `validation` and `authorization` failures. Correlate `request_id` with the client request and the server version/time window: absence in a retained journal alone does not prove a global permission denial. `system_status.authorization` reports the granted scopes; client tool visibility and approval-card state are not observable by HostSpan. A client pre-dispatch refusal creates no HostSpan process ID. Do not fabricate an execution result or retry through another authority.
+
+For an authenticated call with an out-of-range `wait_ms`, HostSpan returns HTTP 200 with an MCP tool error (`isError: true`, `VALIDATION_FAILED`, reason `invalid_tool_arguments`) identifying the allowed bound. It sends no OAuth challenge for that argument error; correct the argument under the existing authority. A genuine `SCOPE_DENIED` with reason `oauth_scope` remains a separate authorization failure.
 
 If the trace shows `GET /authorize` and a successful `POST /authorize`, an authorization code exists, but ChatGPT never sends `POST /token`, compare the public OAuth metadata and redirect response against a known-working MCP SDK server before attributing the failure to the client. HostSpan intentionally uses the SDK-compatible root authorization paths and does not add an RFC 9207 `iss` parameter that the working DevSpace flow does not advertise.
 

@@ -4,6 +4,7 @@ import { createMcpFastifyApp } from "@modelcontextprotocol/fastify";
 import { toNodeHandler, type NodeIncomingMessageLike } from "@modelcontextprotocol/node";
 import {
   bearerAuthChallengeResponse,
+  classifyInboundRequest,
   createMcpHandler,
   McpServer,
   OAuthError,
@@ -205,7 +206,14 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
     const body = request.body as { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: { name?: unknown; arguments?: unknown } } | undefined;
     if (request.method === "POST" && body?.jsonrpc === "2.0" && (typeof body.id === "string" || typeof body.id === "number") && body.method === "tools/call") {
       const tool = TOOL_DEFINITIONS.find((entry) => entry.name === body.params?.name);
-      if (tool) {
+      const route = classifyInboundRequest({
+        httpMethod: request.method,
+        ...(request.headers["mcp-protocol-version"] !== undefined ? { protocolVersionHeader: request.headers["mcp-protocol-version"].toString() } : {}),
+        ...(request.headers["mcp-method"] !== undefined ? { mcpMethodHeader: request.headers["mcp-method"].toString() } : {}),
+        ...(request.headers["mcp-name"] !== undefined ? { mcpNameHeader: request.headers["mcp-name"].toString() } : {}),
+        body,
+      });
+      if (tool && route.kind !== "reject") {
         // SDK schema failures bypass tool handlers. Preserve their detail and correlate them in our audit.
         // Valid calls still pass through the SDK's protocol and schema checks.
         const args = body.params?.arguments ?? {};
@@ -216,7 +224,11 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
             : [`arguments exceed the ${MAX_TOOL_INPUT_ELEMENTS} element validation budget`];
           const error = new HostSpanError("VALIDATION_FAILED", `Invalid ${tool.name} arguments: ${issues.join("; ")}`, false, { reason: "invalid_tool_arguments" });
           options.authorization?.rejected?.(tool.name, {}, id, error, "validation", tool.name === "computer" ? caller : undefined);
-          return reply.send({ jsonrpc: "2.0", id: body.id ?? null, result: errorResult(options.responseContext(), error, id) });
+          // This direct reply bypasses the SDK's modern wire-result stamp.
+          return reply.send({ jsonrpc: "2.0", id: body.id ?? null, result: {
+            ...errorResult(options.responseContext(), error, id),
+            ...(route.kind === "modern" ? { resultType: "complete" } : {}),
+          } });
         }
       }
     }

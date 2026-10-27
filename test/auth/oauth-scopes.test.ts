@@ -12,7 +12,7 @@ import type { HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
 import { HostSpanError } from "../../src/errors.js";
 import { errorResult } from "../../src/mcp/result.js";
-import { TOOL_NAMES, TOOLSET_HASH, type HostSpanToolHandlers } from "../../src/mcp/registry.js";
+import { TOOL_NAMES, TOOLSET_HASH, toolsetDocument, type HostSpanToolHandlers } from "../../src/mcp/registry.js";
 import { createHostSpanHttpServer } from "../../src/mcp/server.js";
 
 const roots: string[] = [];
@@ -166,7 +166,7 @@ function testApp(runtime: HostSpanRuntime, calls: string[]) {
   });
 }
 
-async function callTool(app: FastifyInstance, token: string, name: string, args: Record<string, unknown>) {
+async function callTool(app: FastifyInstance, token: string, name: string, args: Record<string, unknown>, protocolVersion = "2026-07-28") {
   const response = await app.inject({
     method: "POST",
     url: "/mcp",
@@ -177,18 +177,20 @@ async function callTool(app: FastifyInstance, token: string, name: string, args:
       "content-type": "application/json",
       "mcp-method": "tools/call",
       "mcp-name": name,
-      "mcp-protocol-version": "2026-07-28",
+      "mcp-protocol-version": protocolVersion,
     },
     payload: {
       jsonrpc: "2.0",
       id: `call-${name}-${uuidv7()}`,
       method: "tools/call",
-      params: { name, arguments: args, _meta: modernMeta() },
+      params: { name, arguments: args, ...(protocolVersion === "2026-07-28" ? { _meta: modernMeta() } : {}) },
     },
   });
   expect(response.statusCode, response.body).toBe(200);
+  expect(response.headers["www-authenticate"]).toBeUndefined();
   return response.json() as {
     result?: {
+      resultType?: string;
       isError?: boolean;
       _meta?: { "mcp/www_authenticate"?: string[] };
       structuredContent?: Record<string, unknown>;
@@ -234,6 +236,49 @@ const startArgs = (tty: boolean) => ({
   deadline_ms: 1_000,
   max_output_bytes: 1_024,
   tty,
+});
+
+it("keeps invalid response waits distinct from insufficient scope without dispatch", async () => {
+  const { runtime, approvalSecret } = fixture();
+  const oauth = runtime.oauth;
+  if (!oauth) throw new Error("OAuth runtime was not initialized.");
+  const calls: string[] = [];
+  const app = testApp(runtime, calls);
+  try {
+    expect(toolsetDocument().tools.find((tool) => tool.name === "process_start")?.input_schema).toMatchObject({
+      properties: { wait_ms: { type: "integer", minimum: 0, maximum: 1_500, default: 1_200 } },
+    });
+    const exec = issueToken(oauth, approvalSecret, "hostspan.read hostspan.exec");
+    const terminal = issueToken(oauth, approvalSecret, "hostspan.read hostspan.terminal", exec.clientId);
+    for (const grant of [exec, terminal]) {
+      const body = await callTool(app, grant.token.access_token, "process_start", { ...startArgs(false), wait_ms: 10_000 });
+      expect(body.result).toMatchObject({ resultType: "complete", isError: true, structuredContent: { error: {
+        code: "VALIDATION_FAILED", message: expect.stringMatching(/wait_ms.*1500/),
+        details: { reason: "invalid_tool_arguments" },
+      } } });
+      expect(body.result?._meta?.["mcp/www_authenticate"]).toBeUndefined();
+    }
+    const legacy = await callTool(app, exec.token.access_token, "process_start", { ...startArgs(false), wait_ms: 10_000 }, "2025-11-25");
+    expect(legacy.result).toMatchObject({ isError: true, structuredContent: { error: { code: "VALIDATION_FAILED" } } });
+    expect(legacy.result?.resultType).toBeUndefined();
+    expect(legacy.result?._meta?.["mcp/www_authenticate"]).toBeUndefined();
+    const denied = await callTool(app, terminal.token.access_token, "process_start", { ...startArgs(false), wait_ms: 1_000 });
+    expect(denied.result?.resultType).toBe("complete");
+    expectScopeDenied(denied, "hostspan.exec");
+    const challenge = denied.result?._meta?.["mcp/www_authenticate"];
+    expect(challenge).toHaveLength(1);
+    for (const value of ['error="insufficient_scope"', "hostspan.read", "hostspan.terminal", "hostspan.exec"]) {
+      expect(challenge?.[0]).toContain(value);
+    }
+    expect(calls).toEqual([]);
+    const allowed = await callTool(app, exec.token.access_token, "system_status", {});
+    expectAllowed(allowed, "system_status");
+    expect(allowed.result?.resultType).toBe("complete");
+    expect(calls).toEqual(["system_status"]);
+  } finally {
+    await app.close();
+    await runtime.close();
+  }
 });
 
 describe("OAuth scope split", () => {
