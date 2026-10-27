@@ -110,7 +110,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "process_start" as const,
-    _meta: oauthMetadata(),
+    _meta: oauthMetadata(HOSTSPAN_OAUTH_SCOPE_EXEC, HOSTSPAN_OAUTH_SCOPE_TERMINAL),
     description:
       "Start one durable process with no implicit deadline; wait_ms and max_bytes bound the response, max_output_bytes bounds rolling output retention without stopping execution. Set deadline_ms for an explicit lifetime or tty=true for an interactive terminal on targets with terminal capability.",
     inputSchema: ProcessStartInputSchema,
@@ -132,7 +132,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: "process_cancel" as const,
-    _meta: oauthMetadata(),
+    _meta: oauthMetadata(HOSTSPAN_OAUTH_SCOPE_EXEC, HOSTSPAN_OAUTH_SCOPE_TERMINAL),
     description:
       "Idempotently stop a supervised process: terminate the native process group or close the durable interactive session as appropriate.",
     inputSchema: ProcessCancelInputSchema,

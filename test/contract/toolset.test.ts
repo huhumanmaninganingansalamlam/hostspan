@@ -17,7 +17,7 @@ const modernMeta = {
   "io.modelcontextprotocol/clientCapabilities": {},
 };
 
-const HOSTSPAN_V3_5_APPROVED_TOOLSET_HASH = "sha256:4d4f74ea0ea02a00aa63d8942c8412319a5a725cb3c82696f1e8bd0a892629a0";
+const HOSTSPAN_V3_5_APPROVED_TOOLSET_HASH = "sha256:5666e75b734347d6cc1ee8dc4f6e516547a1ce2a1340aa6d4dc736592e37fcd7";
 
 async function toolsListOnce(handler: ReturnType<typeof createMcpHandler>, id: number): Promise<Array<Record<string, unknown>>> {
   const response = await handler.fetch(

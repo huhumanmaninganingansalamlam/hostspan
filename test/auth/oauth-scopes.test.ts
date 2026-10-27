@@ -386,9 +386,23 @@ it("preserves advertised granular grants and enforces exec separately from termi
         "hostspan.computer", "hostspan.read", "hostspan.write", "hostspan.exec", "hostspan.terminal",
       ]);
     }
-    // The static tool metadata requires OAuth; its argument-dependent scope is enforced on each call.
-    expect(toolsetDocument().tools.find((tool) => tool.name === "process_start")?._meta.securitySchemes)
-      .toEqual([{ type: "oauth2", scopes: [] }]);
+    // Static discovery requests both possible scopes; each call still enforces only its branch.
+    const allScopes = ["hostspan.computer", "hostspan.read", "hostspan.write", "hostspan.exec", "hostspan.terminal"];
+    const full = issueToken(oauth, approvalSecret, allScopes.join(" "));
+    expect(oauth.verifyAccessToken(full.token.access_token)?.scopes).toEqual(allScopes);
+    const refreshed = refreshToken(oauth, full.clientId, full.token.refresh_token);
+    expect(oauth.verifyAccessToken(refreshed.access_token)?.scopes).toEqual(allScopes);
+    const listed = await app.inject({ method: "POST", url: "/mcp",
+      headers: { host: "mcp.example.com", accept: "application/json, text/event-stream", "content-type": "application/json",
+        "mcp-method": "tools/list", "mcp-protocol-version": "2026-07-28", authorization: `Bearer ${refreshed.access_token}` },
+      payload: { jsonrpc: "2.0", id: 1, method: "tools/list", params: { _meta: modernMeta() } },
+    });
+    expect(listed.statusCode).toBe(200);
+    const tools = listed.json().result.tools as Array<{ name: string; _meta?: { securitySchemes?: unknown } }>;
+    for (const name of ["process_start", "process_cancel"]) {
+      expect(tools.find((tool) => tool.name === name)?._meta?.securitySchemes)
+        .toEqual([{ type: "oauth2", scopes: ["hostspan.exec", "hostspan.terminal"] }]);
+    }
     const scopes = ["hostspan.computer", "hostspan.read", "hostspan.write", "hostspan.terminal"];
     const grant = issueToken(oauth, approvalSecret, scopes.join(" "));
     expect(oauth.verifyAccessToken(grant.token.access_token)?.scopes).toEqual(scopes);
