@@ -480,6 +480,57 @@ it("correlates early authentication, validation and scope rejects without retain
   }
 });
 
+it("retains bounded schema field and issue codes without validation payloads", async () => {
+  const { runtime, approvalSecret } = fixture();
+  if (!runtime.oauth) throw new Error("OAuth runtime was not initialized.");
+  const calls: string[] = [];
+  const traces: Array<Record<string, unknown>> = [];
+  const app = testApp(runtime, calls, traces);
+  const grant = issueToken(runtime.oauth, approvalSecret, "hostspan.read hostspan.exec");
+  const secret = "private-validation-value-DO-NOT-RETAIN";
+  try {
+    for (const protocol of ["2026-07-28", "2025-11-25"]) {
+      const body = await callTool(app, grant.token.access_token, "process_start", {
+        ...startArgs(false), idempotency_key: secret, wait_ms: 10_000,
+        argv: [secret], env: { [secret]: { value: secret } }, [secret]: secret,
+      }, protocol);
+      expect(body.result).toMatchObject({ isError: true, structuredContent: { error: { code: "VALIDATION_FAILED" } } });
+      expect(body.result?._meta?.["mcp/www_authenticate"]).toBeUndefined();
+      const rejected = traces.find((row) => row.event === "validation.rejected"
+        && row.request_id === body.result?.structuredContent?.request_id);
+      expect(rejected).toMatchObject({ validation_issue_count: 4, validation_issues: [
+        { field: "idempotency_key", code: "invalid_format" },
+        { field: "env", code: "invalid_type" },
+        { field: "wait_ms", code: "too_big" },
+        { field: "arguments", code: "unrecognized_keys" },
+      ] });
+    }
+    const many = await callTool(app, grant.token.access_token, "process_start", {
+      ...startArgs(false), env: Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`${secret}-${i}`, null])),
+    });
+    const bounded = traces.find((row) => row.event === "validation.rejected"
+      && row.request_id === many.result?.structuredContent?.request_id);
+    expect(bounded).toMatchObject({ validation_issue_count: 40 });
+    expect(bounded?.validation_issues).toHaveLength(16);
+    expect(bounded?.validation_issues).toEqual(Array.from({ length: 16 }, () => ({ field: "env", code: "invalid_type" })));
+
+    const union = await callTool(app, grant.token.access_token, "computer", { action: secret });
+    expect(traces).toContainEqual(expect.objectContaining({ request_id: union.result?.structuredContent?.request_id,
+      validation_issues: [{ field: "action", code: "invalid_union" }] }));
+    const budget = await callTool(app, grant.token.access_token, "process_start", {
+      ...startArgs(false), env: Object.fromEntries(Array.from({ length: 10_001 }, (_, i) => [`${secret}-${i}`, secret])),
+    });
+    expect(traces).toContainEqual(expect.objectContaining({ request_id: budget.result?.structuredContent?.request_id,
+      validation_issue_count: 1, validation_issues: [{ field: "arguments", code: "input_budget_exceeded" }] }));
+    expect(JSON.stringify({ traces, audit: runtime.audit.recent() })).not.toContain(secret);
+    expect(calls).toEqual([]);
+    expect(runtime.processes.active()).toEqual([]);
+  } finally {
+    await app.close();
+    await runtime.close();
+  }
+});
+
 describe("OAuth scope split", () => {
   it("defaults new grants to read and only allows refresh to preserve or narrow authority", async () => {
     const { runtime, approvalSecret } = fixture();

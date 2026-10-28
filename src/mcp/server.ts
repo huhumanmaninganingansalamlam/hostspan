@@ -306,8 +306,15 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
             : [`arguments exceed the ${MAX_TOOL_INPUT_ELEMENTS} element validation budget`];
           const error = new HostSpanError("VALIDATION_FAILED", `Invalid ${tool.name} arguments: ${issues.join("; ")}`, false, { reason: "invalid_tool_arguments" });
           options.authorization?.rejected?.(tool.name, invocation, id, error, "validation", tool.name === "computer" ? caller : undefined);
+          // Schema-owned top-level names only: nested record keys and issue messages can contain caller data.
+          const fields = new Set("shape" in tool.inputSchema ? Object.keys(tool.inputSchema.shape)
+            : tool.inputSchema.options.flatMap((option) => Object.keys(option.shape)));
+          const validationIssues = parsed ? parsed.error.issues.slice(0, 16).map(({ path, code }) => ({
+            field: typeof path[0] === "string" && fields.has(path[0]) ? path[0] : "arguments", code,
+          })) : [{ field: "arguments", code: "input_budget_exceeded" }];
           options.trace?.("validation.rejected", { transport_request_id: request.id, ...invocation,
-            request_id: id, tool: tool.name, stage: "validation", error_code: error.code, reason: "invalid_tool_arguments" });
+            request_id: id, tool: tool.name, stage: "validation", error_code: error.code, reason: "invalid_tool_arguments",
+            validation_issues: validationIssues, validation_issue_count: parsed ? parsed.error.issues.length : 1 });
           reply.header("x-hostspan-request-id", id);
           // This direct reply bypasses the SDK's modern wire-result stamp.
           return reply.send({ jsonrpc: "2.0", id: body.id ?? null, result: {
