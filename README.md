@@ -75,6 +75,15 @@ For a complete file, use `file_read(start_byte=0)` and continue from `next_byte`
 
 Recover lost execution IDs with read-only `process_list(target_id, cwd)`; it lists active HostSpan-owned processes in that directory and descendants. Use `active_only=false` for completed work and the returned `cursor` for another page. Poll the recovered ID using its output cursors. `exit_code_scope=spawned_command` identifies the wrapper's exit status; read a nested program's result file separately. Continue polling while `has_more_output`; `output_expired` and dropped-byte counters distinguish expired or evicted history from empty output.
 
+If your native client has no registered HostSpan `process_poll` tool, use the installed CLI on the HostSpan host as the same profile owner. A ChatGPT plugin connection does not itself register tools in a separate native client. The CLI uses the existing authenticated local daemon channel and the same polling handler; it does not start a process, attach a terminal, or require another OAuth flow:
+
+```bash
+hostspan process poll --process ORIGINAL_PROCESS_ID --config /path/to/config.yaml \
+  --stdout-cursor 0 --stderr-cursor 0 --wait-ms 1000 --max-bytes 65536
+```
+
+Use your retained cursors instead of `0` after an earlier read, then continue with `next_stdout_cursor` and `next_stderr_cursor`. `wait_ms` is 0–1500 (default 0); `max_bytes` is 1–4194304 (default 131072). `has_more_output` covers the available output at that response, not process completion. Read `state`, `exit_code` and `signal` separately; a successful CLI retrieval exits 0 even when the original command failed. `output_expired`, `stdout_dropped_bytes`, `stderr_dropped_bytes` and earliest cursors identify unavailable history. A missing or older daemon returns `TARGET_NOT_READY`; it never triggers a reconnect, restarts the daemon, or replays the command. Keep one recovery owner for the original process.
+
 `file_read` may scan forward to a requested late line independently of the response `max_bytes`, but each call has a fixed 64 MiB line-scan ceiling. Requests beyond that bound fail explicitly with `reason=file_read_scan_limit`; use `file_search` to narrow the location first rather than turning one read into an unbounded filesystem scan.
 
 ## Run the server

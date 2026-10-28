@@ -21,12 +21,13 @@ import { ProcessesRepo } from "../state/processes-repo.js";
 import { TargetRegistry } from "../targets/registry.js";
 import { PROTOCOL_VERSION, SERVER_VERSION } from "../version.js";
 import { runDoctor } from "../diagnostics/doctor.js";
-import { daemonStatus, removeDaemonPid, requestDaemonComputer, startDaemon, startDaemonControlServer, stopDaemon, writeDaemonPid } from "../daemon/control.js";
+import { daemonStatus, removeDaemonPid, requestDaemonComputer, requestDaemonProcessPoll, startDaemon, startDaemonControlServer, stopDaemon, writeDaemonPid } from "../daemon/control.js";
 import { installSystemdService, runServiceCommand } from "../services/systemd.js";
 import { runSmoke } from "./smoke.js";
 import { createRuntime, runtimeReadiness } from "../runtime/create-runtime.js";
 import { ComputerInputSchema, supportedDesktopSession } from "../computer/portal.js";
 import { errorResult, requestId, successResult } from "../mcp/result.js";
+import { ProcessPollInputSchema } from "../tools/schemas.js";
 
 function flag(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -68,7 +69,7 @@ function isLoopbackHost(host: string): boolean {
 }
 
 function usage(): string {
-  return `HostSpan ${SERVER_VERSION}\n\nCommands:\n  init [--config PATH]\n  serve [--config PATH]\n  daemon start|stop|status [--config PATH]\n  doctor [--config PATH]\n  computer status|enable|disable [--json] [--config PATH]\n  computer inspect [--config PATH]\n  computer call --input JSON [--config PATH]\n    Use this profile owner's authenticated daemon and existing desktop session.\n  smoke --target TARGET [--config PATH]\n  status [--verbose] [--config PATH]\n  admin snapshot [--recent N] [--config PATH]\n  terminal list|attach --process PROCESS_ID [--read-only] [--config PATH]\n  targets list|add|remove ... [--config PATH]\n  oauth init --public-url https://host/mcp [--config PATH]\n  oauth status [--config PATH]\n  oauth rotate-secret [--config PATH]\n  policy validate [--config PATH]\n  print-toolset\n  logs [--follow] [--config PATH]\n  support-export [PATH] [--config PATH]\n  service install|start|stop|restart|status [--config PATH]\n  --version\n`;
+  return `HostSpan ${SERVER_VERSION}\n\nCommands:\n  init [--config PATH]\n  serve [--config PATH]\n  daemon start|stop|status [--config PATH]\n  doctor [--config PATH]\n  computer status|enable|disable [--json] [--config PATH]\n  computer inspect [--config PATH]\n  computer call --input JSON [--config PATH]\n    Use this profile owner's authenticated daemon and existing desktop session.\n  smoke --target TARGET [--config PATH]\n  status [--verbose] [--config PATH]\n  admin snapshot [--recent N] [--config PATH]\n  terminal list|attach --process PROCESS_ID [--read-only] [--config PATH]\n  process poll --process PROCESS_ID [--stdout-cursor N] [--stderr-cursor N]\n    [--wait-ms 0..1500] [--max-bytes 1..4194304] [--config PATH]\n    Read the original result through this profile owner's running daemon; never starts a process.\n  targets list|add|remove ... [--config PATH]\n  oauth init --public-url https://host/mcp [--config PATH]\n  oauth status [--config PATH]\n  oauth rotate-secret [--config PATH]\n  policy validate [--config PATH]\n  print-toolset\n  logs [--follow] [--config PATH]\n  support-export [PATH] [--config PATH]\n  service install|start|stop|restart|status [--config PATH]\n  --version\n`;
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
@@ -87,6 +88,25 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   }
 
   const configPath = resolve(flag(argv, "--config") ?? defaultConfigPath());
+  if (command === "process") {
+    if (argv[1] !== "poll") throw cliValidationError("process requires poll --process PROCESS_ID");
+    const names: Record<string, string> = { "--process": "process_id", "--stdout-cursor": "stdout_cursor",
+      "--stderr-cursor": "stderr_cursor", "--wait-ms": "wait_ms", "--max-bytes": "max_bytes" };
+    const input: Record<string, unknown> = {};
+    for (let index = 2; index < argv.length; index += 2) {
+      const option = argv[index] ?? "";
+      const value = argv[index + 1];
+      const field = names[option];
+      if ((!field && option !== "--config") || value === undefined || value.startsWith("--") || (field && field in input)) {
+        throw cliValidationError(`Invalid or missing process poll option: ${option}`);
+      }
+      if (field) input[field] = field === "process_id" ? value : Number(value);
+    }
+    const parsed = ProcessPollInputSchema.safeParse(input);
+    if (!parsed.success) throw cliValidationError(`Invalid process poll arguments: ${parsed.error.message}`);
+    print(await requestDaemonProcessPoll(configPath, parsed.data));
+    return 0;
+  }
   if (command === "computer") {
     const action = argv[1] ?? "status";
     if (action === "inspect") {
@@ -270,6 +290,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
           } catch (error) {
             return errorResult(context, error, id, true);
           }
+        }, async (input) => {
+          const id = requestId();
+          return { request_id: id, ...await runtime.handlers.process_poll(input, id) };
         });
         runtime.activate();
         return started;

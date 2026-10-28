@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { loadConfig } from "../config/loader.js";
 import { asHostSpanError, HostSpanError } from "../errors.js";
 import { ComputerInputSchema, type ComputerInput } from "../computer/portal.js";
+import { ProcessPollInputSchema, type ProcessPollToolInput } from "../tools/schemas.js";
 
 export type DaemonComputerInput = ComputerInput | { action: "status" };
 
@@ -32,6 +33,7 @@ export async function startDaemonControlServer(
   configPath: string,
   onShutdown: () => void,
   onComputer?: (input: DaemonComputerInput) => Promise<unknown>,
+  onProcessPoll?: (input: ProcessPollToolInput) => Promise<Record<string, unknown>>,
 ): Promise<{ address: string; close(): Promise<void> }> {
   const control = daemonControlPaths(configPath);
   mkdirSync(dirname(control.token_path), { recursive: true, mode: 0o700 });
@@ -76,6 +78,13 @@ export async function startDaemonControlServer(
         const request = JSON.parse(input.slice(0, newline)) as { token?: string; action?: string; input?: unknown };
         if (request.token !== token) {
           socket.end(`${JSON.stringify({ ok: false })}\n`);
+          return;
+        }
+        if (request.action === "process_poll" && onProcessPoll) {
+          const parsed = ProcessPollInputSchema.safeParse(request.input);
+          if (!parsed.success) throw new HostSpanError("VALIDATION_FAILED", `Invalid process poll arguments: ${parsed.error.message}`);
+          socket.setTimeout(parsed.data.wait_ms + 5_000);
+          socket.end(`${JSON.stringify({ ok: true, result: await onProcessPoll(parsed.data) })}\n`);
           return;
         }
         if (request.action === "computer" && onComputer) {
@@ -141,7 +150,7 @@ export async function startDaemonControlServer(
   };
 }
 
-async function requestDaemonControl(configPath: string, request: Record<string, unknown>, timeoutMs = 2_000): Promise<Record<string, unknown> | null> {
+async function requestDaemonControl(configPath: string, request: Record<string, unknown>, timeoutMs = 2_000, maxResponseChars = 24 * 1024 * 1024): Promise<Record<string, unknown> | null> {
   const control = daemonControlPaths(configPath);
   if (!existsSync(control.token_path)) return null;
   let token: string;
@@ -169,7 +178,7 @@ async function requestDaemonControl(configPath: string, request: Record<string, 
     socket.once("connect", () => socket.write(`${JSON.stringify({ ...request, token })}\n`));
     socket.on("data", (chunk: string) => {
       response += chunk;
-      if (response.length > 24 * 1024 * 1024) { finish(null); return; }
+      if (response.length > maxResponseChars) { finish(null); return; }
       const newline = response.indexOf("\n");
       if (newline < 0) return;
       try {
@@ -197,6 +206,15 @@ export async function requestDaemonComputer(configPath: string, input: DaemonCom
   const error = receipt?.error as { code: HostSpanError["code"]; message: string; retryable: boolean; details: Record<string, unknown> } | undefined;
   if (error) throw new HostSpanError(error.code, error.message, error.retryable, error.details);
   throw new HostSpanError("TARGET_NOT_READY", "The running daemon did not return a computer result. It may need an update; input delivery is unknown. Do not replay input automatically.");
+}
+
+export async function requestDaemonProcessPoll(configPath: string, input: ProcessPollToolInput): Promise<Record<string, unknown>> {
+  // A byte of output may expand to six JSON characters; retain a bounded metadata allowance.
+  const receipt = await requestDaemonControl(configPath, { action: "process_poll", input }, input.wait_ms + 5_000, input.max_bytes * 6 + 65_536);
+  if (receipt?.ok === true && receipt.result && typeof receipt.result === "object") return receipt.result as Record<string, unknown>;
+  const error = receipt?.error as { code: HostSpanError["code"]; message: string; retryable: boolean; details: Record<string, unknown> } | undefined;
+  if (error) throw new HostSpanError(error.code, error.message, error.retryable, error.details);
+  throw new HostSpanError("TARGET_NOT_READY", "This profile's running daemon is unavailable or does not support process poll. Use a matching daemon version; no process was started or cancelled.");
 }
 
 function readPidFile(path: string): number | null {
