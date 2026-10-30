@@ -22,7 +22,7 @@ it("discovers original handles then polls them without execution, cross-path lea
   const id = (n: number) => `proc_${n.toString(16).padStart(32, "0")}`;
   for (const [n, cwd, backend, state, exit] of [
     [1, "project", "native", "failed", 7],
-    [2, "project/nested", "pty", "unknown", null],
+    [2, join("project", "nested"), "pty", "unknown", null],
     [3, "project-other", "native", "succeeded", 0],
     [4, "project", "native", "running", null],
   ] as const) {
