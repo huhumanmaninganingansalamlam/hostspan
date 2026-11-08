@@ -126,4 +126,17 @@ describe("desktop environment", () => {
     expect(unit).not.toMatch(/^NoNewPrivileges=/m);
     expect(unit).toContain(`Environment="PATH=${[runtimeDir, "/custom/bin", "/usr/bin"].join(delimiter)}"`);
   });
+
+  it.runIf(process.platform === "linux")("preserves literal paths in systemd units", () => {
+    const unit = buildSystemdServiceUnit(
+      "/tmp/Host %u/$HOME/config.yaml",
+      "/tmp/Host %u/$HOME/cli.js",
+      "/opt/Node %u/$HOME/node",
+      "/usr/local/%u/bin:/usr/bin",
+    );
+    expect(unit).toContain('Environment="PATH=/opt/Node %%u/$HOME:/usr/local/%%u/bin:/usr/bin"');
+    expect(unit).toContain(
+      'ExecStart="/opt/Node %%u/$$HOME/node" "/tmp/Host %%u/$$HOME/cli.js" serve --config "/tmp/Host %%u/$$HOME/config.yaml"',
+    );
+  });
 });
