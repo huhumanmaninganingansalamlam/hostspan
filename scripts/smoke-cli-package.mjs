@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -190,6 +190,36 @@ try {
   if (doctor.ok !== true) throw new Error(`Installed CLI doctor failed: ${JSON.stringify(doctor.checks)}`);
   const workflow = JSON.parse(run(bin, ["smoke", "--target", "package-smoke"], { env, timeout: 180_000 }));
   if (workflow.ok !== true) throw new Error(`Installed CLI full smoke failed: ${JSON.stringify(workflow.steps)}`);
+  console.log("[package-smoke] verifying packaged private-token CLI lifecycle");
+  const credentialPath = join(scratch, "package-token.credential");
+  const created = JSON.parse(run(bin, [
+    "access", "token", "create", "--name", "package-smoke", "--scopes", "hostspan.read", "--output", credentialPath,
+  ], { env }));
+  const tokenId = created.token?.token_id;
+  if (created.ok !== true || !/^pt_[0-9a-f]{32}$/.test(tokenId) || created.credential_file !== credentialPath) {
+    throw new Error("Installed CLI private token creation failed");
+  }
+  const firstSecret = readFileSync(credentialPath, "utf8").trim();
+  if (!/^hsp_[A-Za-z0-9_-]{43}$/.test(firstSecret) || JSON.stringify(created).includes(firstSecret)) {
+    throw new Error("Installed CLI did not deliver an opaque token only to its credential file");
+  }
+  if (process.platform !== "win32" && (statSync(credentialPath).mode & 0o777) !== 0o600) {
+    throw new Error("Installed CLI credential file must be mode 0600");
+  }
+  const rotatedPath = join(scratch, "package-token-rotated.credential");
+  const rotated = JSON.parse(run(bin, ["access", "token", "rotate", tokenId, "--output", rotatedPath], { env }));
+  const secondSecret = readFileSync(rotatedPath, "utf8").trim();
+  if (rotated.ok !== true || rotated.token?.token_id !== tokenId ||
+      !/^hsp_[A-Za-z0-9_-]{43}$/.test(secondSecret) || firstSecret === secondSecret ||
+      JSON.stringify(rotated).includes(secondSecret)) {
+    throw new Error("Installed CLI private token rotation failed");
+  }
+  const revoked = JSON.parse(run(bin, ["access", "token", "revoke", tokenId], { env }));
+  const listed = JSON.parse(run(bin, ["access", "token", "list"], { env }));
+  if (revoked.revoked !== true || listed.tokens?.find((token) => token.token_id === tokenId)?.revoked_at == null) {
+    throw new Error("Installed CLI private token revocation failed");
+  }
+
   const snapshot = JSON.parse(run(bin, ["admin", "snapshot", "--recent", "1"], { env }));
   if (snapshot.server_version !== packageJson.version) {
     throw new Error(`Installed admin snapshot version ${snapshot.server_version} does not match package.json ${packageJson.version}`);
