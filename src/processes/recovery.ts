@@ -61,44 +61,54 @@ export function recoverProcesses(
   operations: OperationsStore,
   terminal?: InteractiveSessionManager,
   outputTtlMinutes = 60,
+  native?: InteractiveSessionManager,
 ): Array<{ process_id: string; state: "running" | "succeeded" | "failed" | "timed_out" | "cancelled" | "orphaned" | "unknown" }> {
   const recovered: Array<{ process_id: string; state: "running" | "succeeded" | "failed" | "timed_out" | "cancelled" | "orphaned" | "unknown" }> = [];
   const expiresAt = (existing: string | null): string =>
     existing ?? new Date(Date.now() + outputTtlMinutes * 60_000).toISOString();
   for (const record of processes.active()) {
-    if (record.backend === "pty") {
+    if (record.backend === "pty" || record.backend_ref) {
+      const manager = record.backend === "pty" ? terminal : native;
       const session = record.backend_ref;
-      if (!terminal || !session) {
-        processes.markTerminal(record.process_id, "unknown", record.exit_code, record.term_signal, "pty_recovery_backend_unavailable", expiresAt(record.output_expires_at));
+      if (!manager || !session) {
+        processes.markTerminal(record.process_id, "unknown", record.exit_code, record.term_signal, `${record.backend}_recovery_backend_unavailable`, expiresAt(record.output_expires_at));
         operations.setState(record.idempotency_key, "unknown", {
           state: "unknown",
           process_id: record.process_id,
-          reason: "pty_recovery_backend_unavailable",
+          reason: `${record.backend}_recovery_backend_unavailable`,
           native_execution: true,
           sandboxed: false,
         });
         recovered.push({ process_id: record.process_id, state: "unknown" });
         continue;
       }
-      const state = terminal.inspectSync(session);
+      const state = manager.inspectSync(session);
       if (!state.exists) {
-        processes.markTerminal(record.process_id, "unknown", record.exit_code, record.term_signal, "pty_session_missing_after_restart", expiresAt(record.output_expires_at));
+        processes.markTerminal(record.process_id, "unknown", record.exit_code, record.term_signal, `${record.backend}_session_missing_after_restart`, expiresAt(record.output_expires_at));
         operations.setState(record.idempotency_key, "unknown", {
           state: "unknown",
           process_id: record.process_id,
-          reason: "pty_session_missing_after_restart",
+          reason: `${record.backend}_session_missing_after_restart`,
           native_execution: true,
           sandboxed: false,
         });
         recovered.push({ process_id: record.process_id, state: "unknown" });
         continue;
       }
-      processes.setBytes(record.process_id, "stdout", terminal.outputBytes(record.process_id));
-      if (record.deadline_at && record.deadline_at <= new Date().toISOString() && !state.dead) {
-        terminal.closeSync(session);
-        processes.setBytes(record.process_id, "stdout", terminal.outputBytes(record.process_id));
-        const afterClose = terminal.inspectSync(session);
-        if (afterClose.dead && terminal.outputDrained(record.process_id)) {
+      if (!state.dead && record.state === "launching" && state.pid !== null) {
+        processes.markRunning(record.process_id, state.pid, record.backend === "native" && process.platform !== "win32" ? state.pid : null);
+        operations.setState(record.idempotency_key, "running", { state: "running", process_id: record.process_id, backend: record.backend });
+      }
+      const syncOutput = () => {
+        processes.setBytes(record.process_id, "stdout", manager.outputBytes(record.process_id));
+        if (record.backend === "native") processes.setBytes(record.process_id, "stderr", manager.outputBytes(record.process_id, "stderr"));
+      };
+      syncOutput();
+      if (record.backend === "pty" && record.deadline_at && record.deadline_at <= new Date().toISOString() && !state.dead) {
+        manager.closeSync(session);
+        syncOutput();
+        const afterClose = manager.inspectSync(session);
+        if (afterClose.dead && manager.outputDrained(record.process_id)) {
           processes.markTerminal(
             record.process_id,
             "timed_out",
@@ -137,20 +147,20 @@ export function recoverProcesses(
         continue;
       }
       if (state.dead) {
-        processes.setBytes(record.process_id, "stdout", terminal.outputBytes(record.process_id));
-        if (!terminal.outputDrained(record.process_id)) {
+        syncOutput();
+        if (!manager.outputDrained(record.process_id)) {
           processes.markTerminal(
             record.process_id,
             "unknown",
             state.exit_code,
             state.signal,
-            "pty_output_drain_unconfirmed_after_restart",
+            `${record.backend}_output_drain_unconfirmed_after_restart`,
             expiresAt(record.output_expires_at),
           );
           operations.setState(record.idempotency_key, "unknown", {
             state: "unknown",
             process_id: record.process_id,
-            reason: "pty_output_drain_unconfirmed_after_restart",
+            reason: `${record.backend}_output_drain_unconfirmed_after_restart`,
             native_execution: true,
             sandboxed: false,
           });
@@ -159,11 +169,11 @@ export function recoverProcesses(
         }
         const settled = state;
         if (!settled.exists) {
-          processes.markTerminal(record.process_id, "unknown", null, null, "pty_exit_status_unavailable_after_restart", expiresAt(record.output_expires_at));
+          processes.markTerminal(record.process_id, "unknown", null, null, `${record.backend}_exit_status_unavailable_after_restart`, expiresAt(record.output_expires_at));
           operations.setState(record.idempotency_key, "unknown", {
             state: "unknown",
             process_id: record.process_id,
-            reason: "pty_exit_status_unavailable_after_restart",
+            reason: `${record.backend}_exit_status_unavailable_after_restart`,
             native_execution: true,
             sandboxed: false,
           });
@@ -172,12 +182,12 @@ export function recoverProcesses(
         }
         const terminalState = settled.reason === "deadline_exceeded" ? "timed_out" : settled.reason === "cancel_requested" ? "cancelled" : settled.exit_code === 0 ? "succeeded" : "failed";
         const reason = settled.reason ?? (settled.exit_code === 0 ? null : "nonzero_exit");
-        if (settled.exit_code === null && !settled.reason) {
-          processes.markTerminal(record.process_id, "unknown", null, settled.signal, "pty_exit_status_unavailable_after_restart", expiresAt(record.output_expires_at));
+        if (settled.reason === "termination_unconfirmed" || (settled.exit_code === null && !settled.reason && !(record.backend === "native" && settled.signal))) {
+          processes.markTerminal(record.process_id, "unknown", null, settled.signal, `${record.backend}_exit_status_unavailable_after_restart`, expiresAt(record.output_expires_at));
           operations.setState(record.idempotency_key, "unknown", {
             state: "unknown",
             process_id: record.process_id,
-            reason: "pty_exit_status_unavailable_after_restart",
+            reason: `${record.backend}_exit_status_unavailable_after_restart`,
             native_execution: true,
             sandboxed: false,
           });

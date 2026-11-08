@@ -94,6 +94,7 @@ export interface ProcessSupervisorOptions {
   operations: OperationsStore;
   processes: ProcessesStore;
   terminal?: InteractiveSessionManager;
+  native?: InteractiveSessionManager;
   logger?: HostSpanLogger;
 }
 
@@ -104,6 +105,15 @@ export class ProcessSupervisor {
   private readonly terminationInflight = new Map<string, Promise<ProcessState>>();
 
   constructor(private readonly options: ProcessSupervisorOptions) {}
+
+  private sessionManager(record: ProcessRecord): InteractiveSessionManager | undefined {
+    return record.backend === "pty" ? this.options.terminal : record.backend_ref ? this.options.native : undefined;
+  }
+
+  private syncOutput(record: ProcessRecord, manager: InteractiveSessionManager): void {
+    this.options.processes.setBytes(record.process_id, "stdout", manager.outputBytes(record.process_id));
+    if (record.backend === "native") this.options.processes.setBytes(record.process_id, "stderr", manager.outputBytes(record.process_id, "stderr"));
+  }
 
   private expiresAt(): string {
     const ttlMs = this.options.config.retention.completed_process_output_ttl_minutes * 60_000;
@@ -179,11 +189,12 @@ export class ProcessSupervisor {
   }
 
   async reconcileInteractiveProcesses(targetId?: string): Promise<void> {
-    if (!this.options.terminal) return;
-    for (const record of this.options.processes.activeInteractive(targetId)) await this.syncInteractiveState(record.process_id);
+    for (const record of this.options.processes.active()) {
+      if ((!targetId || record.target_id === targetId) && (record.backend === "pty" || record.backend_ref)) await this.syncSessionState(record.process_id);
+    }
   }
 
-  private async terminateInteractive(
+  private async terminateSession(
     processId: string,
     state: "timed_out" | "cancelled" | "failed",
     reason: string,
@@ -192,12 +203,13 @@ export class ProcessSupervisor {
     const record = this.options.processes.get(processId);
     if (!record) throw new HostSpanError("PROCESS_NOT_FOUND", `Unknown process_id: ${processId}`);
     if (TERMINAL_STATES.has(record.state)) return record.state;
-    if (!this.options.terminal || !record.backend_ref) {
+    const manager = this.sessionManager(record);
+    if (!manager || !record.backend_ref) {
       this.finalize(processId, "unknown", record.exit_code, record.term_signal, "interactive_backend_unavailable");
       return "unknown";
     }
-    await this.options.terminal.close(record.backend_ref, graceMs);
-    const settled = await this.options.terminal.waitForExitStatus(record.backend_ref, 250);
+    await manager.close(record.backend_ref, graceMs);
+    const settled = await manager.waitForExitStatus(record.backend_ref, 250);
     if (!settled.exists) {
       this.finalize(processId, "unknown", record.exit_code, record.term_signal, "interactive_session_missing_after_terminate");
       return "unknown";
@@ -206,10 +218,14 @@ export class ProcessSupervisor {
       this.finalize(processId, "unknown", record.exit_code, record.term_signal, "interactive_session_still_running_after_terminate");
       return "unknown";
     }
+    if (settled.reason === "termination_unconfirmed") {
+      this.finalize(processId, "unknown", settled.exit_code, settled.signal, settled.reason);
+      return "unknown";
+    }
     this.finalize(processId, state, settled.exit_code, settled.signal, reason, settled.ended_at);
     // Confirmed process death survives a failure to observe the final output.
-    const drained = await this.options.terminal.waitForOutputDrain(processId);
-    this.options.processes.setBytes(processId, "stdout", drained.bytes);
+    await manager.waitForOutputDrain(processId);
+    this.syncOutput(record, manager);
     return state;
   }
 
@@ -372,30 +388,33 @@ export class ProcessSupervisor {
     };
   }
 
-  private async syncInteractiveState(processId: string): Promise<void> {
+  private async syncSessionState(processId: string): Promise<void> {
     const record = this.options.processes.get(processId);
-    if (!record || record.backend !== "pty" || TERMINAL_STATES.has(record.state)) return;
-    if (!this.options.terminal || !record.backend_ref) {
+    if (!record || TERMINAL_STATES.has(record.state)) return;
+    const manager = this.sessionManager(record);
+    if (!manager || !record.backend_ref) {
       this.finalize(processId, "unknown", record.exit_code, record.term_signal, "interactive_backend_unavailable");
       return;
     }
-    let bytes = this.options.terminal.outputBytes(processId);
-    this.options.processes.setBytes(processId, "stdout", bytes);
-    const state = await this.options.terminal.inspect(record.backend_ref);
+    this.syncOutput(record, manager);
+    const state = await manager.inspect(record.backend_ref);
     if (!state.exists) {
       if (record.state === "launching") return;
       this.finalize(processId, "unknown", record.exit_code, record.term_signal, "interactive_session_missing");
       return;
     }
+    if (!state.dead && record.state === "launching" && state.pid !== null) {
+      this.options.processes.markRunning(processId, state.pid, record.backend === "native" && process.platform !== "win32" ? state.pid : null);
+      this.options.operations.setState(record.idempotency_key, "running", { state: "running", process_id: processId, backend: record.backend });
+    }
     if (state.dead) {
-      const drained = await this.options.terminal.waitForOutputDrain(processId);
-      bytes = drained.bytes;
-      this.options.processes.setBytes(processId, "stdout", bytes);
+      const drained = await manager.waitForOutputDrain(processId);
+      this.syncOutput(record, manager);
       if (!drained.drained) {
         this.finalize(processId, "unknown", state.exit_code, state.signal, "interactive_output_drain_unconfirmed");
         return;
       }
-      const settled = state.exit_code === null ? await this.options.terminal.waitForExitStatus(record.backend_ref) : state;
+      const settled = state.exit_code === null ? await manager.waitForExitStatus(record.backend_ref) : state;
       if (!settled.exists) {
         this.finalize(processId, "unknown", null, null, "interactive_exit_status_unavailable");
         return;
@@ -408,7 +427,7 @@ export class ProcessSupervisor {
         this.finalize(processId, "cancelled", settled.exit_code, settled.signal, "cancel_requested", settled.ended_at);
         return;
       }
-      if (settled.exit_code === null) {
+      if (settled.reason === "termination_unconfirmed" || (settled.exit_code === null && !(record.backend === "native" && settled.signal))) {
         this.finalize(processId, "unknown", null, settled.signal, "interactive_exit_status_unavailable");
         return;
       }
@@ -430,10 +449,10 @@ export class ProcessSupervisor {
     const cwd = resolveTargetPath(target, input.cwd);
     if (!cwd.exists) throw new HostSpanError("FILE_NOT_FOUND", `Process cwd does not exist: ${input.cwd}`);
     const profile = interactive ? undefined : this.options.policy.validateExec(target, input.argv);
-    if (interactive && this.options.terminal && this.options.config.terminal) {
+    if (this.options.native || (interactive && this.options.terminal && this.options.config.terminal)) {
       await this.reconcileInteractiveProcesses(input.target_id);
     }
-    const sessionManager = interactive ? this.options.terminal : undefined;
+    const sessionManager = interactive ? this.options.terminal : this.options.native;
     const terminalConfig = this.options.config.terminal;
     const backend = interactive ? "pty" : "native";
     let effectiveMaxOutputBytes = input.max_output_bytes;
@@ -473,8 +492,8 @@ export class ProcessSupervisor {
       if (resolution.kind === "unknown" || existing.state === "unknown") {
         return this.snapshot(existing.process_id, 0, 0, responseBytes);
       }
-      if (existing.backend === "pty") {
-        await this.syncInteractiveState(existing.process_id);
+      if (existing.backend === "pty" || existing.backend_ref) {
+        await this.syncSessionState(existing.process_id);
       } else {
         await this.waitForTerminal(existing.process_id, input.wait_ms);
       }
@@ -526,8 +545,12 @@ export class ProcessSupervisor {
           maxOutputBytes: effectiveMaxOutputBytes,
         });
       } catch (error) {
-        this.options.processes.markTerminal(processId, "failed", null, null, "pty_start_failed", this.expiresAt());
-        this.options.operations.setState(input.idempotency_key, "failed", { state: "failed", process_id: processId, reason: "pty_start_failed" }, error);
+        if (backend === "native" && asHostSpanError(error).code === "PROCESS_UNKNOWN") {
+          this.options.operations.setState(input.idempotency_key, "unknown", { state: "unknown", process_id: processId, reason: "native_worker_start_unconfirmed" });
+          throw new HostSpanError("PROCESS_UNKNOWN", "Native worker launch is not yet confirmed; recover the existing process_id instead of starting it again.", false, { process_id: processId });
+        }
+        this.options.processes.markTerminal(processId, "failed", null, null, `${backend}_start_failed`, this.expiresAt());
+        this.options.operations.setState(input.idempotency_key, "failed", { state: "failed", process_id: processId, reason: `${backend}_start_failed` }, error);
         throw error;
       }
       const launchState = await sessionManager.inspect(session);
@@ -536,23 +559,23 @@ export class ProcessSupervisor {
         return this.snapshot(processId, 0, 0, responseBytes);
       }
       if (launchState.dead) {
-        await this.syncInteractiveState(processId);
+        await this.syncSessionState(processId);
         return this.snapshot(processId, 0, 0, responseBytes);
       }
-      if (!this.options.processes.markRunning(processId, started.pid, null)) {
+      if (!this.options.processes.markRunning(processId, started.pid, backend === "native" && process.platform !== "win32" ? started.pid : null)) {
         const current = this.options.processes.get(processId);
         // Reconciliation may already have accepted this exact child while start awaited its worker.
         if (current?.state !== "running" || current.backend_ref !== session || current.pid !== started.pid) {
           sessionManager.closeSync(session);
-          if (!current) throw new HostSpanError("PROCESS_UNKNOWN", "PTY process record disappeared during launch.");
+          if (!current) throw new HostSpanError("PROCESS_UNKNOWN", "Process record disappeared during launch.");
           return this.snapshot(processId, 0, 0, responseBytes);
         }
       }
-      this.options.operations.setState(input.idempotency_key, "running", { state: "running", process_id: processId, backend: "pty" });
-      this.options.logger?.info("process.started", { request_id: requestId, process_id: processId, pid: started.pid, backend: "pty", session });
-      const beforeBytes = sessionManager.outputBytes(processId);
+      this.options.operations.setState(input.idempotency_key, "running", { state: "running", process_id: processId, backend });
+      this.options.logger?.info("process.started", { request_id: requestId, process_id: processId, pid: started.pid, backend, session });
+      const beforeBytes = sessionManager.outputBytes(processId) + (backend === "native" ? sessionManager.outputBytes(processId, "stderr") : 0);
       await sessionManager.waitForActivity(session, processId, beforeBytes, input.wait_ms);
-      await this.syncInteractiveState(processId);
+      await this.syncSessionState(processId);
       return this.snapshot(processId, 0, 0, responseBytes);
     }
 
@@ -687,13 +710,15 @@ export class ProcessSupervisor {
   async poll(input: ProcessPollToolInput): Promise<Record<string, unknown>> {
     const record = this.options.processes.get(input.process_id);
     if (!record) throw new HostSpanError("PROCESS_NOT_FOUND", `Unknown process_id: ${input.process_id}`);
-    if (record.backend === "pty") {
-      if (!this.options.terminal || !record.backend_ref) throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "PTY terminal backend is unavailable.", true);
-      const previousBytes = this.options.terminal.outputBytes(input.process_id);
-      if (previousBytes <= input.stdout_cursor && !TERMINAL_STATES.has(record.state)) {
-        await this.options.terminal.waitForActivity(record.backend_ref, input.process_id, previousBytes, input.wait_ms);
+    if (record.backend === "pty" || record.backend_ref) {
+      const manager = this.sessionManager(record);
+      if (!manager || !record.backend_ref) throw new HostSpanError("PROCESS_UNKNOWN", "Process session backend is unavailable.");
+      const current = this.snapshot(input.process_id, input.stdout_cursor, input.stderr_cursor, input.max_bytes);
+      if (!TERMINAL_STATES.has(record.state) && Number(current.next_stdout_cursor) <= input.stdout_cursor && Number(current.next_stderr_cursor) <= input.stderr_cursor) {
+        const previousBytes = manager.outputBytes(input.process_id) + (record.backend === "native" ? manager.outputBytes(input.process_id, "stderr") : 0);
+        await manager.waitForActivity(record.backend_ref, input.process_id, previousBytes, input.wait_ms);
       }
-      await this.syncInteractiveState(input.process_id);
+      await this.syncSessionState(input.process_id);
     } else {
       const current = this.snapshot(input.process_id, input.stdout_cursor, input.stderr_cursor, input.max_bytes);
       if (TERMINAL_STATES.has(record.state) || Number(current.next_stdout_cursor) > input.stdout_cursor || Number(current.next_stderr_cursor) > input.stderr_cursor) {
@@ -722,7 +747,7 @@ export class ProcessSupervisor {
       // A delivery receipt survives observation failure and daemon restart.
       // Reconstruct only the observation; never send the input again.
       try {
-        await this.syncInteractiveState(input.process_id);
+        await this.syncSessionState(input.process_id);
         return {
           ...this.snapshot(input.process_id, input.stdout_cursor, 0, input.max_bytes),
           ...(saved?.input_delivered === true ? { input_delivered: true } : {}),
@@ -764,7 +789,7 @@ export class ProcessSupervisor {
     let previousBytes: number;
     try {
       if (!this.options.terminal) throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "PTY terminal backend is unavailable.", true);
-      await this.syncInteractiveState(input.process_id);
+      await this.syncSessionState(input.process_id);
       const refreshed = this.options.processes.get(input.process_id);
       if (!refreshed || TERMINAL_STATES.has(refreshed.state)) {
         const result = this.snapshot(input.process_id, input.stdout_cursor, 0, input.max_bytes);
@@ -809,7 +834,7 @@ export class ProcessSupervisor {
     }
     try {
       await this.options.terminal.waitForActivity(session, input.process_id, previousBytes, input.wait_ms);
-      await this.syncInteractiveState(input.process_id);
+      await this.syncSessionState(input.process_id);
       const result = { ...this.snapshot(input.process_id, input.stdout_cursor, 0, input.max_bytes), input_delivered: true };
       this.options.operations.setState(input.idempotency_key, "succeeded", result);
       return result;
@@ -883,13 +908,13 @@ export class ProcessSupervisor {
     }
     if (TERMINAL_STATES.has(record.state)) return record.state;
     this.options.operations.setState(input.idempotency_key, "running", { state: "cancelling", process_id: input.process_id });
-    return record.backend === "pty"
-      ? this.terminateInteractive(input.process_id, "cancelled", "cancel_requested", input.grace_ms)
+    return record.backend === "pty" || record.backend_ref
+      ? this.terminateSession(input.process_id, "cancelled", "cancel_requested", input.grace_ms)
       : this.terminate(input.process_id, "cancelled", "cancel_requested", input.grace_ms);
   }
 
   async shutdown(): Promise<void> {
-    const active = this.options.processes.active().filter((record) => record.backend === "native");
+    const active = this.options.processes.active().filter((record) => record.backend === "native" && !record.backend_ref);
     await Promise.allSettled(
       active.map(async (record) => {
         try {

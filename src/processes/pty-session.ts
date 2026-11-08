@@ -58,7 +58,7 @@ function shellQuote(value: string): string {
 }
 
 export class PtySessionManager implements InteractiveSessionManager {
-  readonly backend = "pty" as const;
+  readonly backend: "pty" | "native";
   private readonly workerPath = fileURLToPath(new URL("./pty-worker.mjs", import.meta.url));
   private ownerGeneration: number | null = null;
   private readonly requireOwnership: boolean;
@@ -67,8 +67,9 @@ export class PtySessionManager implements InteractiveSessionManager {
   constructor(
     private readonly dataDir: string,
     private readonly config: TerminalConfig,
-    options: { requireOwnership?: boolean; configPath?: string } = {},
+    options: { requireOwnership?: boolean; configPath?: string; backend?: "pty" | "native" } = {},
   ) {
+    this.backend = options.backend ?? "pty";
     this.requireOwnership = options.requireOwnership ?? false;
     this.configPath = options.configPath;
   }
@@ -126,6 +127,7 @@ export class PtySessionManager implements InteractiveSessionManager {
 
   async available(): Promise<boolean> {
     if (!(["linux", "darwin", "win32"] as NodeJS.Platform[]).includes(process.platform)) return false;
+    if (this.backend === "native") return existsSync(this.workerPath);
     try {
       await import("node-pty");
       return existsSync(this.workerPath);
@@ -136,7 +138,7 @@ export class PtySessionManager implements InteractiveSessionManager {
 
   async start(input: StartInteractiveSessionInput): Promise<{ session: string; pid: number | null }> {
     if (!(await this.available())) {
-      throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "HostSpan PTY runtime is unavailable on this platform.", true);
+      throw new HostSpanError(this.backend === "native" ? "INTERNAL_ERROR" : "TERMINAL_BACKEND_UNAVAILABLE", `HostSpan ${this.backend} runtime is unavailable on this platform.`, true);
     }
     for (const key of Object.keys(input.env)) {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new HostSpanError("SCOPE_DENIED", `Invalid terminal environment variable name: ${key}`);
@@ -151,6 +153,7 @@ export class PtySessionManager implements InteractiveSessionManager {
     writeFileSync(
       specPath,
       `${JSON.stringify({
+        backend: this.backend,
         dataDir: this.dataDir,
         session,
         processId: input.processId,
@@ -164,7 +167,7 @@ export class PtySessionManager implements InteractiveSessionManager {
         socketPath: this.socketPath(session),
         ipcToken,
         ...(ownerGeneration === undefined ? {} : { ownerGeneration, ownerPath: this.runtimeOwnerPath() }),
-        maxOutputBytes: Math.min(input.maxOutputBytes, this.config.max_output_bytes),
+        maxOutputBytes: this.backend === "native" ? input.maxOutputBytes : Math.min(input.maxOutputBytes, this.config.max_output_bytes),
       })}\n`,
       { mode: 0o600 },
     );
@@ -184,11 +187,11 @@ export class PtySessionManager implements InteractiveSessionManager {
       if (status?.status === "running") return { session, pid: status.pty_pid };
       if (status?.status === "exited") return { session, pid: status.pty_pid };
       if (status?.status === "failed") {
-        throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", status.reason ?? "PTY worker failed to start.", true);
+        throw new HostSpanError(this.backend === "native" ? "INTERNAL_ERROR" : "TERMINAL_BACKEND_UNAVAILABLE", status.reason ?? `${this.backend} worker failed to start.`, true);
       }
       await sleep(25);
     }
-    throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "PTY worker did not become ready.", true);
+    throw new HostSpanError(this.backend === "native" ? "PROCESS_UNKNOWN" : "TERMINAL_BACKEND_UNAVAILABLE", `${this.backend} worker did not become ready.`, false);
   }
 
   async inspect(session: string): Promise<InteractiveSessionSnapshot> {
@@ -236,6 +239,7 @@ export class PtySessionManager implements InteractiveSessionManager {
     session: string,
     input: { chars: string; control_keys: string[]; columns?: number; rows?: number },
   ): Promise<void> {
+    if (this.backend === "native") throw new HostSpanError("TERMINAL_NOT_INTERACTIVE", "Native pipe processes do not accept terminal input.");
     const state = await this.inspect(session);
     if (!state.exists) throw new HostSpanError("PROCESS_UNKNOWN", `PTY session worker no longer exists: ${session}`);
     if (state.dead) throw new HostSpanError("TERMINAL_NOT_INTERACTIVE", "Interactive process has already exited.");
@@ -300,8 +304,8 @@ export class PtySessionManager implements InteractiveSessionManager {
     }
   }
 
-  outputBytes(processId: string): number {
-    return new OutputSpool(this.dataDir, processId, this.config.max_output_bytes).highWater("stdout");
+  outputBytes(processId: string, stream: "stdout" | "stderr" = "stdout"): number {
+    return new OutputSpool(this.dataDir, processId, this.config.max_output_bytes).highWater(stream);
   }
 
   outputDrained(processId: string): boolean {
@@ -332,7 +336,7 @@ export class PtySessionManager implements InteractiveSessionManager {
   async waitForActivity(session: string, processId: string, previousBytes: number, waitMs: number): Promise<InteractiveSessionSnapshot> {
     const deadline = Date.now() + Math.max(0, waitMs);
     let state = await this.inspect(session);
-    while (waitMs > 0 && state.exists && !state.dead && this.outputBytes(processId) === previousBytes && Date.now() < deadline) {
+    while (waitMs > 0 && state.exists && !state.dead && this.outputBytes(processId) + (this.backend === "native" ? this.outputBytes(processId, "stderr") : 0) === previousBytes && Date.now() < deadline) {
       await sleep(25);
       state = await this.inspect(session);
     }
@@ -340,6 +344,7 @@ export class PtySessionManager implements InteractiveSessionManager {
   }
 
   async attach(session: string, readOnly = false): Promise<void> {
+    if (this.backend === "native") throw new HostSpanError("TERMINAL_NOT_INTERACTIVE", "Native pipe processes do not support terminal attachment.");
     const state = await this.inspect(session);
     if (!state.exists) throw new Error(`PTY session is no longer available: ${session}`);
     if (state.dead) throw new Error(`PTY session has already exited: ${session}`);

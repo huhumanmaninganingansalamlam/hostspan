@@ -223,10 +223,6 @@ function readPidFile(path: string): number | null {
   return Number.isInteger(value) && value > 0 ? value : null;
 }
 
-export function readDaemonPid(configPath: string): number | null {
-  return readPidFile(daemonPidPath(configPath));
-}
-
 export function pidAlive(pid: number | null): boolean {
   if (!pid) return false;
   try {

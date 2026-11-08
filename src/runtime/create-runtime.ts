@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { OAuthService } from "../auth/oauth-service.js";
-import type { HostSpanConfig } from "../config/schema.js";
+import { TerminalConfigSchema, type HostSpanConfig } from "../config/schema.js";
 import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath, oauthApprovalSecretPath } from "../config/paths.js";
 import { fileList } from "../files/list.js";
@@ -171,6 +171,7 @@ export function createRuntime(
   const terminal = config.terminal
     ? new PtySessionManager(config.server.data_dir, config.terminal, { requireOwnership: true, configPath: resolvedConfigPath })
     : undefined;
+  const native = new PtySessionManager(config.server.data_dir, TerminalConfigSchema.parse({}), { requireOwnership: true, backend: "native" });
   let runtimeActive = false;
   const runRetentionMaintenance = () => {
     const now = new Date().toISOString();
@@ -223,7 +224,9 @@ export function createRuntime(
   };
   const activate = (): void => {
     if (runtimeActive) return;
-    if (terminal) terminal.activateOwnership(claimRuntimeGeneration(db));
+    const generation = claimRuntimeGeneration(db);
+    native.activateOwnership(generation);
+    terminal?.activateOwnership(generation);
     recoverPatchTransactions(targets, transactions);
     const removedPatchJournals = cleanupTerminalPatchJournals(transactions);
     if (removedPatchJournals.length) logger.info("patch.journals_cleaned", { count: removedPatchJournals.length });
@@ -244,6 +247,7 @@ export function createRuntime(
       operations,
       terminal,
       config.retention.completed_process_output_ttl_minutes,
+      native,
     );
     for (const recovered of recoveredProcesses) logger.info("process.recovered", recovered);
     runtimeActive = true;
@@ -252,7 +256,7 @@ export function createRuntime(
   if (!options.deferActivation) activate();
 
   const patchService = new FilePatchService({ data_dir: config.server.data_dir, operations, transactions, policy });
-  const supervisor = new ProcessSupervisor({ config, targets, policy, operations, processes, ...(terminal ? { terminal } : {}), logger });
+  const supervisor = new ProcessSupervisor({ config, targets, policy, operations, processes, native, ...(terminal ? { terminal } : {}), logger });
   let closing = false;
   let processMaintenanceInflight: Promise<void> | undefined;
   let closeRuntimePromise: Promise<void> | undefined;
