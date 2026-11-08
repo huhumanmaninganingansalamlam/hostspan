@@ -108,7 +108,7 @@ The default bind is loopback-only, but `server.listen_host` is configurable for 
 
 Process response budgets and execution lifetime are separate. `wait_ms` bounds response waiting and `max_bytes` bounds returned output. Omit `deadline_ms` to run without an implicit deadline, set it for an explicit timeout, or use `process_cancel`. `max_output_bytes` caps retained output; filling it stops capture, never the process. `output_budget` reports the retained bytes and remaining capacity. Later output is drained but not retained; human PTY attachments still receive live output. Redirect full logs to a target file when needed.
 
-HostSpan also applies local overload and retention boundaries so several agents cannot amplify one burst into unbounded host work. Defaults are 128 in-flight MCP requests and 8 concurrent ripgrep searches with 16 queued; the search queue times out after 1 second. Search overflow returns retryable `SERVER_BUSY`. Native execution and PTY sessions each default to 16 concurrent processes per target; reaching capacity also returns retryable `SERVER_BUSY`. Existing configurations with explicit limits retain those values until changed and the daemon is restarted. Durable audit history is bounded by both `audit_days` and `max_audit_events` (500,000 by default). Completed process output expires after 60 minutes by default, the retained spool budget defaults to 1 GiB, and old operation response payloads are compacted after 14 days without deleting their idempotency-key tombstones. Once those payloads and retained output are gone, redundant completed process/patch detail rows are also pruned while the operation tombstone remains.
+HostSpan also applies local overload and retention boundaries so several agents cannot amplify one burst into unbounded host work. Defaults are 128 in-flight MCP requests and 8 concurrent ripgrep searches with 16 queued; the search queue times out after 1 second. Search overflow returns retryable `SERVER_BUSY`. Native execution and PTY sessions each default to 16 concurrent processes per target; reaching capacity also returns retryable `SERVER_BUSY`. Existing configurations with explicit limits retain those values until changed and the daemon is restarted. Durable audit history is bounded by both `audit_days` and `max_audit_events` (500,000 by default). New or omitted settings retain completed process output for up to 24 hours (1,440 minutes) by default; explicit existing TTL settings remain unchanged. This is not a minimum guarantee: process output caps and the 1 GiB spool budget can cause earlier output loss/eviction, reflected by expiry and dropped-byte metadata. Old operation response payloads are compacted after 14 days without deleting their idempotency-key tombstones. Once those payloads and retained output are gone, redundant completed process/patch detail rows are also pruned while the operation tombstone remains.
 
 ```yaml
 server:
@@ -118,7 +118,7 @@ server:
   search_queue_timeout_ms: 1000
 
 retention:
-  completed_process_output_ttl_minutes: 60
+  completed_process_output_ttl_minutes: 1440
   operation_result_days: 14
   audit_days: 30
   max_audit_events: 500000

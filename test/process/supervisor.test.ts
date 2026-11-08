@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { v7 as uuidv7 } from "uuid";
 import { HostSpanError } from "../../src/errors.js";
-import { TerminalConfigSchema, type HostSpanConfig } from "../../src/config/schema.js";
+import { HostSpanConfigSchema, TerminalConfigSchema, type HostSpanConfig } from "../../src/config/schema.js";
+import { createInitialConfig } from "../../src/config/defaults.js";
 import { createRuntime } from "../../src/runtime/create-runtime.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
 import type { InteractiveSessionManager } from "../../src/processes/interactive-session.js";
@@ -47,7 +48,7 @@ afterEach(async () => {
   }
 });
 
-function fixture(maxTotalSpoolBytes = 64 * 1024 * 1024, terminal?: InteractiveSessionManager) {
+function fixture(maxTotalSpoolBytes = 64 * 1024 * 1024, terminal?: InteractiveSessionManager, completedOutputTtlMinutes = 60) {
   const root = mkdtempSync(join(tmpdir(), "hostspan-process-"));
   roots.push(root);
   const targetRoot = join(root, "target");
@@ -58,7 +59,7 @@ function fixture(maxTotalSpoolBytes = 64 * 1024 * 1024, terminal?: InteractiveSe
     policy_epoch: 1,
     server: { listen_host: "127.0.0.1", listen_port: 39393, data_dir: dataDir },
     retention: {
-      completed_process_output_ttl_minutes: 60,
+      completed_process_output_ttl_minutes: completedOutputTtlMinutes,
       operation_result_days: 14,
       audit_days: 30,
       max_total_spool_bytes: maxTotalSpoolBytes,
@@ -143,6 +144,57 @@ async function waitForNativeOutput(supervisor: ProcessSupervisor, processes: Pro
 }
 
 describe("process supervisor", () => {
+  it("defaults new and omitted process output retention to 24 hours while honoring an explicit 60 minutes", () => {
+    const initial = createInitialConfig();
+    expect(initial.retention).toMatchObject({
+      completed_process_output_ttl_minutes: 1_440,
+      operation_result_days: 14,
+      audit_days: 30,
+      max_total_spool_bytes: 1_073_741_824,
+    });
+    const omittedRetention: Partial<HostSpanConfig["retention"]> = { ...initial.retention };
+    delete omittedRetention.completed_process_output_ttl_minutes;
+    const omitted = HostSpanConfigSchema.parse({ ...initial, retention: omittedRetention });
+    expect(omitted.retention.completed_process_output_ttl_minutes).toBe(1_440);
+    const explicit = HostSpanConfigSchema.parse({
+      ...initial,
+      retention: { ...omittedRetention, completed_process_output_ttl_minutes: 60 },
+    });
+    expect(explicit.retention.completed_process_output_ttl_minutes).toBe(60);
+  });
+
+  it("retains completed output up to 24 hours and reports expiry without losing process metadata", async () => {
+    const { supervisor, processes } = fixture(64 * 1024 * 1024, undefined, 1_440);
+    const earliestFinishMs = Date.now();
+    const started = await supervisor.start(startInput({ wait_ms: 0 }), "req_output_ttl_24h");
+    const id = String(started.process_id);
+    const completed = await pollUntilTerminal(supervisor, id);
+    expect(completed).toMatchObject({ state: "succeeded", stdout: "ok", output_expired: false });
+
+    const expiry = Date.parse(String(processes.get(id)?.output_expires_at));
+    const expectedTtlMs = 1_440 * 60_000;
+    expect(expiry).toBeGreaterThanOrEqual(earliestFinishMs + expectedTtlMs);
+    expect(expiry).toBeLessThanOrEqual(Date.now() + expectedTtlMs);
+
+    const input = { process_id: id, stdout_cursor: 0, stderr_cursor: 0, max_bytes: 1024, wait_ms: 0 };
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date(expiry - 1));
+      expect(await supervisor.poll(input)).toMatchObject({ state: "succeeded", stdout: "ok", output_expired: false });
+      vi.setSystemTime(new Date(expiry));
+      expect(await supervisor.poll(input)).toMatchObject({
+        state: "succeeded",
+        exit_code: 0,
+        stdout: "",
+        output_expired: true,
+        stdout_dropped_bytes: 2,
+        stdout_earliest_cursor: 2,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps an unconfirmed native worker launch recoverable without replaying it", async () => {
     const { config, processes, operations } = fixture();
     const targets = new TargetRegistry(config);

@@ -58,7 +58,7 @@ The desktop renderer's Chromium sandbox is separate: it confines the management 
 
 Default target deny patterns cover `.env*`, private key extensions, and Git object storage. Configure additional project-specific deny globs as needed.
 
-Audit records contain structured identifiers, digests, phases, and result metadata, not raw process stdout/stderr. Structured logs and support exports redact common token/password/private-key patterns and home-directory prefixes. JSONL logs rotate at a bounded file size and retain a bounded archive count. Completed process output is retained for 60 minutes by default and is stored under the local HostSpan state directory, not in the support bundle.
+Audit records contain structured identifiers, digests, phases, and result metadata, not raw process stdout/stderr. Structured logs and support exports redact common token/password/private-key patterns and home-directory prefixes. JSONL logs rotate at a bounded file size and retain a bounded archive count. Completed process output defaults to a 24-hour (1,440-minute) expiry window for new or omitted settings; existing explicit TTL overrides, including 60 minutes, remain unchanged. This is not a guarantee of minimum retention because per-process caps and the global spool budget can cause earlier output loss or eviction. Retained output stays under the local HostSpan state directory, not in the support bundle.
 
 SQLite audit history is bounded by both age and count: `audit_days` defaults to 30 and `max_audit_events` defaults to 500,000. Maintenance runs incrementally during normal request handling so sustained traffic reuses bounded SQLite pages instead of growing the durable audit table without limit.
 

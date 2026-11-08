@@ -18,7 +18,7 @@ server:
 # allowed_hosts, and prints the approval secret exactly once.
 
 retention:
-  completed_process_output_ttl_minutes: 60
+  completed_process_output_ttl_minutes: 1440
   operation_result_days: 14
   audit_days: 30
   max_audit_events: 500000

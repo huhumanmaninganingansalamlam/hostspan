@@ -2,6 +2,10 @@
 
 Entries describe versioned behavior. Publication is established by the corresponding Git tag and GitHub Release; notes alone do not prove publication.
 
+## Unreleased (dev)
+
+- Increase the default completed-process output expiry to 24 hours for new profiles and omitted settings. Existing explicit TTLs are unchanged. Preserve per-process caps, the 1 GiB spool budget and early-eviction loss metadata; operation-result compaction and idempotency tombstones remain separate. This is not a minimum retention guarantee.
+
 ## 0.12.0
 
 - Keep computer-use OFF in new profiles and expose Save ON/OFF plus saved, applied, pending-restart and unknown status in the existing dashboard and CLI. Applying a change remains an explicit safe daemon restart; enabling never opens an OS consent dialog. File/process/terminal permissions stay separate, and existing explicit ON profiles are preserved.
