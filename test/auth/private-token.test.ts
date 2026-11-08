@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { afterEach, describe, expect, it } from "vitest";
 import { v7 as uuidv7 } from "uuid";
@@ -301,5 +302,96 @@ describe("private token CLI credential delivery", () => {
     expect(await main(["access", "token", "revoke", tokenId ?? "", "--config", configPath])).toBe(0);
     await expect(main(["access", "token", "create", "--name", "duplicate", "--scopes", "hostspan.read",
       "--output", firstFile, "--config", configPath])).rejects.toThrow();
+  });
+});
+
+describe("private token MCP client interoperability", () => {
+  it("serves 2025 and 2026 Streamable HTTP clients with static bearer, scope isolation, revocation, and PNG content", async () => {
+    const { configPath } = fixture();
+    const runtime = createRuntime(configPath);
+    const store = runtime.privateTokens;
+    if (!store) throw new Error("private token runtime is absent");
+    const calls: string[] = [];
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+DkcoAAAAASUVORK5CYII=";
+    const fakeHandlers = handlers(calls);
+    fakeHandlers.computer = () => {
+      calls.push("computer");
+      return { message: "fixture image", image: png, mime_type: "image/png" };
+    };
+    const app = createHostSpanHttpServer({
+      listen_host: "127.0.0.1",
+      listen_port: 0,
+      authenticationMode: "private_token",
+      privateTokens: store,
+      handlers: fakeHandlers,
+      responseContext: () => ({ toolset_hash: toolsetHash("private_token"), policy_epoch: 12 }),
+      status: { health: () => ({}), readiness: () => ({ ready: true }) },
+    });
+    try {
+      const address = await app.listen({ host: "127.0.0.1", port: 0 });
+      const endpoint = new URL("/mcp", address);
+      const newClient = (era: "legacy" | "modern", credential: string) => {
+        const client = new Client(
+          { name: "hostspan-private-token-sdk-fixture", version: "1.0.0" },
+          { versionNegotiation: { mode: era === "modern" ? "auto" : "legacy" } },
+        );
+        const transport = new StreamableHTTPClientTransport(endpoint, {
+          authProvider: { token: async () => credential },
+        });
+        return { client, transport };
+      };
+
+      for (const era of ["legacy", "modern"] as const) {
+        let readCredential = "";
+        const readToken = store.issue(`sdk-read-${era}`, ["hostspan.read"], (secret) => { readCredential = secret; });
+        let desktopCredential = "";
+        const desktopToken = store.issue(`sdk-desktop-${era}`, ["hostspan.computer"], (secret) => { desktopCredential = secret; });
+        const invalid = newClient(era, `hsp_${"x".repeat(43)}`);
+        const read = newClient(era, readCredential);
+        const desktop = newClient(era, desktopCredential);
+        try {
+          const beforeInvalid = calls.length;
+          await expect(invalid.client.connect(invalid.transport)).rejects.toThrow();
+          expect(calls).toHaveLength(beforeInvalid);
+
+          await read.client.connect(read.transport);
+          expect(read.client.getProtocolEra()).toBe(era);
+          const listing = await read.client.listTools();
+          expect(listing.tools.find((tool) => tool.name === "computer")).toMatchObject({
+            _meta: { securitySchemes: [{ type: "http", scheme: "bearer" }] },
+          });
+          const status = await read.client.callTool({ name: "system_status", arguments: {} });
+          expect(status.isError).not.toBe(true);
+          expect(status.structuredContent).toMatchObject({
+            authorization: { mode: "private_token", granted_scopes: ["hostspan.read"] },
+          });
+          const beforeDenied = calls.length;
+          const denied = await read.client.callTool({ name: "computer", arguments: { action: "open" } });
+          expect(denied.isError).toBe(true);
+          expect(JSON.stringify(denied.structuredContent)).toContain("SCOPE_DENIED");
+          expect(calls).toHaveLength(beforeDenied);
+
+          await desktop.client.connect(desktop.transport);
+          expect(desktop.client.getProtocolEra()).toBe(era);
+          const image = await desktop.client.callTool({ name: "computer", arguments: { action: "open" } });
+          expect(image.isError).not.toBe(true);
+          expect(image.content).toEqual(expect.arrayContaining([
+            expect.objectContaining({ type: "image", mimeType: "image/png", data: png }),
+          ]));
+          expect(image.structuredContent).not.toHaveProperty("image");
+          expect(calls).toHaveLength(beforeDenied + 1);
+
+          expect(store.revoke(readToken.token_id)).toBe(true);
+          expect(store.revoke(desktopToken.token_id)).toBe(true);
+          await expect(read.client.listTools()).rejects.toThrow();
+          await expect(desktop.client.listTools()).rejects.toThrow();
+        } finally {
+          await Promise.allSettled([invalid.client.close(), read.client.close(), desktop.client.close()]);
+        }
+      }
+    } finally {
+      await app.close();
+      await runtime.close();
+    }
   });
 });
