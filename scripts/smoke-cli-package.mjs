@@ -125,6 +125,15 @@ try {
   if (process.env.GITHUB_ACTIONS === "true" && !verbose.build.build_id) {
     throw new Error("CI-built CLI must retain a known Git source identity");
   }
+  // An installed receipt matching itself is insufficient: compare with the actual build checkout.
+  if (!option("--tarball") || process.env.GITHUB_ACTIONS === "true") {
+    const sourceCommit = run("git", ["rev-parse", "--verify", "HEAD"], { cwd: root });
+    const sourceTree = run("git", ["rev-parse", "--verify", "HEAD^{tree}"], { cwd: root });
+    const sourceObjectFormat = run("git", ["rev-parse", "--show-object-format"], { cwd: root });
+    if (verbose.build.commit !== sourceCommit || verbose.build.tree !== sourceTree || verbose.build.object_format !== sourceObjectFormat) {
+      throw new Error("Installed build receipt does not identify this source checkout");
+    }
+  }
   const help = run(bin, ["--help"]);
   if (!help.includes("Commands:")) throw new Error("Installed CLI help output is incomplete");
 

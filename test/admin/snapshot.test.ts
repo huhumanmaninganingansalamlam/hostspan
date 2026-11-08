@@ -86,7 +86,12 @@ describe("local admin snapshot", () => {
     expect(loadBuildIdentity(path)).toEqual(receipt);
     writeFileSync(path, JSON.stringify({ ...receipt, tree: "c".repeat(40) }));
     expect(loadBuildIdentity(path)).toMatchObject({ build_id: null, commit: null, variant: "development" });
-    writeFileSync(path, JSON.stringify({ ...receipt, variant: "release", dirty: true }));
+    const releaseDigest = (releaseDirty: boolean) => `sha256:${createHash("sha256").update(JSON.stringify([1, "release", commit, tree, object_format, releaseDirty])).digest("hex")}`;
+    const cleanRelease = { ...receipt, variant: "release", build_id: releaseDigest(false) };
+    writeFileSync(path, JSON.stringify(cleanRelease));
+    expect(loadBuildIdentity(path)).toEqual(cleanRelease);
+    // The digest is valid for the dirty release too: only the release-specific guard can reject it.
+    writeFileSync(path, JSON.stringify({ ...cleanRelease, dirty: true, build_id: releaseDigest(true) }));
     expect(loadBuildIdentity(path)).toMatchObject({ build_id: null, commit: null, variant: "development" });
     rmSync(path);
     expect(loadBuildIdentity(path)).toMatchObject({ build_id: null, commit: null, dirty: null });
