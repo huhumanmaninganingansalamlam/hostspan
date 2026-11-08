@@ -1,9 +1,9 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { daemonStatus, writeDaemonPid } from "../../src/daemon/control.js";
+import { daemonStatus, startDaemon, writeDaemonPid } from "../../src/daemon/control.js";
 import { main } from "../../src/cli/index.js";
 import { createRuntime } from "../../src/runtime/create-runtime.js";
 import { runSmoke } from "../../src/cli/smoke.js";
@@ -45,6 +45,15 @@ describe("CLI error taxonomy", () => {
     expect(await main(["computer", "disable", "--config", configPath])).toBe(0);
     expect(loadConfig(configPath)).toEqual(before);
     expect(daemonStatus(configPath).running).toBe(false);
+  });
+  it("reports a missing daemon executable without crashing the manager or changing the profile", async () => {
+    const configPath = configFixture();
+    const original = readFileSync(configPath, "utf8");
+    await expect(startDaemon(configPath, "index.js", join(dirname(configPath), "missing-node-runtime"))).rejects.toMatchObject({
+      code: "TARGET_NOT_READY", details: { reason: "daemon_spawn_failed", os_code: "ENOENT" },
+    });
+    expect(daemonStatus(configPath).running).toBe(false);
+    expect(readFileSync(configPath, "utf8")).toBe(original);
   });
   it.each(["daemon", "smoke", "not-a-command"])("classifies CLI usage errors as VALIDATION_FAILED: %s", async (command) => {
     await expect(main([command])).rejects.toMatchObject({ code: "VALIDATION_FAILED" });

@@ -263,6 +263,14 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
+function showDaemonActionError(action: "start" | "stop" | "restart", error: unknown): void {
+  dialog.showErrorBox(`HostSpan could not ${action}`, error instanceof Error ? error.message : String(error));
+}
+
+function runTrayDaemonAction(action: "start" | "stop"): void {
+  void daemonAction(action).then(refreshUi).catch((error: unknown) => showDaemonActionError(action, error));
+}
+
 async function refreshUi(): Promise<void> {
   const data = await snapshot();
   const tooltip = `HostSpan ${data.daemon.running ? "running" : "stopped"}`;
@@ -278,9 +286,9 @@ async function refreshUi(): Promise<void> {
         { label: "Open Dashboard", click: () => { const w = createWindow(); w.show(); w.focus(); } },
         { type: "separator" },
         data.daemon.running
-          ? { label: "Stop HostSpan", click: () => void daemonAction("stop").then(refreshUi) }
-          : { label: "Start HostSpan", click: () => void daemonAction("start").then(refreshUi) },
-        { label: "Restart HostSpan", enabled: data.daemon.running, click: () => void restartDaemonWithConfirmation() },
+          ? { label: "Stop HostSpan", click: () => runTrayDaemonAction("stop") }
+          : { label: "Start HostSpan", click: () => runTrayDaemonAction("start") },
+        { label: "Restart HostSpan", enabled: data.daemon.running, click: () => void restartDaemonWithConfirmation().catch((error: unknown) => showDaemonActionError("restart", error)) },
         { label: "Start at login", type: "checkbox", checked: data.auto_start, click: (item) => { setAutoStart(item.checked); void refreshUi(); } },
         { type: "separator" },
         { label: `Targets: ${data.targets.length}`, enabled: false },

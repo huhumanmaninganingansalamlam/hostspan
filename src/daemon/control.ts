@@ -287,11 +287,19 @@ export async function startDaemon(
       ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
     },
   });
+  let launchError: NodeJS.ErrnoException | undefined;
+  child.once("error", (error) => { launchError = error as NodeJS.ErrnoException; });
   child.unref();
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     const status = daemonStatus(configPath);
     if (status.running) return { running: true, pid: status.pid };
+    if (launchError) {
+      throw new HostSpanError("TARGET_NOT_READY", "HostSpan daemon executable could not start.", false, {
+        reason: "daemon_spawn_failed",
+        ...(launchError.code ? { os_code: launchError.code } : {}),
+      });
+    }
     await sleep(50);
   }
   return { running: false, pid: null };
