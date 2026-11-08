@@ -117,6 +117,14 @@ try {
   if (version !== packageJson.version) {
     throw new Error(`Installed CLI version ${version} does not match package.json ${packageJson.version}`);
   }
+  const verbose = JSON.parse(run(bin, ["--version", "--verbose"]));
+  const installedReceipt = JSON.parse(readFileSync(join(installDir, "node_modules", "hostspan", "dist", "src", "build-identity.json"), "utf8"));
+  if (verbose.server_version !== packageJson.version || JSON.stringify(verbose.build) !== JSON.stringify(installedReceipt)) {
+    throw new Error("Installed CLI build identity differs from the packaged receipt");
+  }
+  if (process.env.GITHUB_ACTIONS === "true" && !verbose.build.build_id) {
+    throw new Error("CI-built CLI must retain a known Git source identity");
+  }
   const help = run(bin, ["--help"]);
   if (!help.includes("Commands:")) throw new Error("Installed CLI help output is incomplete");
 
@@ -174,6 +182,9 @@ try {
   const snapshot = JSON.parse(run(bin, ["admin", "snapshot", "--recent", "1"], { env }));
   if (snapshot.server_version !== packageJson.version) {
     throw new Error(`Installed admin snapshot version ${snapshot.server_version} does not match package.json ${packageJson.version}`);
+  }
+  if (JSON.stringify(snapshot.build) !== JSON.stringify(verbose.build)) {
+    throw new Error("Installed admin snapshot and --version --verbose disagree on source identity");
   }
 
   console.log(`HostSpan CLI package smoke passed: ${process.platform}/${process.arch} ${packageJson.version}`);

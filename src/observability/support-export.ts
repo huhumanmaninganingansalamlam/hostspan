@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import type { HostSpanConfig } from "../config/schema.js";
 import type { ProcessRecord } from "../processes/store.js";
 import type { TargetRuntime } from "../targets/registry.js";
-import { SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
+import { BUILD_IDENTITY, SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
 import { redact } from "./redactor.js";
 
 export interface SupportExportInput {
@@ -18,6 +18,7 @@ export function buildSupportExport(input: SupportExportInput, toolsetHash: strin
     schema_version: 1,
     generated_at: new Date().toISOString(),
     server_version: SERVER_VERSION,
+    build: BUILD_IDENTITY,
     toolset_version: TOOLSET_VERSION,
     toolset_hash: toolsetHash,
     policy_epoch: input.config.policy_epoch,

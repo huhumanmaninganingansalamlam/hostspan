@@ -103,6 +103,8 @@ function smokeWindowsPackage(executable, asarPath, arch) {
 		throw new Error("Packaged ASAR is missing the HostSpan CLI entrypoint");
 	if (!entries.has("/dist/src/desktop/main.js"))
 		throw new Error("Packaged ASAR is missing the HostSpan desktop entrypoint");
+	if (!entries.has("/dist/src/build-identity.json"))
+		throw new Error("Packaged ASAR is missing the immutable build identity");
 	if (!entries.has("/assets/icons/app.ico"))
 		throw new Error("Packaged ASAR is missing the Windows application icon payload");
 
@@ -145,6 +147,11 @@ function smokePackagedRuntime(executable, cli, runtime, nativeModule, ptyModule,
 		throw new Error(
 			`Packaged CLI version ${version} does not match package.json ${packageJson.version}`,
 		);
+	}
+
+	const verbose = JSON.parse(run(executable, [cli, "--version", "--verbose"]));
+	if (verbose.server_version !== packageJson.version || !verbose.build?.build_id) {
+		throw new Error("Packaged desktop runtime has no known build identity");
 	}
 
 	const nativeProbe = [
@@ -301,6 +308,9 @@ function smokePackagedRuntime(executable, cli, runtime, nativeModule, ptyModule,
 			throw new Error(
 				`Packaged admin snapshot version mismatch: ${snapshot.server_version}`,
 			);
+		}
+		if (JSON.stringify(snapshot.build) !== JSON.stringify(verbose.build)) {
+			throw new Error("Packaged desktop CLI and admin snapshot disagree on build identity");
 		}
 	} finally {
 		rmSync(scratch, { recursive: true, force: true });

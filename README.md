@@ -44,6 +44,20 @@ node dist/src/cli/index.js --version
 
 During development, commands below can be run as `node dist/src/cli/index.js <command>`. After installing the package binary, use `hostspan <command>`.
 
+### Build identity and diagnostics
+
+`pnpm build` embeds `dist/src/build-identity.json` into CLI and desktop packages. The receipt records the full Git commit, Git tree object ID and its actual object format (`sha1` or `sha256`), build variant (`development`, `candidate`, or `release`), dirty state, and a deterministic receipt `build_id`. It contains no absolute source path or build timestamp. Installed executables read the embedded receipt; they do **not** run Git or require a checkout.
+
+```bash
+hostspan --version --verbose  # packaged CLI identity, without loading a config
+hostspan status --verbose     # local configuration and installed identity
+hostspan admin snapshot      # detailed local operator state
+```
+
+The authenticated MCP `system_status`, support export, and desktop dashboard also include the build identity. Public `/healthz` exposes only the opaque `build_id`, not the source commit/tree. The local dashboard identifies the *installed app*, while an already-running daemon may still use an older build until explicitly restarted; query that daemon's `system_status` to confirm the loaded runtime. A missing/invalid receipt is reported as `development` with unknown fields, never mistaken for a release.
+
+Release workflows set `HOSTSPAN_BUILD_VARIANT=release` and fail if Git identity cannot be determined or the working tree is dirty. The `build_id` fingerprints the declared receipt; it is **not** a signed attestation or an SHA-256 of the installer. Distributed artifacts should have their own checksums.
+
 ## Quick start
 
 Create the local admin config:

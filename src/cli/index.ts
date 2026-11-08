@@ -20,7 +20,7 @@ import { openDatabase, openMemoryDatabase, openReadOnlyDatabase } from "../state
 import { OAuthRepo } from "../state/oauth-repo.js";
 import { ProcessesRepo } from "../state/processes-repo.js";
 import { TargetRegistry } from "../targets/registry.js";
-import { PROTOCOL_VERSION, SERVER_VERSION } from "../version.js";
+import { BUILD_IDENTITY, PROTOCOL_VERSION, SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
 import { runDoctor } from "../diagnostics/doctor.js";
 import { daemonStatus, removeDaemonPid, requestDaemonComputer, requestDaemonProcessList, requestDaemonProcessPoll, startDaemon, startDaemonControlServer, stopDaemon, writeDaemonPid } from "../daemon/control.js";
 import { installSystemdService, runServiceCommand } from "../services/systemd.js";
@@ -105,7 +105,7 @@ function isLoopbackHost(host: string): boolean {
 }
 
 function usage(): string {
-  return `HostSpan ${SERVER_VERSION}\n\nCommands:\n  init [--config PATH]\n  serve [--config PATH]\n  daemon start|stop|status [--config PATH]\n  doctor [--config PATH]\n  computer status|enable|disable [--json] [--config PATH]\n  computer inspect [--config PATH]\n  computer call --input JSON [--config PATH]\n    Use this profile owner's authenticated daemon and existing desktop session.\n  smoke --target TARGET [--config PATH]\n  status [--verbose] [--config PATH]\n  admin snapshot [--recent N] [--config PATH]\n  terminal list|attach --process PROCESS_ID [--read-only] [--config PATH]\n  process list --target TARGET [--cwd RELATIVE_PATH] [--active-only true|false]\n    [--limit 1..500] [--cursor CURSOR] [--config PATH]\n    Discover original handles in the selected directory and descendants; active only by default.\n  process poll --process PROCESS_ID [--stdout-cursor N] [--stderr-cursor N]\n    [--wait-ms 0..1500] [--max-bytes 1..4194304] [--config PATH]\n    Read the original result through this profile owner's running daemon; never starts a process.\n  targets list|add|remove ... [--config PATH]\n  oauth init --public-url https://host/mcp [--config PATH]\n  oauth status [--config PATH]\n  oauth rotate-secret [--config PATH]\n  access token create --name CLIENT --scopes hostspan.read,hostspan.write --output FILE [--config PATH]\n  access token create --name CLIENT --scopes hostspan.read --show (trusted interactive TTY only)\n  access token list|revoke TOKEN_ID|rotate TOKEN_ID --output FILE [--config PATH]\n  policy validate [--config PATH]\n  print-toolset\n  logs [--follow] [--config PATH]\n  support-export [PATH] [--config PATH]\n  service install|start|stop|restart|status [--config PATH]\n  --version\n`;
+  return `HostSpan ${SERVER_VERSION}\n\nCommands:\n  init [--config PATH]\n  serve [--config PATH]\n  daemon start|stop|status [--config PATH]\n  doctor [--config PATH]\n  computer status|enable|disable [--json] [--config PATH]\n  computer inspect [--config PATH]\n  computer call --input JSON [--config PATH]\n    Use this profile owner's authenticated daemon and existing desktop session.\n  smoke --target TARGET [--config PATH]\n  status [--verbose] [--config PATH]\n  admin snapshot [--recent N] [--config PATH]\n  terminal list|attach --process PROCESS_ID [--read-only] [--config PATH]\n  process list --target TARGET [--cwd RELATIVE_PATH] [--active-only true|false]\n    [--limit 1..500] [--cursor CURSOR] [--config PATH]\n    Discover original handles in the selected directory and descendants; active only by default.\n  process poll --process PROCESS_ID [--stdout-cursor N] [--stderr-cursor N]\n    [--wait-ms 0..1500] [--max-bytes 1..4194304] [--config PATH]\n    Read the original result through this profile owner's running daemon; never starts a process.\n  targets list|add|remove ... [--config PATH]\n  oauth init --public-url https://host/mcp [--config PATH]\n  oauth status [--config PATH]\n  oauth rotate-secret [--config PATH]\n  access token create --name CLIENT --scopes hostspan.read,hostspan.write --output FILE [--config PATH]\n  access token create --name CLIENT --scopes hostspan.read --show (trusted interactive TTY only)\n  access token list|revoke TOKEN_ID|rotate TOKEN_ID --output FILE [--config PATH]\n  policy validate [--config PATH]\n  print-toolset\n  logs [--follow] [--config PATH]\n  support-export [PATH] [--config PATH]\n  service install|start|stop|restart|status [--config PATH]\n  --version [--verbose]\n`;
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
@@ -115,7 +115,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return 0;
   }
   if (command === "--version" || command === "version") {
-    process.stdout.write(`${SERVER_VERSION}\n`);
+    if (has(argv, "--verbose")) {
+      print({ server_version: SERVER_VERSION, protocol_version: PROTOCOL_VERSION,
+        toolset_version: TOOLSET_VERSION, toolset_hash: TOOLSET_HASH, build: BUILD_IDENTITY });
+    } else process.stdout.write(`${SERVER_VERSION}\n`);
     return 0;
   }
   if (command === "print-toolset") {
@@ -374,7 +377,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       handlers: runtime.handlers,
       responseContext: () => ({ toolset_hash: toolsetHash(runtime.authenticationMode), policy_epoch: runtime.config.policy_epoch }),
       status: {
-        health: () => ({ server_version: SERVER_VERSION }),
+        // This unauthenticated endpoint exposes an opaque correlation ID, not Git internals.
+        health: () => ({ server_version: SERVER_VERSION, build_id: BUILD_IDENTITY.build_id }),
         readiness: () => runtimeReadiness(runtime),
       },
       trace: (event, metadata) => runtime.logger.info(event, metadata),
@@ -457,6 +461,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const snapshot = buildAdminSnapshot(configPath, { recent: 20 });
     print({
       server_version: snapshot.server_version,
+      build: snapshot.build,
       protocol_version: PROTOCOL_VERSION,
       toolset_hash: TOOLSET_HASH,
       toolset_version: snapshot.toolset_version,

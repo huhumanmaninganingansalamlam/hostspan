@@ -54,7 +54,7 @@ import { OAuthRepo } from "../state/oauth-repo.js";
 import { ProcessesRepo } from "../state/processes-repo.js";
 import { TransactionsRepo } from "../state/transactions-repo.js";
 import { targetConfigDigest, TargetRegistry } from "../targets/registry.js";
-import { PROTOCOL_VERSION, SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
+import { BUILD_IDENTITY, PROTOCOL_VERSION, SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
 import { BoundedConcurrencyLimiter } from "./concurrency-limiter.js";
 
 export interface HostSpanRuntime {
@@ -370,6 +370,7 @@ export function createRuntime(
         const processReady = isQualifiedCorePlatform();
         return {
           server_version: SERVER_VERSION,
+          build: BUILD_IDENTITY,
           host: { hostname: hostname(), platform: process.platform, arch: process.arch },
           protocol_version: PROTOCOL_VERSION,
           toolset_version: TOOLSET_VERSION,
