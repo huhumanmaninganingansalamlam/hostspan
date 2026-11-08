@@ -17,6 +17,8 @@ public static class HostSpanInput {
     [DllImport("user32.dll", SetLastError=true)] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [DllImport("kernel32.dll")] static extern uint WTSGetActiveConsoleSessionId();
+    public static uint ActiveConsoleSessionId() { return WTSGetActiveConsoleSessionId(); }
     [DllImport("user32.dll")] static extern IntPtr GetThreadDesktop(uint threadId);
     [DllImport("user32.dll")] static extern IntPtr GetProcessWindowStation();
     [DllImport("user32.dll", SetLastError=true)] static extern bool GetCursorPos(out System.Drawing.Point point);
@@ -135,6 +137,25 @@ public sealed class HostSpanActivity : System.Windows.Forms.Form {
 [void][HostSpanInput]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
 $opened = $false
 
+# The input desktop can change after open (lock, UAC, console switch).
+# Recheck console ownership and input desktop before every capture/input.
+function TestInteractiveDesktop($sessionId, $consoleSessionId, $userInteractive, $station, $desktop, $inputDesktop) {
+    return ($sessionId -gt 0 -and $sessionId -eq $consoleSessionId -and
+        $userInteractive -eq $true -and $station -ieq 'WinSta0' -and
+        $desktop -ieq 'Default' -and $inputDesktop -ieq 'Default')
+}
+function AssertInteractiveDesktop {
+    $sessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    $consoleSessionId = [HostSpanInput]::ActiveConsoleSessionId()
+    $userInteractive = [Environment]::UserInteractive
+    $station = [HostSpanInput]::WindowStation()
+    $desktop = [HostSpanInput]::CurrentDesktop()
+    $inputDesktop = [HostSpanInput]::InputDesktop()
+    if (-not (TestInteractiveDesktop $sessionId $consoleSessionId $userInteractive $station $desktop $inputDesktop)) {
+        throw 'HostSpan requires the unlocked active Windows console desktop; Session 0, disconnected sessions and secure desktops are unavailable.'
+    }
+}
+
 function Geometry {
     $screen = [System.Windows.Forms.Screen]::PrimaryScreen
     return @{ backend='windows-native'; display_id=$screen.DeviceName; coordinate_width=$screen.Bounds.Width;
@@ -148,13 +169,12 @@ function Dispatch($command) {
     $action = $command.action
     if ($action -eq 'close') { $script:opened=$false; [HostSpanActivity]::CloseIndicator(); return @{closed=$true} }
     if ($action -eq 'open') {
-        if ([System.Diagnostics.Process]::GetCurrentProcess().SessionId -eq 0 -or -not [Environment]::UserInteractive) {
-            throw 'Start HostSpan in the logged-in Windows desktop. Session 0 cannot capture or control the user screen.'
-        }
+        AssertInteractiveDesktop
         $script:opened=$true
         return (Geometry)
     }
     if (-not $opened) { throw 'Desktop session is closed' }
+    if ($action -in @('observe','move','click','key','text','scroll')) { AssertInteractiveDesktop }
     if ($action -eq 'observe') {
         $bounds=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds
         $bitmap=[System.Drawing.Bitmap]::new($bounds.Width,$bounds.Height)
@@ -252,6 +272,7 @@ try { while ($null -ne ($line=[Console]::ReadLine())) {
         $command=$line | ConvertFrom-Json
         if ($null -eq $command.id -or $command.id -isnot [string]) { break }
         if ($opened -and $command.action -in @('observe','move','click','key','text','scroll')) {
+            AssertInteractiveDesktop
             [HostSpanActivity]::SetActive($true)
             $usingDesktop=$true
         }

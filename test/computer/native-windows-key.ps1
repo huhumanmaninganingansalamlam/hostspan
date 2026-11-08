@@ -21,6 +21,7 @@ public static class HostSpanInput {
 }
 '@
 . ([scriptblock]::Create($dispatch.Extent.Text))
+function AssertInteractiveDesktop { }  # Recorder bypasses live OS checks; policy is tested below.
 $opened=$true
 function CheckChord($key,$modifiers,$expected) {
     [HostSpanInput]::Events.Clear()
@@ -46,4 +47,47 @@ foreach ($invalid in @(@('Alt','Alt'),@('Control'),@('Win'),@('meta'),'Alt')) {
     catch { $caught=$true }
     if (-not $caught -or [HostSpanInput]::Events.Count) { throw 'Invalid modifier reached input' }
 }
-'PASS: Windows chord validation and key release; no OS input'
+# Exercise production desktop policy without consulting Windows desktop APIs.
+$policy = $ast.Find({ param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'TestInteractiveDesktop'
+}, $true)
+if (-not $policy) { throw 'Missing interactive desktop policy' }
+. ([scriptblock]::Create($policy.Extent.Text))
+if (-not (TestInteractiveDesktop 7 7 $true 'WinSta0' 'Default' 'Default')) {
+    throw 'Valid unlocked console session was rejected'
+}
+function AssertDenied($label, $sessionId, $consoleSessionId, $userInteractive, $station, $desktop, $inputDesktop) {
+    if (TestInteractiveDesktop $sessionId $consoleSessionId $userInteractive $station $desktop $inputDesktop) {
+        throw "Unsafe desktop was accepted: $label"
+    }
+}
+AssertDenied 'session-zero' 0 0 $true 'WinSta0' 'Default' 'Default'
+AssertDenied 'different-console-session' 7 8 $true 'WinSta0' 'Default' 'Default'
+AssertDenied 'console-switch-in-progress' 7 4294967295 $true 'WinSta0' 'Default' 'Default'
+AssertDenied 'noninteractive' 7 7 $false 'WinSta0' 'Default' 'Default'
+AssertDenied 'service-station' 7 7 $true 'Service-0x0-3e7$' 'Default' 'Default'
+AssertDenied 'non-default-thread-desktop' 7 7 $true 'WinSta0' 'Winlogon' 'Default'
+AssertDenied 'locked-or-uac-desktop' 7 7 $true 'WinSta0' 'Default' 'Winlogon'
+AssertDenied 'desktop-access-denied' 7 7 $true 'WinSta0' 'Default' 'unavailable'
+
+# A previously opened helper must reject captures and input before touching OS APIs.
+function AssertInteractiveDesktop { throw 'guard-denied' }
+$script:opened = $true
+foreach ($action in @('observe', 'move', 'click', 'key', 'text', 'scroll')) {
+    $caught = $false
+    try { $null = Dispatch ([pscustomobject]@{ action = $action }) }
+    catch {
+        if ($_.Exception.Message -ne 'guard-denied') { throw }
+        $caught = $true
+    }
+    if (-not $caught) { throw "Dispatch did not check desktop before $action" }
+}
+$script:opened = $false
+$caught = $false
+try { $null = Dispatch ([pscustomobject]@{ action = 'open' }) }
+catch {
+    if ($_.Exception.Message -ne 'guard-denied') { throw }
+    $caught = $true
+}
+if (-not $caught -or $script:opened) { throw 'Open bypassed desktop guard' }
+'PASS: Windows chords, key release and desktop guard; no OS input'
