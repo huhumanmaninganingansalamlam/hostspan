@@ -265,12 +265,13 @@ describe("process supervisor", () => {
     let runtime = createRuntime(configPath);
     const manager = new PtySessionManager(config.server.data_dir, TerminalConfigSchema.parse({}), { backend: "native" });
     try {
-      const started = await runtime.supervisor.start(startInput({ argv: [process.execPath, "-e", "process.stdout.write('deadline-out');process.stderr.write('deadline-err');setInterval(()=>{},1000)"], deadline_ms: 2_000, wait_ms: 0 }), "req_native_deadline");
+      const started = await runtime.supervisor.start(startInput({ argv: [process.execPath, "-e", "process.stdout.write('deadline-out');process.stderr.write('deadline-err');setInterval(()=>{},1000)"], deadline_ms: 10_000, wait_ms: 0 }), "req_native_deadline");
       const id = String(started.process_id);
       nativeSessions.push({ manager, session: id });
+      await expect.poll(() => manager.outputBytes(id) > 0 && manager.outputBytes(id, "stderr") > 0, { timeout: 8_000 }).toBe(true);
       await runtime.supervisor.shutdown();
       await runtime.close();
-      await expect(manager.waitForExitStatus(id, 5_000)).resolves.toMatchObject({ exists: true, dead: true, reason: "deadline_exceeded" });
+      await expect(manager.waitForExitStatus(id, 15_000)).resolves.toMatchObject({ exists: true, dead: true, reason: "deadline_exceeded" });
       runtime = createRuntime(configPath);
       expect(await runtime.supervisor.poll({ process_id: id, stdout_cursor: 0, stderr_cursor: 0, wait_ms: 0, max_bytes: 1024 })).toMatchObject({ state: "timed_out", stdout: "deadline-out", stderr: "deadline-err", deadline_at: started.deadline_at });
     } finally {
@@ -290,10 +291,11 @@ describe("process supervisor", () => {
       const started = await runtime.supervisor.start(startInput({ argv: [process.execPath, "-e", script], wait_ms: 0 }), "req_native_cancel");
       const id = String(started.process_id);
       nativeSessions.push({ manager, session: id });
+      await expect.poll(() => manager.outputBytes(id), { timeout: 10_000 }).toBeGreaterThan(0);
       await runtime.supervisor.shutdown();
       await runtime.close();
       runtime = createRuntime(configPath);
-      await expect.poll(() => manager.outputBytes(id)).toBeGreaterThan(0);
+      expect(manager.outputBytes(id)).toBeGreaterThan(0);
       const before = await runtime.supervisor.poll({ process_id: id, stdout_cursor: 0, stderr_cursor: 0, wait_ms: 0, max_bytes: 1024 });
       const descendantPid = Number(before.stdout);
       expect(descendantPid).toBeGreaterThan(0);
