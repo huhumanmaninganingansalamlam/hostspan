@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { loadConfig } from "../config/loader.js";
 import { asHostSpanError, HostSpanError } from "../errors.js";
 import { ComputerInputSchema, type ComputerInput } from "../computer/portal.js";
-import { ProcessPollInputSchema, type ProcessPollToolInput } from "../tools/schemas.js";
+import { ProcessListInputSchema, ProcessPollInputSchema, type ProcessListToolInput, type ProcessPollToolInput } from "../tools/schemas.js";
 
 export type DaemonComputerInput = ComputerInput | { action: "status" };
 
@@ -34,6 +34,7 @@ export async function startDaemonControlServer(
   onShutdown: () => void,
   onComputer?: (input: DaemonComputerInput) => Promise<unknown>,
   onProcessPoll?: (input: ProcessPollToolInput) => Promise<Record<string, unknown>>,
+  onProcessList?: (input: ProcessListToolInput) => Promise<Record<string, unknown>>,
 ): Promise<{ address: string; close(): Promise<void> }> {
   const control = daemonControlPaths(configPath);
   mkdirSync(dirname(control.token_path), { recursive: true, mode: 0o700 });
@@ -78,6 +79,12 @@ export async function startDaemonControlServer(
         const request = JSON.parse(input.slice(0, newline)) as { token?: string; action?: string; input?: unknown };
         if (request.token !== token) {
           socket.end(`${JSON.stringify({ ok: false })}\n`);
+          return;
+        }
+        if (request.action === "process_list" && onProcessList) {
+          const parsed = ProcessListInputSchema.safeParse(request.input);
+          if (!parsed.success) throw new HostSpanError("VALIDATION_FAILED", `Invalid process list arguments: ${parsed.error.message}`);
+          socket.end(`${JSON.stringify({ ok: true, result: await onProcessList(parsed.data) })}\n`);
           return;
         }
         if (request.action === "process_poll" && onProcessPoll) {
@@ -215,6 +222,14 @@ export async function requestDaemonProcessPoll(configPath: string, input: Proces
   const error = receipt?.error as { code: HostSpanError["code"]; message: string; retryable: boolean; details: Record<string, unknown> } | undefined;
   if (error) throw new HostSpanError(error.code, error.message, error.retryable, error.details);
   throw new HostSpanError("TARGET_NOT_READY", "This profile's running daemon is unavailable or does not support process poll. Use a matching daemon version; no process was started or cancelled.");
+}
+
+export async function requestDaemonProcessList(configPath: string, input: ProcessListToolInput): Promise<Record<string, unknown>> {
+  const receipt = await requestDaemonControl(configPath, { action: "process_list", input });
+  if (receipt?.ok === true && receipt.result && typeof receipt.result === "object") return receipt.result as Record<string, unknown>;
+  const error = receipt?.error as { code: HostSpanError["code"]; message: string; retryable: boolean; details: Record<string, unknown> } | undefined;
+  if (error) throw new HostSpanError(error.code, error.message, error.retryable, error.details);
+  throw new HostSpanError("TARGET_NOT_READY", "This profile's running daemon is unavailable or does not support process list. Use a matching daemon version; no process was started or cancelled.");
 }
 
 function readPidFile(path: string): number | null {

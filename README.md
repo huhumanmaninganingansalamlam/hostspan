@@ -75,12 +75,16 @@ For a complete file, use `file_read(start_byte=0)` and continue from `next_byte`
 
 Recover lost execution IDs with read-only `process_list(target_id, cwd)`; it lists active HostSpan-owned processes in that directory and descendants. Use `active_only=false` for completed work and the returned `cursor` for another page. Poll the recovered ID using its output cursors. `exit_code_scope=spawned_command` identifies the wrapper's exit status; read a nested program's result file separately. Continue polling while `has_more_output`; `output_expired` and dropped-byte counters distinguish expired or evicted history from empty output.
 
-If your native client has no registered HostSpan `process_poll` tool, use the installed CLI on the HostSpan host as the same profile owner. A ChatGPT plugin connection does not itself register tools in a separate native client. The CLI uses the existing authenticated local daemon channel and the same polling handler; it does not start a process, attach a terminal, or require another OAuth flow:
+If your native client has no registered HostSpan `process_list` or `process_poll` tool, use the installed CLI on the HostSpan host as the same profile owner. A ChatGPT plugin connection does not itself register tools in a separate native client. The CLI uses the existing authenticated local daemon channel and the same polling handler; it does not start a process, attach a terminal, or require another OAuth flow:
 
 ```bash
+hostspan process list --target TARGET --cwd project/relative/path --active-only false \
+  --limit 100 --config /path/to/config.yaml
 hostspan process poll --process ORIGINAL_PROCESS_ID --config /path/to/config.yaml \
   --stdout-cursor 0 --stderr-cursor 0 --wait-ms 1000 --max-bytes 65536
 ```
+
+List defaults to active records only; use `--active-only false` for terminal and unknown records. Continue a truncated list with `--cursor` from that response. Listings contain lifecycle metadata, not command arguments, environment or output. Directory membership does not prove caller/task binding, and recorded state is not a fresh OS liveness check. Only existing configured targets and allowed paths are visible.
 
 Use your retained cursors instead of `0` after an earlier read, then continue with `next_stdout_cursor` and `next_stderr_cursor`. `wait_ms` is 0–1500 (default 0); `max_bytes` is 1–4194304 (default 131072). `has_more_output` covers the available output at that response, not process completion. Read `state`, `exit_code` and `signal` separately; a successful CLI retrieval exits 0 even when the original command failed. `output_expired`, `stdout_dropped_bytes`, `stderr_dropped_bytes` and earliest cursors identify unavailable history. A missing or older daemon returns `TARGET_NOT_READY`; it never triggers a reconnect, restarts the daemon, or replays the command. Keep one recovery owner for the original process.
 
