@@ -2,7 +2,7 @@
 
 HostSpan is designed for ChatGPT Web Developer Mode through OpenAI Secure MCP Tunnel.
 
-As an alternative, you can operate any ordinary HTTPS reverse proxy or tunnel gateway yourself. HostSpan does not create or manage provider-specific public endpoints. Non-loopback HostSpan requires its built-in OAuth layer.
+You can also operate a user-managed HTTPS reverse proxy or tunnel gateway. HostSpan does not create or manage public endpoints. Public non-loopback profiles require OAuth. Separately, an encrypted private-network MCP client can use `private_token` with an exact interface bind and scoped bearer credentials; the ChatGPT Web path below does not assume private IP reachability or static-header support. See [private-direct setup](../README.md).
 
 ## 1. Verify HostSpan locally
 
@@ -65,7 +65,7 @@ server:
   data_dir: ~/.local/state/hostspan
 ```
 
-Wildcard binds (`0.0.0.0` or `::`) fail configuration validation unless `allowed_hosts` is non-empty. A specific bind such as `192.168.10.20` automatically permits that Host value when no explicit allowlist is supplied. `hostspan oauth init` automatically adds the public OAuth hostname to `allowed_hosts`. Non-loopback `serve` fails when OAuth is absent.
+Wildcard binds (`0.0.0.0` or `::`) fail configuration validation unless `allowed_hosts` is non-empty. A specific bind such as `192.168.10.20` automatically permits that Host value when no explicit allowlist is supplied. `hostspan oauth init` automatically adds the public OAuth hostname to `allowed_hosts`. This reverse-proxy example is for public OAuth; a separate `private_token` profile requires an approved encrypted private transport and an exact non-wildcard bind.
 
 Minimal Caddy example:
 
@@ -119,7 +119,7 @@ OpenAI connection guide: <https://developers.openai.com/apps-sdk/deploy/connect-
 
 ## Refresh after metadata changes
 
-ChatGPT may cache tool names/descriptions/schemas. `hostspan-v3.5` adds `process_list` and optional byte continuation to `file_read`; `computer` remains the Linux Wayland portal tool. If a HostSpan release changes tool metadata, compare `server_version` and `toolset_hash`, then open the existing connection at [ChatGPT Plugins](https://chatgpt.com/plugins) and select **Refresh** before diagnosing a cached schema as a HostSpan runtime failure.
+ChatGPT may cache tool names/descriptions/schemas. `hostspan-v3.5` adds `process_list` and optional byte continuation to `file_read`; `computer` uses the supported OS-specific desktop backend (Linux Wayland portal, macOS native, or Windows native). If a HostSpan release changes tool metadata, compare `server_version` and `toolset_hash`, then open the existing connection at [ChatGPT Plugins](https://chatgpt.com/plugins) and select **Refresh** before diagnosing a cached schema as a HostSpan runtime failure.
 
 Refreshing metadata does not expand an existing OAuth grant. `tools/list` includes `computer` even without its scope; its `_meta.securitySchemes` declares `hostspan.computer`. Calling it with an insufficient grant returns the original `SCOPE_DENIED` plus `_meta["mcp/www_authenticate"]`, requesting the required scope together with the already granted supported scopes. ChatGPT can then present normal reauthorization for the existing connection. Refresh tokens cannot add scopes. Never edit token records or bypass a target/OS denial; those denials do not trigger OAuth relinking. See [OpenAI authentication UI requirements](https://developers.openai.com/apps-sdk/build/auth#triggering-authentication-ui).
 
@@ -174,7 +174,7 @@ If the approval credential is lost or suspected compromised, run `hostspan oauth
 
 ## Inspector validation
 
-Before ChatGPT interoperability testing, MCP Inspector can be used against the local or tunnel endpoint to verify 2026-07-28 `server/discover`, per-request `tools/list`, schemas, annotations, and tool calls independently of ChatGPT UI behavior. The repository contract suite pins the approved hash for the versioned 11-tool registry, while integration coverage verifies tool calls and OAuth authorization. HostSpan v3 targets the 2026-07-28 contract directly and does not carry an older stateless transport fallback.
+Before ChatGPT interoperability testing, MCP Inspector can be used against the local or tunnel endpoint to verify 2026-07-28 `server/discover`, per-request `tools/list`, schemas, annotations, and tool calls independently of ChatGPT UI behavior. The repository contract suite pins the approved hash for the versioned 12-tool registry, while integration coverage verifies tool calls and OAuth authorization. HostSpan v3 targets the 2026-07-28 contract directly and does not carry an older stateless transport fallback.
 
 ## Read-only review and remote work
 
