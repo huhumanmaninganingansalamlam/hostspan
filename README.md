@@ -104,7 +104,7 @@ Health    http://127.0.0.1:39393/healthz
 Readiness http://127.0.0.1:39393/readyz
 ```
 
-The default bind is loopback-only, but `server.listen_host` is configurable for LAN/container/reverse-proxy deployments. Host header validation remains enabled for every bind. **Any non-loopback HostSpan server additionally requires built-in OAuth and fails closed when OAuth is missing.** `readyz` represents server/database readiness; missing ripgrep is reported as degraded so non-search tools stay usable, while `file_search` returns `SEARCH_BACKEND_UNAVAILABLE`.
+The default bind is loopback-only, but `server.listen_host` is configurable for LAN/container/reverse-proxy deployments. Host header validation remains enabled for every bind. **Every non-loopback listener requires explicit OAuth or a protected private-direct `private_token` profile; `none` remains loopback-only.** `readyz` represents server/database readiness; missing ripgrep is reported as degraded so non-search tools stay usable, while `file_search` returns `SEARCH_BACKEND_UNAVAILABLE`.
 
 Process response budgets and execution lifetime are separate. `wait_ms` bounds response waiting and `max_bytes` bounds returned output. Omit `deadline_ms` to run without an implicit deadline, set it for an explicit timeout, or use `process_cancel`. `max_output_bytes` caps retained output; filling it stops capture, never the process. `output_budget` reports the retained bytes and remaining capacity. Later output is drained but not retained; human PTY attachments still receive live output. Redirect full logs to a target file when needed.
 
@@ -207,13 +207,35 @@ server:
 
 `listen_host: ::` works the same way for all IPv6 interfaces and also requires non-empty `allowed_hosts`. Entries are hostname/IP values only—no scheme, path, or port.
 
-Before starting any non-loopback/public deployment, initialize HostSpan OAuth with the exact public MCP URL:
+For a public non-loopback endpoint, initialize HostSpan OAuth with the exact public MCP URL:
 
 ```bash
 hostspan oauth init --public-url https://mcp.example.com/mcp
 ```
 
 The command adds the public hostname to `allowed_hosts`, persists only a salted scrypt hash of the approval credential, and writes the recoverable credential to a local mode-`0600` `approval_secret_file`. Access tokens are short-lived, refresh tokens rotate, and authorization-code/access/refresh token values are stored in SQLite only as hashes.
+
+A separate private-direct option uses explicit `authentication.mode: private_token` on an exact IP assigned to an operator-approved encrypted private network. It works with different VPN/private-link implementations; Tailscale is only one possible deployment transport. It is **not** safe to expose over plain LAN or public HTTP. Example fragment (substitute an actual approved interface IP):
+
+```yaml
+authentication:
+  mode: private_token
+  protected_transport: encrypted_private_network
+server:
+  listen_host: YOUR_APPROVED_INTERFACE_IP
+  allowed_hosts: [YOUR_APPROVED_INTERFACE_IP]
+```
+
+Issue a distinct scope-limited credential for each MCP client from the local administrative terminal, then configure that client to send it as `Authorization: Bearer <token>` on every request:
+
+```bash
+hostspan access token create --name agent-a --scopes hostspan.read --output /private/path/agent-a.token
+hostspan access token list
+hostspan access token rotate TOKEN_ID --output /private/path/agent-a-rotated.token
+hostspan access token revoke TOKEN_ID
+```
+
+`--output` creates a protected file, never prints the secret to command output, and refuses overwrite. `--show` is reserved for a trusted interactive TTY. The server verifies a hash-only credential, enforces the same five tool scopes as OAuth, and does not expose OAuth discovery in this mode. The setting `protected_transport` is an explicit operator security assertion; HostSpan cannot detect encryption solely from an IP. See [Security model](docs/SECURITY.md) for transport, Host, and token lifecycle requirements.
 
 If you want a normal public MCP endpoint instead of Secure MCP Tunnel, run your own reverse proxy in front of HostSpan. A same-host proxy can keep HostSpan on loopback:
 
@@ -224,7 +246,7 @@ MCP client
   -> http://127.0.0.1:39393/mcp
 ```
 
-Preserve the public `Host` header so HostSpan can validate it against the hostname added by `hostspan oauth init`. If your proxy runs in another container/VM/host, bind HostSpan to a reachable private IP or `0.0.0.0`/`::`; OAuth is still mandatory for that non-loopback server.
+Preserve the public `Host` header so HostSpan can validate it against the hostname added by `hostspan oauth init`. If your public OAuth proxy runs in another container/VM/host, bind HostSpan to a reachable interface with a narrow Host allowlist; OAuth remains mandatory for that public profile. The separate private-token profile disallows wildcard binds.
 
 Example Caddy upstream:
 
@@ -329,7 +351,7 @@ The `computer` tool connects observation, input and a fresh PNG observation in t
 
 Linux requirements: `/usr/bin/python3` with PyGObject, dbus-python, GStreamer introspection and `pipewiresrc`, `videoconvert`, `pngenc`, `appsink`; a working session D-Bus and RemoteDesktop/ScreenCast portal backend. Exact text paste additionally requires the portal Clipboard interface and its session grant. macOS 14+ uses the bundled ScreenCaptureKit/CoreGraphics helper; Windows uses Windows PowerShell with Windows Forms/GDI and SendInput. OS permission, locked desktops, protected content and Windows UIPI still apply. Packages bundle helpers, not host desktop services. No display/security setup is changed automatically.
 
-For private-IP access to another computer, run HostSpan in that guest's logged-in desktop with its normal loopback listener, then forward it through your existing authenticated SSH connection, for example `ssh -NT -o ExitOnForwardFailure=yes -L 127.0.0.1:13906:127.0.0.1:39393 user@100.64.0.6`. Connect your MCP client to `http://127.0.0.1:13906/mcp`. The screen belongs to that guest, not the SSH client. SSH carries the loopback connection; it does not move a Session 0 daemon into an interactive Windows session. A non-loopback HostSpan listener still requires OAuth.
+For private-IP access to another computer, run HostSpan in that guest's logged-in desktop with its normal loopback listener, then forward it through your existing authenticated SSH connection, for example `ssh -NT -o ExitOnForwardFailure=yes -L 127.0.0.1:13906:127.0.0.1:39393 user@100.64.0.6`. Connect your MCP client to `http://127.0.0.1:13906/mcp`. The screen belongs to that guest, not the SSH client. SSH carries the loopback connection; it does not move a Session 0 daemon into an interactive Windows session. A non-loopback HostSpan listener requires OAuth or explicit scope-limited `private_token` authentication over an approved encrypted private path.
 
 Call `open`, retain `session_id`, then `observe` until consent completes. The image response includes `observation_id`, image dimensions and `coordinate_width/height`; convert resized image coordinates to the latter before clicking. Call `click`, `move`, `scroll`, `key` or `text` with that observation ID and a new idempotency key. `text` writes only the supplied UTF-8 text to the consented clipboard and pastes it; this replaces clipboard content and never reads/restores prior clipboard data. Input returns `dispatched` separately from `outcome_verified`; inspect the fresh image for the actual outcome. When a response is lost, reuse the identical key/arguments; an unknown delivery is never replayed. Call `close` to release the portal session.
 

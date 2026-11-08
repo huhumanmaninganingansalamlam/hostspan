@@ -6,7 +6,8 @@ import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { OAuthService } from "../auth/oauth-service.js";
-import { TerminalConfigSchema, type HostSpanConfig } from "../config/schema.js";
+import { PrivateTokenStore } from "../auth/private-token.js";
+import { TerminalConfigSchema, resolveAuthenticationMode, type HostSpanAuthMode, type HostSpanConfig } from "../config/schema.js";
 import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath, oauthApprovalSecretPath } from "../config/paths.js";
 import { fileList } from "../files/list.js";
@@ -16,7 +17,7 @@ import { fileRead } from "../files/read.js";
 import { fileSearch } from "../files/search.js";
 import { ripgrepExecutable } from "../files/ripgrep.js";
 import { asHostSpanError } from "../errors.js";
-import { TOOL_NAMES, TOOLSET_HASH, type HostSpanToolAuthorization, type HostSpanToolHandlers, type ToolCaller } from "../mcp/registry.js";
+import { TOOL_NAMES, toolsetHash, type HostSpanToolAuthorization, type HostSpanToolHandlers, type ToolCaller } from "../mcp/registry.js";
 import type {
   FileListToolInput,
   FilePatchToolInput,
@@ -58,6 +59,8 @@ import { BoundedConcurrencyLimiter } from "./concurrency-limiter.js";
 
 export interface HostSpanRuntime {
   config: HostSpanConfig;
+  authenticationMode: HostSpanAuthMode;
+  privateTokens?: PrivateTokenStore;
   configPath: string;
   db: HostSpanDatabase;
   targets: TargetRegistry;
@@ -93,7 +96,7 @@ export function runtimeReadiness(runtime: HostSpanRuntime) {
   return {
     ready: databaseReady && processReady,
     degraded: !searchReady || !terminalReady,
-    toolset_hash: TOOLSET_HASH,
+    toolset_hash: toolsetHash(runtime.authenticationMode),
     policy_epoch: runtime.config.policy_epoch,
     backends: {
       database: databaseReady,
@@ -145,12 +148,20 @@ export function createRuntime(
 ): HostSpanRuntime {
   const resolvedConfigPath = resolve(configPath);
   const config = loadConfig(resolvedConfigPath);
+  const authenticationMode = resolveAuthenticationMode(config);
   protectWindowsFile(resolvedConfigPath);
   protectWindowsFile(`${resolvedConfigPath}.bak`);
   protectWindowsFile(oauthApprovalSecretPath(resolvedConfigPath));
   protectWindowsTree(config.server.data_dir);
   const targets = new TargetRegistry(config);
   const db = openDatabase(join(config.server.data_dir, "state.db"));
+  let privateTokens: PrivateTokenStore | undefined;
+  try {
+    if (authenticationMode === "private_token") privateTokens = new PrivateTokenStore(config.server.data_dir);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
   const operations = new OperationsRepo(db);
   const processes = new ProcessesRepo(db);
   const computer = config.computer ? new PortalDesktop(operations, config.computer.backend) : undefined;
@@ -167,6 +178,7 @@ export function createRuntime(
     resolvedConfigPath,
     `${resolvedConfigPath}.bak`,
     oauthApprovalSecretPath(resolvedConfigPath),
+    join(config.server.data_dir, "private-access.db"),
   ]);
   const terminal = config.terminal
     ? new PtySessionManager(config.server.data_dir, config.terminal, { requireOwnership: true, configPath: resolvedConfigPath })
@@ -455,6 +467,8 @@ export function createRuntime(
 
   return {
     config,
+    authenticationMode,
+    ...(privateTokens ? { privateTokens } : {}),
     configPath: resolvedConfigPath,
     db,
     targets,
@@ -484,6 +498,7 @@ export function createRuntime(
         await processMaintenanceInflight;
         await supervisor.settleForRuntimeClose();
         if (db.open) db.close();
+        privateTokens?.close();
       })();
       return closeRuntimePromise;
     },

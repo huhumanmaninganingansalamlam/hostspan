@@ -70,9 +70,39 @@ On Unix, keep normal restrictive ownership/mode semantics on HostSpan config/sta
 
 HostSpan defaults to `127.0.0.1`, but may bind to a specific interface, `0.0.0.0`, or `::` when the deployment requires LAN/container/reverse-proxy reachability. Host headers are always validated by the MCP Fastify adapter.
 
-For wildcard binds, `allowed_hosts` is mandatory and configuration fails closed when it is empty. For a specific bind address, HostSpan derives the allowed Host from that address unless an explicit allowlist is configured. This is DNS-rebinding protection, not client authentication. **Any non-loopback HostSpan server additionally requires HostSpan OAuth and refuses to start without it.**
+For wildcard binds, `allowed_hosts` is mandatory and configuration fails closed when it is empty. For a specific bind address, HostSpan derives the allowed Host from that address unless an explicit allowlist is configured. This is DNS-rebinding protection, not client authentication. **Every non-loopback HostSpan server requires explicit OAuth or private-token authentication.** Unauthenticated `none` remains loopback-only; an IP address or Host header never establishes caller identity.
 
-The recommended remote path remains outbound-only OpenAI Secure MCP Tunnel. If you instead operate a reverse proxy/ingress/tunnel gateway yourself, keep HostSpan on loopback when the proxy is local; otherwise bind HostSpan deliberately to a reachable private/specific/wildcard interface and restrict `allowed_hosts`. The proxy supplies public TLS/network controls while HostSpan supplies OAuth authorization.
+The recommended public remote path remains outbound-only OpenAI Secure MCP Tunnel, or a user-managed HTTPS ingress with OAuth. A distinct private-direct deployment may use an explicitly approved encrypted private network and an application-level private token; it is not limited to Tailscale. For public OAuth, local proxies may use a loopback upstream; off-host proxies must use narrow Host allowlists and firewall policy.
+
+### Private-direct token security boundary
+
+Private tokens are an **explicitly selected, non-OAuth profile** for approved encrypted private networks (such as WireGuard-based overlays, corporate VPNs, or equivalent protected links), or for loopback-only local use. They are not a substitute for TLS, network ACLs, or OS user permissions. A private IPv4 address, a Tailscale address, or the presence of `X-Forwarded-For` is not itself evidence of encryption or authorization.
+
+Example non-loopback configuration fragment (use an actual IP address assigned to the approved encrypted interface):
+
+```yaml
+authentication:
+  mode: private_token
+  protected_transport: encrypted_private_network
+server:
+  listen_host: YOUR_APPROVED_INTERFACE_IP
+  allowed_hosts: [YOUR_APPROVED_INTERFACE_IP]
+```
+
+The `protected_transport` setting is an operator attestation, **not** an automatic network-encryption test. HostSpan refuses wildcard, hostname, and non-exact binds in this mode and requires a restricted Host allowlist. The operator must verify encryption, ACLs, and firewall routing before exposing the port. HostSpan itself serves HTTP on this interface; to use HTTPS termination outside the daemon, terminate TLS at a trusted proxy and keep HostSpan's upstream loopback or independently encrypted. Do not expose this profile over an ordinary unencrypted LAN or public internet.
+
+Manage credentials locally, never through MCP:
+
+```sh
+hostspan access token create --name agent-a --scopes hostspan.read --output /private/path/agent-a.token
+hostspan access token list
+hostspan access token rotate TOKEN_ID --output /private/path/agent-a-rotated.token
+hostspan access token revoke TOKEN_ID
+```
+
+A local trusted interactive terminal may use `--show` instead of `--output`; noninteractive runs must write to a new mode-`0600` credential file (restricted Windows ACL) and only return the token ID and metadata on stdout. Never put the secret in Git, CLI arguments, environment dumps, tool output, chat, logs, or support archives. Give each client/node its own token rather than sharing a fleet-wide secret. The MCP client must send `Authorization: Bearer <token>` on **every** `/mcp` request. Use the five existing OAuth scope names as static token grants. Invalid/missing/revoked tokens receive a generic HTTP 401 without OAuth discovery; insufficient tool scope is rejected by the common tool evaluator. Rotate replaces the old credential atomically; revoke blocks new requests immediately but does not cancel already-started processes. Token secrets are 256-bit random, hash-only in a separate `private-access.db`, and last-used is updated at most once per 60 seconds.
+
+Existing configurations are backward-compatible: absent `authentication` means `oauth` when `oauth` settings exist and `none` otherwise. Explicit mode/config conflicts fail validation. Loopback `none` requires no token; existing public OAuth endpoints, challenge, and refresh remain unchanged. The advertised tool security metadata and toolset hash reflect the selected mode.
 
 ### OAuth security boundary
 
@@ -89,7 +119,7 @@ The recommended remote path remains outbound-only OpenAI Secure MCP Tunnel. If y
 - the retired full-authority `hostspan` scope is rejected; clients with grants using it must authorize again with granular scopes;
 - refresh without a requested scope preserves the grant, while an explicit refresh scope may only narrow it;
 - OAuth scope checks and HostSpan target policy are independent boundaries: a token must authorize the tool class and the selected target must separately grant the underlying file/process capability. Desktop authority uses explicit computer configuration and the OS-consented screen session, not a filesystem target;
-- the versioned `hostspan-v3.5` tool list/schema/hash is unchanged by scope enforcement; tool authorization is checked at invocation time;
+- tool names and schemas remain unchanged by scope enforcement; authorization is checked at invocation time. The OAuth toolset hash is preserved, while other authentication modes advertise their own security metadata and digest;
 - HostSpan exposes the MCP-SDK-compatible root `/authorize`, `/token`, `/register`, and `/revoke` OAuth surface;
 - refresh tokens are issued and rotated for reconnects without requiring a separate `offline_access` scope;
 - rotating the approval secret revokes all outstanding access/refresh tokens;
@@ -105,7 +135,7 @@ Security requirements for a user-managed proxy:
 - rate-limit and apply WAF/network policy where appropriate;
 - keep `allowed_hosts` narrow and aligned with the hostname/IP actually used by the proxy/client;
 - prefer a private/LAN bind for an off-host proxy; use wildcard binds only when routing/firewall rules require them;
-- do not mistake Host validation for authentication—HostSpan OAuth is mandatory for non-loopback serving, and firewall/TLS controls remain defense in depth;
+- do not mistake Host validation for authentication—public non-loopback serving requires OAuth; explicitly protected private-direct serving requires a private token, exact interface bind, and encrypted transport. Firewall/TLS controls remain independent defenses;
 - treat forwarded MCP calls as untrusted even after proxy authentication: HostSpan target/file/exec policy is still the final local capability boundary.
 
 Reverse proxy transport does not make native execution safer. Any authenticated caller that reaches HostSpan can invoke the read/write/exec capabilities permitted by the configured target policy.

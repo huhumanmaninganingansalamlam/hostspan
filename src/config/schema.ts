@@ -102,6 +102,13 @@ export const OAuthConfigSchema = z
   })
   .strict();
 
+export const AuthenticationConfigSchema = z.object({
+  mode: z.enum(["none", "private_token", "oauth"]),
+  // Non-loopback private token is HTTP inside an explicitly approved encrypted network.
+  // This is an operator assertion, not an IP-range-based detection of encryption.
+  protected_transport: z.literal("encrypted_private_network").optional(),
+}).strict();
+
 export const HostSpanConfigSchema = z
   .object({
     schema_version: z.literal(1),
@@ -138,11 +145,36 @@ export const HostSpanConfigSchema = z
       .strict(),
     terminal: TerminalConfigSchema.optional(),
     computer: z.object({ backend: z.enum(["wayland-portal", "native"]) }).strict().optional(),
+    authentication: AuthenticationConfigSchema.optional(),
     oauth: OAuthConfigSchema.optional(),
     targets: z.record(z.string().min(1), TargetConfigSchema),
     exec_profiles: z.record(z.string().min(1), ExecProfileSchema),
   })
-  .strict();
+  .strict()
+  .superRefine((config, context) => {
+    const mode = config.authentication?.mode ?? (config.oauth ? "oauth" : "none");
+    if (mode === "oauth" && !config.oauth) {
+      context.addIssue({ code: "custom", path: ["oauth"], message: "oauth authentication requires oauth configuration" });
+    }
+    if (mode !== "oauth" && config.oauth) {
+      context.addIssue({ code: "custom", path: ["authentication", "mode"], message: "oauth configuration requires oauth authentication" });
+    }
+    if (config.authentication?.protected_transport && mode !== "private_token") {
+      context.addIssue({ code: "custom", path: ["authentication", "protected_transport"], message: "protected_transport requires private_token mode" });
+    }
+    const host = config.server.listen_host.toLowerCase();
+    if (mode === "private_token" && !["127.0.0.1", "localhost", "::1"].includes(host)) {
+      if (!isIP(host) || host === "0.0.0.0" || host === "::") {
+        context.addIssue({ code: "custom", path: ["server", "listen_host"], message: "private_token requires an exact non-wildcard interface IP" });
+      }
+      if (!config.server.allowed_hosts?.length) {
+        context.addIssue({ code: "custom", path: ["server", "allowed_hosts"], message: "private_token requires explicit allowed_hosts for non-loopback" });
+      }
+      if (config.authentication?.protected_transport !== "encrypted_private_network") {
+        context.addIssue({ code: "custom", path: ["authentication", "protected_transport"], message: "non-loopback private_token requires explicit encrypted_private_network transport approval" });
+      }
+    }
+  });
 
 export type Capability = z.infer<typeof CapabilitySchema>;
 export type ExecProfile = z.infer<typeof ExecProfileSchema>;
@@ -150,3 +182,8 @@ export type TerminalConfig = z.infer<typeof TerminalConfigSchema>;
 export type TargetConfig = z.infer<typeof TargetConfigSchema>;
 export type OAuthConfig = z.infer<typeof OAuthConfigSchema>;
 export type HostSpanConfig = z.infer<typeof HostSpanConfigSchema>;
+export type HostSpanAuthMode = "none" | "private_token" | "oauth";
+
+export function resolveAuthenticationMode(config: Pick<HostSpanConfig, "authentication" | "oauth">): HostSpanAuthMode {
+  return config.authentication?.mode ?? (config.oauth ? "oauth" : "none");
+}

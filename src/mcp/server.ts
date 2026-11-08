@@ -1,4 +1,6 @@
 import { HostSpanError } from "../errors.js";
+import type { HostSpanAuthMode } from "../config/schema.js";
+import type { PrivateTokenStore, VerifiedPrivateToken } from "../auth/private-token.js";
 import { errorResult, requestId } from "./result.js";
 import { createMcpFastifyApp } from "@modelcontextprotocol/fastify";
 import { toNodeHandler, type NodeIncomingMessageLike } from "@modelcontextprotocol/node";
@@ -53,6 +55,9 @@ export interface HostSpanHttpServerOptions {
   allowed_hosts?: string[];
   max_inflight_mcp_requests?: number;
   oauth?: OAuthService;
+  authenticationMode?: HostSpanAuthMode;
+  privateTokens?: PrivateTokenStore;
+  protected_transport?: "encrypted_private_network";
   authorization?: HostSpanToolAuthorization;
   handlers: HostSpanToolHandlers;
   responseContext: ResponseContextProvider;
@@ -103,6 +108,7 @@ export function createMcpServer(
   handlers: HostSpanToolHandlers,
   responseContext: ResponseContextProvider,
   authorization?: HostSpanToolAuthorization,
+  mode: HostSpanAuthMode = "none",
 ): McpServer {
   const server = new McpServer(
     { name: "hostspan", version: SERVER_VERSION },
@@ -121,17 +127,30 @@ export function createMcpServer(
         "A cursor behind retention resumes at the earliest retained output with explicit loss metadata. Poll for completion; human PTY attachments receive recent history and live output.",
     },
   );
-  registerHostSpanTools(server, handlers, responseContext, authorization);
+  registerHostSpanTools(server, handlers, responseContext, authorization, mode);
   // SDK 2's high-level registration omits canonical securitySchemes. Keep discovery
   // on its public handler API; tool invocation still uses the original SDK handlers.
-  server.server.setRequestHandler("tools/list", () => ({ tools: listedTools() }));
+  server.server.setRequestHandler("tools/list", () => ({ tools: listedTools(mode) }));
   return server;
 }
 
 export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): FastifyInstance {
   const loopback = ["127.0.0.1", "localhost", "::1"].includes(options.listen_host.toLowerCase());
-  if (!loopback && !options.oauth) {
-    throw new Error("Non-loopback HostSpan HTTP serving requires OAuth.");
+  const mode = options.authenticationMode ?? (options.oauth ? "oauth" : "none");
+  if (mode === "oauth" && (!options.oauth || options.privateTokens)) {
+    throw new Error("OAuth mode requires OAuth only.");
+  }
+  if (mode === "private_token" && (!options.privateTokens || options.oauth)) {
+    throw new Error("private_token mode requires a private token store and no OAuth.");
+  }
+  if (mode === "none" && (options.oauth || options.privateTokens || !loopback)) {
+    throw new Error("Non-loopback HostSpan HTTP serving requires OAuth or private_token; local none must not have authentication services.");
+  }
+  if (mode === "private_token" && !loopback) {
+    if (!isIP(options.listen_host) || ["0.0.0.0", "::"].includes(options.listen_host) ||
+        !options.allowed_hosts?.length || options.protected_transport !== "encrypted_private_network") {
+      throw new Error("Remote private_token requires exact IP bind, explicit allowed_hosts, and approved encrypted private transport.");
+    }
   }
   const allowedHosts = resolveAllowedHosts(options.listen_host, options.allowed_hosts);
   const app = createMcpFastifyApp({ host: options.listen_host, allowedHosts, allowedOrigins: allowedHosts });
@@ -151,7 +170,7 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
       if (invocation) options.trace?.("transport.sdk_selected", {
         transport_request_id: invocation.transport_request_id, ...auditInvocationIdentifiers(invocation), sdk_era: context.era,
       });
-      return createMcpServer(options.handlers, options.responseContext, options.authorization);
+      return createMcpServer(options.handlers, options.responseContext, options.authorization, mode);
     },
     {
       onerror: reportTransportError,
@@ -285,6 +304,30 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
           response,
         );
       }
+    }
+    if (mode === "private_token" && options.privateTokens) {
+      let verified: VerifiedPrivateToken | undefined;
+      try {
+        verified = options.privateTokens.verifyAuthorizationHeader(request.headers.authorization);
+      } catch {
+        // Store failures must never grant local authority or expose credential details.
+        return reply.code(503).header("cache-control", "no-store").send({ error: "authentication_unavailable" });
+      }
+      if (!verified) {
+        const id = requestId();
+        options.trace?.("authorization.rejected", {
+          transport_request_id: request.id, ...invocation,
+          request_id: id, stage: "authentication", http_status: 401,
+          error_code: "invalid_token",
+          tool: TOOL_NAMES.find((name) => name === body?.params?.name),
+        });
+        return reply.code(401).header("cache-control", "no-store").header("x-hostspan-request-id", id)
+          .send({ error: "unauthorized" });
+      }
+      Object.assign(request.raw, {
+        auth: { token: "redacted", clientId: `private_token:${verified.token_id}`, scopes: verified.scopes },
+      });
+      caller = { caller_mode: "private_token", private_token_id: verified.token_id };
     }
     if (request.method === "POST" && body?.jsonrpc === "2.0" && (typeof body.id === "string" || typeof body.id === "number") && body.method === "tools/call") {
       const tool = TOOL_DEFINITIONS.find((entry) => entry.name === body.params?.name);
