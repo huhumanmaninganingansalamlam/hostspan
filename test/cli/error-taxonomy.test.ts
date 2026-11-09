@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { daemonStatus, startDaemon, writeDaemonPid } from "../../src/daemon/control.js";
 import { main } from "../../src/cli/index.js";
@@ -54,6 +54,18 @@ describe("CLI error taxonomy", () => {
     });
     expect(daemonStatus(configPath).running).toBe(false);
     expect(readFileSync(configPath, "utf8")).toBe(original);
+  });
+  it("does not treat another user\u0027s inaccessible PID as a running daemon", () => {
+    const configPath = configFixture();
+    writeDaemonPid(configPath, 424_242);
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+      throw Object.assign(new Error("Operation not permitted"), { code: "EPERM" });
+    });
+    try {
+      expect(daemonStatus(configPath)).toMatchObject({ running: false, pid: null });
+    } finally {
+      kill.mockRestore();
+    }
   });
   it.each(["daemon", "smoke", "not-a-command"])("classifies CLI usage errors as VALIDATION_FAILED: %s", async (command) => {
     await expect(main([command])).rejects.toMatchObject({ code: "VALIDATION_FAILED" });

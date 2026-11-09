@@ -246,7 +246,8 @@ export function pidAlive(pid: number | null): boolean {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ESRCH") return false;
-    if (code === "EPERM") return true;
+    // Profile daemons share our OS user; an inaccessible PID cannot prove ownership.
+    if (code === "EPERM") return false;
     throw error;
   }
 }
