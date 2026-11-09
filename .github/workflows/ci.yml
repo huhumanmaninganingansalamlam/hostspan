@@ -132,3 +132,14 @@ jobs:
           hdiutil detach "$mount"
           trap - EXIT
           node scripts/smoke-packaged-cli.mjs --platform darwin --arch "${{ matrix.arch }}" --installed-dir "$installed"
+      - name: Retain tested unsigned candidate installers
+        uses: actions/upload-artifact@v7
+        with:
+          name: hostspan-unsigned-candidate-${{ runner.os }}-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            out/*.exe
+            out/*.dmg
+            out/*.zip
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
