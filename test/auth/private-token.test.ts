@@ -75,7 +75,7 @@ function handlers(calls: string[]): HostSpanToolHandlers {
   };
 }
 
-function request(app: FastifyInstance, rpcMethod: string, token?: string, toolName?: string, args: Record<string, unknown> = {}) {
+function request(app: FastifyInstance, rpcMethod: string, token?: string, toolName?: string, args: Record<string, unknown> = {}, extraHeaders: Record<string, string> = {}) {
   return app.inject({
     method: "POST",
     url: "/mcp",
@@ -87,6 +87,7 @@ function request(app: FastifyInstance, rpcMethod: string, token?: string, toolNa
       "mcp-protocol-version": "2026-07-28",
       "mcp-method": rpcMethod,
       ...(toolName ? { "mcp-name": toolName } : {}),
+      ...extraHeaders,
     },
     payload: {
       jsonrpc: "2.0",
@@ -113,6 +114,10 @@ describe("private token lifecycle", () => {
       const issued = store.issue("client-a", ["hostspan.read"], (secret) => { first = secret; });
       expect(first).toMatch(/^hsp_[A-Za-z0-9_-]{43}$/);
       expect(store.verifyAuthorizationHeader(`Bearer ${first}`)?.token_id).toBe(issued.token_id);
+      expect(store.verifyAuthorizationHeader(`bearer ${first}`)?.token_id).toBe(issued.token_id);
+      expect(store.verifyAuthorizationHeader(`bEaReR   ${first}`)?.token_id).toBe(issued.token_id);
+      expect(store.verifyAuthorizationHeader(`Basic ${first}`)).toBeUndefined();
+      expect(store.verifyAuthorizationHeader(`Bearer ${first} extra`)).toBeUndefined();
       expect(readFileSync(store.path).includes(first)).toBe(false);
       if (process.platform !== "win32") expect(statSync(store.path).mode & 0o777).toBe(0o600);
       expect(store.list()[0]).not.toHaveProperty("secret_hash");
@@ -178,6 +183,8 @@ describe("private token MCP HTTP authentication", () => {
       expect(calls).toEqual([]);
       const listing = await request(app, "tools/list", credential);
       expect(listing.statusCode, listing.body).toBe(200);
+      const mixedCase = await request(app, "tools/list", undefined, undefined, {}, { authorization: `bEaReR   ${credential}` });
+      expect(mixedCase.statusCode, mixedCase.body).toBe(200);
       const tools = listing.json().result.tools as Array<{ securitySchemes: Array<{ type: string; scheme?: string }> }>;
       expect(tools.length).toBeGreaterThan(0);
       expect(tools[0]?.securitySchemes).toEqual([{ type: "http", scheme: "bearer" }]);
@@ -215,7 +222,23 @@ describe("private token MCP HTTP authentication", () => {
       expect(() => createHostSpanHttpServer(options)).toThrow(/encrypted private transport/);
       expect(() => createHostSpanHttpServer({ ...options, listen_host: "0.0.0.0", protected_transport: "encrypted_private_network" })).toThrow(/exact IP bind/);
       const app = createHostSpanHttpServer({ ...options, protected_transport: "encrypted_private_network" });
-      await app.close();
+      try {
+        let credential = "";
+        store.issue("remote-fixture", ["hostspan.read"], (secret) => { credential = secret; });
+        const correctHost = { host: "10.30.40.50:39393" };
+        const allowed = await request(app, "tools/list", credential, undefined, {}, correctHost);
+        expect(allowed.statusCode, allowed.body).toBe(200);
+        expect((await request(app, "tools/list", undefined, undefined, {}, correctHost)).statusCode).toBe(401);
+        expect((await request(app, "tools/list", credential, undefined, {}, { host: "10.30.40.51" })).statusCode).toBe(403);
+        expect((await request(app, "tools/list", credential, undefined, {}, {
+          ...correctHost, origin: "https://unapproved.example",
+        })).statusCode).toBe(403);
+        expect((await request(app, "tools/list", credential, undefined, {}, {
+          ...correctHost, origin: "http://10.30.40.50:39393",
+        })).statusCode).toBe(200);
+      } finally {
+        await app.close();
+      }
       expect(HostSpanConfigSchema.safeParse({
         ...config,
         server: { ...config.server, listen_host: "10.30.40.50", allowed_hosts: ["10.30.40.50"] },

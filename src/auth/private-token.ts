@@ -11,7 +11,9 @@ import {
 import { protectWindowsFile } from "../security/windows-acl.js";
 
 const TOKEN_PREFIX = "hsp_";
-const TOKEN_PATTERN = /^Bearer (hsp_[A-Za-z0-9_-]{43})$/;
+// HTTP authentication schemes are case-insensitive; Bearer accepts one or more spaces.
+// Keep the opaque token's hsp_ prefix case-sensitive.
+const TOKEN_PATTERN = /^[Bb][Ee][Aa][Rr][Ee][Rr] +(hsp_[A-Za-z0-9_-]{43})$/;
 
 type TokenRow = {
   token_id: string;
