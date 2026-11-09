@@ -17,6 +17,19 @@ import { join } from "node:path";
 const STREAMS = ["stdout", "stderr"];
 const SEGMENT_BYTES = 256 * 1024;
 
+export function withTransientSegmentReadRetry(openRead, platform = process.platform) {
+  const deadline = Date.now() + (platform === "win32" ? 1_500 : 0);
+  for (;;) {
+    try {
+      return openRead();
+    } catch (error) {
+      const retryable = platform === "win32" && ["EPERM", "EBUSY", "EACCES"].includes(String(error?.code)) && Date.now() < deadline;
+      if (!retryable) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
+}
+
 function directory(dataDir, processId) {
   return join(dataDir, "spools", "processes", processId);
 }
@@ -345,7 +358,7 @@ export class OutputSpoolStore {
         const count = Math.min(bytesNeeded, end - position);
         const buffer = Buffer.allocUnsafe(count);
         try {
-          const fd = openSync(segment.path, "r");
+          const fd = withTransientSegmentReadRetry(() => openSync(segment.path, "r"));
           let bytes;
           try {
             bytes = readSync(fd, buffer, 0, count, position - segment.start);
@@ -389,7 +402,7 @@ export class OutputSpoolStore {
       const count = Math.min(segment.size, maxBytes - total);
       const buffer = Buffer.allocUnsafe(count);
       try {
-        const fd = openSync(segment.path, "r");
+        const fd = withTransientSegmentReadRetry(() => openSync(segment.path, "r"));
         try {
           const bytes = readSync(fd, buffer, 0, count, segment.size - count);
           parts.unshift(buffer.subarray(0, bytes));
