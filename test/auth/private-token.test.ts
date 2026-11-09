@@ -13,6 +13,7 @@ import { writeConfigAtomic } from "../../src/config/writer.js";
 import { toolsetHash, type HostSpanToolHandlers } from "../../src/mcp/registry.js";
 import { createHostSpanHttpServer, createMcpServer } from "../../src/mcp/server.js";
 import { createRuntime } from "../../src/runtime/create-runtime.js";
+import { runDoctor } from "../../src/diagnostics/doctor.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -153,6 +154,25 @@ describe("private token lifecycle", () => {
       store.close();
     }
   });
+});
+
+describe("private-token deployment diagnostics", () => {
+  it("accepts an approved exact non-loopback token profile without claiming transport verification", async () => {
+    const { configPath, config } = fixture();
+    writeConfigAtomic(configPath, {
+      ...config,
+      server: { ...config.server, listen_host: "10.30.40.50", allowed_hosts: ["10.30.40.50"] },
+      authentication: { mode: "private_token", protected_transport: "encrypted_private_network" },
+    });
+    const report = await runDoctor(configPath);
+    expect(report.ok, JSON.stringify(report.checks)).toBe(true);
+    expect(report.checks.find((check) => check.name === "network_bind")).toMatchObject({
+      status: "warn", details: expect.stringContaining("private_token"),
+    });
+    expect(report.checks.find((check) => check.name === "authentication")).toMatchObject({
+      status: "pass", details: expect.stringContaining("operator"),
+    });
+  }, 15_000);
 });
 
 describe("private token MCP HTTP authentication", () => {

@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "../config/loader.js";
-import type { HostSpanConfig } from "../config/schema.js";
+import { resolveAuthenticationMode, type HostSpanConfig } from "../config/schema.js";
 import { databaseHealthy, openMemoryDatabase, openReadOnlyDatabase } from "../state/database.js";
 import { TargetRegistry } from "../targets/registry.js";
 import { TOOL_NAMES, TOOLSET_HASH } from "../mcp/registry.js";
@@ -127,15 +127,24 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
   }
 
   const targets = new TargetRegistry(config);
+  const mode = resolveAuthenticationMode(config);
   const nonLoopback = !["127.0.0.1", "localhost", "::1"].includes(config.server.listen_host.toLowerCase());
   checks.push({
     name: "network_bind",
-    status: nonLoopback && !config.oauth ? "fail" : nonLoopback ? "warn" : "pass",
+    status: nonLoopback && mode === "none" ? "fail" : nonLoopback ? "warn" : "pass",
     details: nonLoopback
-      ? `listen_host=${config.server.listen_host}; allowed_hosts=${(config.server.allowed_hosts ?? []).join(",") || "<derived>"}; protect non-loopback access with firewall/TLS/authentication as appropriate`
+      ? `listen_host=${config.server.listen_host}; allowed_hosts=${(config.server.allowed_hosts ?? []).join(",") || "<derived>"}; auth_mode=${mode}; ${mode === "private_token" ? "encrypted private transport is operator-declared and must be independently enforced" : "protect non-loopback access with firewall/TLS/authentication as appropriate"}`
       : `listen_host=${config.server.listen_host}; loopback-only`,
   });
-  if (config.oauth) {
+  if (mode === "private_token") {
+    checks.push({
+      name: "authentication",
+      status: "pass",
+      details: nonLoopback
+        ? "private_token configured; encrypted_private_network is an operator assertion, not a verified encrypted path"
+        : "private_token configured for loopback; clients still require bearer credentials",
+    });
+  } else if (config.oauth) {
     const publicUrl = new URL(config.oauth.public_mcp_url);
     const publicHostAllowed = (config.server.allowed_hosts ?? []).includes(publicUrl.hostname);
     checks.push({
@@ -150,7 +159,7 @@ export async function runDoctor(configPath: string): Promise<DoctorReport> {
       name: "oauth",
       status: nonLoopback ? "fail" : "warn",
       details: nonLoopback
-        ? "OAuth is required for non-loopback HostSpan."
+        ? "Non-loopback HostSpan requires OAuth or approved private_token."
         : "OAuth is not configured; acceptable only for local loopback use.",
     });
   }
