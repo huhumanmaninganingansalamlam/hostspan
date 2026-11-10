@@ -147,7 +147,8 @@ for action in ("observe", "move", "click", "key", "text", "scroll", "open", "clo
         namespace["PortalRequestError"] = type("PortalFailure", (Exception,), {})
         exec(reply_code, namespace)
         namespace["reply"]({"id": "status-test", "action": action, "text": "private input"})
-        expected = ["dispatch"] if action in ("open", "close") else [True, "dispatch", False]
+        expected = ["dispatch"] if action in ("open", "close") else [
+            "viewing" if action == "observe" else "controlling", "dispatch", "ready"]
         assert events == expected, (action, fails, events)
 
 # A request returns to a persistent, non-focusing session-open badge.
@@ -165,24 +166,33 @@ class Widget:
         callback(SimpleNamespace(get_window=lambda: self))
     def get_display(self):
         return SimpleNamespace(flush=lambda: None)
-namespace = {"activity_window": None, "activity_label": None,
+namespace = {"activity_window": None, "activity_label": None, "activity_marker": None,
              "Gtk": SimpleNamespace(Window=Widget, Label=Widget, Box=Widget,
-                                    Orientation=SimpleNamespace(VERTICAL=1)),
+                                    Orientation=SimpleNamespace(VERTICAL=1, HORIZONTAL=2),
+                                    StateFlags=SimpleNamespace(NORMAL=0)),
              "Gdk": SimpleNamespace(WindowTypeHint=SimpleNamespace(NOTIFICATION=1),
+                                    RGBA=lambda **values: SimpleNamespace(**values),
                                     Display=SimpleNamespace(open=lambda name: SimpleNamespace(
                                         get_name=lambda: name, get_default_screen=lambda: "x11-screen"))),
              "os": SimpleNamespace(environ={"DISPLAY": ":0"})}
 exec(activity_code, namespace)
-namespace["activity"](False)
+namespace["activity"]("ready")
 assert ("set_accept_focus", (False,)) in events
 assert ("set_pass_through", (True,)) in events
 assert ("set_screen", ("x11-screen",)) in events
 assert ("set_default_size", (360, 58)) in events
-assert ("set_text", ("SESSION OPEN - Screen access available",)) in events
-namespace["activity"](True)
-assert ("set_text", ("IN USE - Agent observing or controlling",)) in events
-namespace["activity"](False)
-assert events[-3][0] != "hide"
+assert ("set_markup", ('<span foreground="#FFFFFF">Screen access is on</span>',)) in events
+namespace["activity"]("viewing")
+assert ("set_markup", ('<span foreground="#FFFFFF">Viewing this screen</span>',)) in events
+namespace["activity"]("controlling")
+assert ("set_markup", ('<span foreground="#FFFFFF">Controlling this screen</span>',)) in events
+backgrounds = [args[1] for name, args in events if name == "override_background_color"]
+assert len(backgrounds) == 3
+assert len({(value.red, value.green, value.blue) for value in backgrounds}) == 3
+markers = [args[0] for name, args in events if name == "set_markup" and "●" in args[0]]
+assert markers == ['<span foreground="#AAB4C3">●</span>',
+                   '<span foreground="#8EC5FF">●</span>',
+                   '<span foreground="#FFC08A">●</span>']
 assert not any(name in ("hide", "destroy") for name, _ in events)
 namespace["activity"]()
 assert ("destroy", ()) in events and namespace["activity_window"] is None
@@ -194,7 +204,7 @@ open_function = next(node for node in source.body
 try_body = next(node for node in open_function.body if isinstance(node, ast.Try))
 assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
            and node.func.id == "activity" and node.args
-           and isinstance(node.args[0], ast.Constant) and node.args[0].value is False
+           and isinstance(node.args[0], ast.Constant) and node.args[0].value == "ready"
            for node in ast.walk(try_body))
 assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
            and node.func.id == "close_session" for handler in try_body.handlers
@@ -203,7 +213,7 @@ assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
 # Missing non-focusing display must prevent the badge and reject open.
 namespace["os"].environ.clear()
 try:
-    namespace["activity"](False)
+    namespace["activity"]("ready")
     raise AssertionError("missing display was accepted")
 except RuntimeError as error:
     assert "X11 display" in str(error)

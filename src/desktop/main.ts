@@ -210,8 +210,8 @@ async function confirmDaemonRestart(): Promise<boolean> {
   const activePty = current.active_processes.filter((process) => process.backend === "pty").length;
   const impact = [
     "HostSpan loads target and policy configuration once when the daemon starts.",
-    "Restarting applies saved workspace, capability, and computer-use settings atomically.",
-    "Finish current desktop calls and return shared desktop ownership before restarting. Restart ends HostSpan desktop sharing; Linux sharing needs OS consent again. Enabling computer-use does not open a portal.",
+    "Restarting applies saved workspace, capability, and screen-access settings atomically.",
+    "Finish the current screen session before restarting. Restart ends screen sharing; Linux requires OS approval again. Saving Screen access does not open an approval dialog.",
     activeNative > 0 ? `${activeNative} active native process(es) will be stopped.` : "No active native process will be stopped.",
     ...(durableNative > 0 ? [`${durableNative} durable native process(es) will remain alive and reconnect after restart.`] : []),
     activePty > 0 ? `${activePty} durable PTY session(s) will remain alive and reconnect after restart.` : "No live PTY session needs recovery.",

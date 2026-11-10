@@ -74,12 +74,14 @@ public static class HostSpanInput {
         Send(new Input { data=new Data { mouse=new Mouse { flags=flags, data=unchecked((uint)delta) } } });
     }
 }
+public enum HostSpanActivityState { Ready, Viewing, Controlling }
 public sealed class HostSpanActivity : System.Windows.Forms.Form {
     static HostSpanActivity window;
     static Exception startupError;
     static System.Threading.Thread thread;
     static readonly System.Threading.ManualResetEvent ready = new System.Threading.ManualResetEvent(false);
     readonly System.Windows.Forms.Label heading = new System.Windows.Forms.Label();
+    readonly System.Windows.Forms.Label statusMarker = new System.Windows.Forms.Label();
     readonly System.Windows.Forms.Label statusText = new System.Windows.Forms.Label();
     protected override bool ShowWithoutActivation { get { return true; } }
     protected override System.Windows.Forms.CreateParams CreateParams {
@@ -90,7 +92,7 @@ public sealed class HostSpanActivity : System.Windows.Forms.Form {
         base.WndProc(ref m);
     }
     HostSpanActivity() {
-        Text = "HostSpan computer use";
+        Text = "HostSpan screen access";
         FormBorderStyle = System.Windows.Forms.FormBorderStyle.None;
         ShowInTaskbar = false; TopMost = true; Opacity = 0.97;
         StartPosition = System.Windows.Forms.FormStartPosition.Manual;
@@ -99,15 +101,33 @@ public sealed class HostSpanActivity : System.Windows.Forms.Form {
         ForeColor = System.Drawing.Color.White;
         heading.Bounds = new System.Drawing.Rectangle(14, 8, 338, 19);
         heading.Font = new System.Drawing.Font("Segoe UI", 10.0f, System.Drawing.FontStyle.Bold);
-        heading.Text = "HostSpan  |  Computer access";
+        heading.Text = "HostSpan";
         heading.ForeColor = System.Drawing.Color.White;
-        statusText.Bounds = new System.Drawing.Rectangle(14, 30, 338, 18);
+        statusMarker.Bounds = new System.Drawing.Rectangle(14, 30, 12, 18);
+        statusMarker.Font = new System.Drawing.Font("Segoe UI", 9.0f, System.Drawing.FontStyle.Bold);
+        statusMarker.Text = "\u25CF";
+        statusText.Bounds = new System.Drawing.Rectangle(30, 30, 322, 18);
         statusText.Font = new System.Drawing.Font("Segoe UI", 9.0f, System.Drawing.FontStyle.Regular);
         statusText.ForeColor = System.Drawing.Color.White;
-        Controls.Add(heading); Controls.Add(statusText);
+        Controls.Add(heading); Controls.Add(statusMarker); Controls.Add(statusText);
         Shown += delegate { ready.Set(); };
     }
-    public static void SetActive(bool active) {
+    public static string Message(HostSpanActivityState state) {
+        if (state == HostSpanActivityState.Viewing) return "Viewing this screen";
+        if (state == HostSpanActivityState.Controlling) return "Controlling this screen";
+        return "Screen access is on";
+    }
+    public static System.Drawing.Color Background(HostSpanActivityState state) {
+        if (state == HostSpanActivityState.Viewing) return System.Drawing.Color.FromArgb(25, 69, 150);
+        if (state == HostSpanActivityState.Controlling) return System.Drawing.Color.FromArgb(122, 46, 32);
+        return System.Drawing.Color.FromArgb(27, 39, 59);
+    }
+    public static System.Drawing.Color Marker(HostSpanActivityState state) {
+        if (state == HostSpanActivityState.Viewing) return System.Drawing.Color.FromArgb(142, 197, 255);
+        if (state == HostSpanActivityState.Controlling) return System.Drawing.Color.FromArgb(255, 192, 138);
+        return System.Drawing.Color.FromArgb(170, 180, 195);
+    }
+    public static void SetState(HostSpanActivityState state) {
         if (thread == null) {
             thread = new System.Threading.Thread(delegate() {
                 try { window = new HostSpanActivity(); System.Windows.Forms.Application.Run(window); }
@@ -120,10 +140,9 @@ public sealed class HostSpanActivity : System.Windows.Forms.Form {
         }
         if (startupError != null) throw new InvalidOperationException("Could not show HostSpan activity indicator", startupError);
         window.Invoke(new Action(delegate {
-            window.BackColor = active ? System.Drawing.Color.FromArgb(25, 69, 150)
-                                      : System.Drawing.Color.FromArgb(27, 39, 59);
-            window.statusText.Text = active ? "IN USE - Agent observing or controlling"
-                                            : "SESSION OPEN - Screen access available";
+            window.BackColor = Background(state);
+            window.statusMarker.ForeColor = Marker(state);
+            window.statusText.Text = Message(state);
             window.Show(); window.Update();
         }));
     }
@@ -178,7 +197,7 @@ function Dispatch($command) {
         AssertInteractiveDesktop
         $geometry=Geometry
         # Fail closed if the session cannot show a non-focusing access badge.
-        [HostSpanActivity]::SetActive($false)
+        [HostSpanActivity]::SetState([HostSpanActivityState]::Ready)
         $script:opened=$true
         return $geometry
     }
@@ -276,17 +295,21 @@ function Dispatch($command) {
 try { while ($null -ne ($line=[Console]::ReadLine())) {
     if ([System.Text.Encoding]::UTF8.GetByteCount($line) -gt 65536) { break }
     $command=$null
-    $usingDesktop=$false
+    $indicatorState=$null
     try {
         $command=$line | ConvertFrom-Json
         if ($null -eq $command.id -or $command.id -isnot [string]) { break }
         if ($opened -and $command.action -in @('observe','move','click','key','text','scroll')) {
             AssertInteractiveDesktop
-            [HostSpanActivity]::SetActive($true)
-            $usingDesktop=$true
+            $indicatorState = if ($command.action -eq 'observe') {
+                [HostSpanActivityState]::Viewing
+            } else {
+                [HostSpanActivityState]::Controlling
+            }
+            [HostSpanActivity]::SetState($indicatorState)
         }
         $reply=@{id=$command.id;result=(Dispatch $command)}
     } catch { $reply=@{id=$command.id;error=$_.Exception.Message} }
-    finally { if ($usingDesktop) { [HostSpanActivity]::SetActive($false) } }
+    finally { if ($null -ne $indicatorState) { [HostSpanActivity]::SetState([HostSpanActivityState]::Ready) } }
     [Console]::WriteLine(($reply | ConvertTo-Json -Depth 8 -Compress))
 } } finally { [HostSpanActivity]::CloseIndicator() }

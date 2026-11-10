@@ -8,12 +8,13 @@ export function dashboardHtml(): string {
 <title>HostSpan</title>
 <style>
 :root{color-scheme:dark}body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:#101218;color:#e9edf5}main{padding:16px;max-width:940px;margin:auto}h1{font-size:20px;margin:0}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.grow{flex:1}.card{background:#181c25;border:1px solid #2b3241;border-radius:10px;padding:12px;margin:10px 0}.cardhead{display:flex;align-items:center;gap:8px;margin-bottom:8px}.cardhead b{flex:1}button{background:#2b66f6;color:white;border:0;border-radius:7px;padding:7px 10px;cursor:pointer}button.secondary{background:#31394b}button.danger{background:#71323a}button:disabled{opacity:.45;cursor:default}.ok{color:#70dc9b}.bad{color:#ff8080}.warn{color:#f2c56b}.muted{color:#9aa6b8;font-size:12px}.message{min-height:18px;margin-top:6px;font-size:12px}.message.error{color:#ff8080}table{width:100%;border-collapse:collapse;font-size:13px}td,th{text-align:left;padding:6px;border-bottom:1px solid #2b3241;vertical-align:top}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;word-break:break-all}.scroll{max-height:230px;overflow:auto}.pill{padding:2px 6px;border-radius:10px;background:#283044;font-size:11px}.caps{display:flex;gap:8px;flex-wrap:wrap}.caps label{font-size:12px}.activity{padding:5px 0;border-bottom:1px solid #242a37}dialog{width:min(560px,90vw);border:1px solid #394359;border-radius:10px;background:#181c25;color:#e9edf5;padding:16px}dialog::backdrop{background:#0008}.field{margin:10px 0}.field label.title{display:block;font-size:12px;color:#9aa6b8;margin-bottom:4px}.field input[type=text]{box-sizing:border-box;width:100%;padding:8px;border:1px solid #3b455a;border-radius:6px;background:#11151d;color:#e9edf5}.pathrow{display:flex;gap:6px}.pathrow input{flex:1}
+.screen-description{margin:0 0 10px}.screen-banner{display:flex;align-items:center;gap:9px;padding:9px 10px;border:1px solid #31394b;border-left-width:3px;border-radius:8px;background:#141923}.screen-dot{width:9px;height:9px;border-radius:50%;flex:0 0 9px}.screen-banner.ready{border-left-color:#aab4c3}.screen-banner.ready .screen-dot{background:#aab4c3}.screen-banner.viewing{border-left-color:#8ec5ff;background:#14213c}.screen-banner.viewing .screen-dot{background:#8ec5ff}.screen-banner.controlling{border-left-color:#ffc08a;background:#2a1918}.screen-banner.controlling .screen-dot{background:#ffc08a}.screen-banner.waiting{border-left-color:#f2c56b;background:#292315}.screen-banner.waiting .screen-dot{background:#f2c56b}.screen-banner.closed{border-left-color:#667085}.screen-banner.closed .screen-dot{background:#667085}.screen-banner.attention{border-left-color:#ff8080;background:#2a171b}.screen-banner.attention .screen-dot{background:#ff8080}.screen-grid{display:grid;grid-template-columns:max-content 1fr;gap:5px 14px;margin-top:10px;font-size:13px}.screen-grid span{color:#9aa6b8}.technical{margin-top:10px}.technical summary{cursor:pointer;color:#9aa6b8;font-size:12px}.technical div{margin-top:5px}
 </style>
 </head><body><main>
 <div class="row"><h1 class="grow">HostSpan</h1><button id="doctor" class="secondary">Run Doctor</button><button id="restart" class="secondary">Restart</button><button id="refresh" class="secondary">Refresh</button><button id="toggle">Start</button></div>
 <div id="message" class="message" role="status" aria-live="polite"></div><details id="errorDetails" hidden><summary>Technical details</summary><pre id="errorText"></pre></details>
 <div id="summary" class="card">Loading…</div>
-<div class="card"><div class="cardhead"><b>Computer use</b><button id="computerToggle">Loading…</button></div><div id="computer">Loading…</div></div>
+<div class="card"><div class="cardhead"><b>Screen access</b><button id="computerToggle">Loading…</button></div><div id="computer">Loading…</div></div>
 <div class="card"><div class="cardhead"><b>Health</b><span id="healthState" class="muted">Run Doctor for full checks.</span></div><div id="health"></div></div>
 <div class="card"><div class="cardhead"><b>Targets / Workspaces</b><button id="addWorkspace">Add Workspace</button></div><div id="targets"></div></div>
 <div class="card"><div class="cardhead"><b>Current activity</b><span id="activityCount" class="muted"></span></div><div id="activity"></div></div>
@@ -43,6 +44,17 @@ const esc=v=>String(v??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 const short=v=>String(v??'').slice(0,12);
 function setMessage(message,error=false){const el=e('message');const raw=String(message??'');el.textContent=error&&raw.includes('ENOENT')&&raw.includes('config')?'HostSpan settings could not be found. Restore the selected profile, then click Refresh.':raw.replace(/^Error invoking remote method '[^']+': (Error: )?/,'');el.className='message'+(error?' error':'');e('errorDetails').hidden=!error;e('errorText').textContent=error?raw:''}
 function folderName(path){return String(path).split(/[\\/]/).filter(Boolean).pop()||'workspace'}
+function screenSession(runtime,running,currentOn){
+  const state=runtime?.state,activity=runtime?.activity;
+  if(!running||!currentOn||['stopped','disabled','closed'].includes(state))return{label:'Closed',headline:'No screen session',tone:'closed',note:'Open a screen session when it is needed.'};
+  if(state==='awaiting_consent')return{label:'Waiting for screen approval',headline:'Waiting for screen approval',tone:'waiting',note:"Approve in the operating system's screen sharing window."};
+  if(state==='connecting')return{label:'Opening',headline:'Opening screen access',tone:'waiting',note:'HostSpan is connecting to the logged-in desktop.'};
+  if(activity==='controlling')return{label:'Controlling',headline:'Controlling this screen',tone:'controlling',note:'Pointer or keyboard input is being sent.'};
+  if(activity==='viewing')return{label:'Viewing',headline:'Viewing this screen',tone:'viewing',note:'A screen image is being captured.'};
+  if(state==='ready')return{label:'Ready',headline:'Screen access is on',tone:'ready',note:'HostSpan can view or control this screen when requested.'};
+  if(state==='unavailable'||state==='failed'||state==='unknown')return{label:'Needs attention',headline:'Screen access needs attention',tone:'attention',note:'Open Technical details for the runtime message.'};
+  return{label:'Working',headline:'Screen access is working',tone:'viewing',note:'A screen action is still finishing.'};
+}
 function resetWorkspaceDialog(){
   e('workspaceForm').reset();
   e('wsPath').value='';
@@ -60,8 +72,15 @@ function render(s){
   const running=!!s.daemon?.running;
   const saved=!!s.computer?.configured,active=s.computer?.runtime?.enabled;
   const pending=running&&(active==null||active!==saved);
-  e('computerToggle').textContent='Save '+(saved?'OFF':'ON');
-  e('computer').innerHTML='<b>Current: '+(!running?'OFF (daemon stopped)':active==null?'UNKNOWN':active?'ON':'OFF')+'</b> · Saved: '+(saved?'ON':'OFF')+(pending?' <span class="warn">Restart required — current setting still applies.</span>':'')+'<p>Default OFF. Controls desktop images and pointer/keyboard input. File, process and terminal permissions are separate.</p><p>'+esc(s.computer?.message)+'</p><div class="muted">Session: '+esc(s.computer?.runtime?.state??'unknown')+'. Finish current desktop calls and return shared ownership before Restart. Restart ends desktop sharing. OS consent is still required; saving ON never opens a dialog.</div><div class="muted">Profile: '+esc(s.computer?.profile)+'</div>';
+  const currentLabel=!running?'Off':active==null?'Unknown':active?'On':'Off';
+  const session=screenSession(s.computer?.runtime,running,running&&active===true);
+  e('computerToggle').textContent='Save '+(saved?'Off':'On');
+  e('computer').innerHTML='<p class="screen-description">Allows HostSpan to view and control this screen after OS approval.</p>'+
+    '<div class="screen-banner '+session.tone+'"><span class="screen-dot" aria-hidden="true"></span><div><b>'+esc(session.headline)+'</b><div class="muted">'+esc(session.note)+'</div></div></div>'+
+    '<div class="screen-grid"><span>Saved</span><b>'+(saved?'On':'Off')+'</b><span>Current</span><b>'+esc(currentLabel)+'</b><span>Session</span><b>'+esc(session.label)+'</b></div>'+
+    (pending?'<div class="warn" style="margin-top:9px">Restart HostSpan to apply the saved change.</div>':'')+
+    '<div class="muted" style="margin-top:9px">Screen access is off by default. Operating-system approval is required before a session can view or control the screen.</div>'+
+    '<details class="technical"><summary>Technical details</summary><div class="muted">Runtime state: <code>'+esc(s.computer?.runtime?.state??'unknown')+'</code></div><div class="muted">Profile: <code>'+esc(s.computer?.profile??'unknown')+'</code></div><div class="muted">'+esc(s.computer?.runtime?.message??s.computer?.message??'')+'</div></details>';
   e('toggle').textContent=running?'Stop':'Start';
   e('toggle').className=running?'secondary':'';
   e('restart').disabled=!running;
@@ -84,7 +103,7 @@ async function attach(id,ro){try{await window.hostspan.attach(id,ro)}catch(err){
 e('refresh').onclick=async()=>{e('refresh').disabled=true;setMessage('Refreshing…');try{render(await window.hostspan.snapshot());setMessage('Status refreshed.')}catch(err){setMessage((err.message||String(err))+' Click Refresh to retry.',true)}finally{e('refresh').disabled=false}};
 e('toggle').onclick=async()=>{const action=snapshot?.daemon?.running?'stop':'start';e('toggle').disabled=true;setMessage(action==='start'?'Starting…':'Stopping…');try{const result=await window.hostspan.daemon(action);setMessage(result?.cancelled?'Action cancelled.':'HostSpan '+(action==='stop'?'stopped.':'started.'));await refresh()}catch(err){setMessage((err.message||String(err))+' Refresh status before retrying.',true)}finally{e('toggle').disabled=false}};
 e('restart').onclick=async()=>{try{const result=await window.hostspan.daemon('restart');if(result?.cancelled){setMessage('Restart cancelled.');return}setMessage('HostSpan restarted.');await refresh()}catch(err){setMessage(err.message||String(err),true)}};
-e('computerToggle').onclick=async()=>{e('computerToggle').disabled=true;try{await window.hostspan.setComputer(!snapshot?.computer?.configured);setMessage('Computer-use setting saved. '+(snapshot?.daemon?.running?'Current setting still applies. Finish current desktop work, then use Restart to apply.':'It will apply when HostSpan starts.'));await refresh()}catch(err){setMessage(err.message||String(err),true)}finally{e('computerToggle').disabled=false}};
+e('computerToggle').onclick=async()=>{e('computerToggle').disabled=true;try{await window.hostspan.setComputer(!snapshot?.computer?.configured);setMessage('Screen access setting saved. '+(snapshot?.daemon?.running?'The current setting still applies. Finish the current screen session, then use Restart.':'It will apply when HostSpan starts.'));await refresh()}catch(err){setMessage(err.message||String(err),true)}finally{e('computerToggle').disabled=false}};
 e('doctor').onclick=async()=>{e('doctor').disabled=true;try{e('healthState').textContent='Checking…';renderHealth(await window.hostspan.doctor())}catch(err){e('healthState').textContent='Check failed. Run Doctor to retry.';e('healthState').className='bad';setMessage(err.message||String(err),true)}finally{e('doctor').disabled=false}};
 e('addWorkspace').onclick=()=>{resetWorkspaceDialog();e('workspaceDialog').showModal()};
 e('cancelWorkspace').onclick=()=>e('workspaceDialog').close();

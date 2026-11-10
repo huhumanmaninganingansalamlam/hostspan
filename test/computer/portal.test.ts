@@ -249,11 +249,14 @@ it.skipIf(process.platform !== "linux")("keeps a timed-out observation alive, co
     const input = { action: "text", session_id: opened.session_id, observation_id: first.observation_id,
       text: "already-delivered", idempotency_key: "slow-followup" };
     const delivered = desktop.run(input);
+    expect(desktop.status()).toMatchObject({ state: "processing", activity: "controlling" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(desktop.status()).toMatchObject({ state: "processing", activity: "viewing" });
     await vi.advanceTimersByTimeAsync(10_000);
     expect(await delivered).toMatchObject({ state: "completed", dispatched: true, clipboard_modified: true,
       observation_required: true, observation_error_details: { reason: "desktop_observation_timeout" },
       next_action: { arguments: { action: "observe", session_id: opened.session_id } } });
-    expect(desktop.status()).toMatchObject({ session_id: opened.session_id, state: "processing" });
+    expect(desktop.status()).toMatchObject({ session_id: opened.session_id, state: "processing", activity: "viewing" });
     expect(worker.kill).not.toHaveBeenCalled();
     const count = commands.length;
     expect(await desktop.run(input)).toMatchObject({ dispatched: true, replayed: true });
@@ -273,6 +276,7 @@ it.skipIf(process.platform !== "linux")("keeps a timed-out observation alive, co
     reply(capture, frame);
     const recovered = await desktop.run({ action: "observe", session_id: opened.session_id });
     expect(recovered).toMatchObject({ session_id: opened.session_id, state: "ready", image: "cG5n" });
+    expect(desktop.status()).not.toHaveProperty("activity");
     expect(commands).toHaveLength(count);
     expect(worker.kill).not.toHaveBeenCalled();
 
@@ -396,7 +400,8 @@ it.skipIf(process.platform !== "linux")("observes after input and never resends 
     await Promise.resolve();
     expect(desktop.status()).toMatchObject({ state: "ready", session_id: reopened.session_id });
     // The portal notifies the owner when OS sharing is revoked. The next open must request fresh consent.
-    currentWorker!.stdout.emit("data", '{"event":"closed"}\n');
+    if (!currentWorker) throw new Error("Missing current portal worker");
+    currentWorker.stdout.emit("data", '{"event":"closed"}\n');
     expect(desktop.status()).toMatchObject({ state: "failed", next_action: { arguments: { action: "open" } } });
     await expect(desktop.run({ action: "observe", session_id: reopened.session_id })).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
     expect(await desktop.run(input)).toMatchObject({ replayed: true, dispatched: true, session_id: first.session_id, pipewire_node_id: 73 });

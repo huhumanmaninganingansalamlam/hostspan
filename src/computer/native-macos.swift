@@ -8,22 +8,46 @@ import ScreenCaptureKit
 @main
 #endif
 struct DesktopWorker {
+    enum ActivityState: String {
+        case ready
+        case viewing
+        case controlling
+    }
+
     static var opened = false
     static var displayID = CGMainDisplayID()
     static var capture: DisplayCapture?
     @MainActor static var activityPanel: NSPanel?
     @MainActor static var activityLabel: NSTextField?
+    @MainActor static var activityMarker: NSView?
 
-    static func activityMessage(_ active: Bool) -> String {
-        return active ? "IN USE - Agent observing or controlling" : "SESSION OPEN - Screen access available"
+    static func activityAppearance(_ state: ActivityState) -> (
+        message: String, background: (Int, Int, Int), marker: (Int, Int, Int)
+    ) {
+        switch state {
+        case .ready: return ("Screen access is on", (27, 39, 59), (170, 180, 195))
+        case .viewing: return ("Viewing this screen", (25, 69, 150), (142, 197, 255))
+        case .controlling: return ("Controlling this screen", (122, 46, 32), (255, 192, 138))
+        }
+    }
+
+    static func activityMessage(_ state: ActivityState) -> String {
+        activityAppearance(state).message
+    }
+
+    static func activityColor(_ components: (Int, Int, Int), alpha: CGFloat = 1) -> NSColor {
+        NSColor(calibratedRed: CGFloat(components.0) / 255,
+                green: CGFloat(components.1) / 255,
+                blue: CGFloat(components.2) / 255, alpha: alpha)
     }
 
     @MainActor
-    static func activity(_ active: Bool?) {
-        guard let active else {
+    static func activity(_ state: ActivityState?) {
+        guard let state else {
             activityPanel?.orderOut(nil)
             activityPanel = nil
             activityLabel = nil
+            activityMarker = nil
             return
         }
         if activityPanel == nil {
@@ -31,30 +55,35 @@ struct DesktopWorker {
             let area = screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
             let panel = NSPanel(contentRect: NSRect(x: area.maxX - 372, y: area.maxY - 72, width: 360, height: 58),
                                 styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-            panel.title = "HostSpan computer use"
+            panel.title = "HostSpan screen access"
             panel.level = .statusBar
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             panel.ignoresMouseEvents = true
             panel.hidesOnDeactivate = false
             panel.isOpaque = false
             panel.hasShadow = true
-            let heading = NSTextField(labelWithString: "HostSpan  |  Computer access")
+            let heading = NSTextField(labelWithString: "HostSpan")
             heading.frame = NSRect(x: 14, y: 33, width: 332, height: 17)
             heading.font = NSFont.boldSystemFont(ofSize: 11)
             heading.textColor = .white
+            let marker = NSView(frame: NSRect(x: 14, y: 15, width: 8, height: 8))
+            marker.wantsLayer = true
+            marker.layer?.cornerRadius = 4
             let label = NSTextField(labelWithString: "")
-            label.frame = NSRect(x: 14, y: 11, width: 332, height: 17)
+            label.frame = NSRect(x: 30, y: 11, width: 316, height: 17)
             label.font = NSFont.systemFont(ofSize: 11)
             label.textColor = .white
             panel.contentView?.addSubview(heading)
+            panel.contentView?.addSubview(marker)
             panel.contentView?.addSubview(label)
             activityPanel = panel
             activityLabel = label
+            activityMarker = marker
         }
-        activityPanel?.backgroundColor = active
-            ? NSColor(calibratedRed: 0.10, green: 0.27, blue: 0.59, alpha: 0.97)
-            : NSColor(calibratedRed: 0.11, green: 0.16, blue: 0.25, alpha: 0.97)
-        activityLabel?.stringValue = activityMessage(active)
+        let appearance = activityAppearance(state)
+        activityPanel?.backgroundColor = activityColor(appearance.background, alpha: 0.97)
+        activityMarker?.layer?.backgroundColor = activityColor(appearance.marker).cgColor
+        activityLabel?.stringValue = appearance.message
         activityPanel?.orderFrontRegardless()
         activityPanel?.displayIfNeeded()
     }
@@ -97,7 +126,7 @@ struct DesktopWorker {
                 self.completedAt = Date()
                 self.completed.leave()
                 Task { @MainActor in
-                    if capture?.process === process { activity(false) }
+                    if capture?.process === process { activity(.ready) }
                 }
             }
             do { try process.run() }
@@ -147,7 +176,7 @@ struct DesktopWorker {
             capture?.cancel()
             capture = nil
             // The session survives a lock; keep its badge truthful for the next unlock.
-            if activityPanel != nil { activity(false) }
+            if activityPanel != nil { activity(.ready) }
             throw NSError(domain: "HostSpanDesktop", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "Desktop capture and input are unavailable while the macOS console is locked. Keep this session and observe again when the desktop is available.",
                 "error_details": ["reason": "macos_desktop_locked", "dispatched": false]
@@ -210,14 +239,15 @@ struct DesktopWorker {
             }
             displayID = CGMainDisplayID()
             // Show an idle badge as soon as consented screen access opens.
-            activity(false)
+            activity(.ready)
             opened = true
             return geometry()
         }
         guard opened else { throw failure("Desktop session is closed") }
         try requireUnlockedDesktop()
-        activity(true)
-        defer { if capture?.process.isRunning != true && activityPanel != nil { activity(false) } }
+        let indicatorState: ActivityState = action == "observe" ? .viewing : .controlling
+        activity(indicatorState)
+        defer { if capture?.process.isRunning != true && activityPanel != nil { activity(.ready) } }
         if action == "observe" {
             guard #available(macOS 14.0, *) else { throw failure("Native capture is unavailable") }
             guard CGPreflightScreenCaptureAccess() else { throw failure("Screen Recording permission was revoked") }

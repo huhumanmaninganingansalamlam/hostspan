@@ -38,16 +38,24 @@ paste_wait = None
 paste_transferred = False
 activity_window = None
 activity_label = None
+activity_marker = None
 
 
-def activity(active=None):
+def activity(state=None):
     """Persistent, non-focusing indicator for the lifetime of an approved screen session."""
-    global activity_window, activity_label
-    if active is None:
+    global activity_window, activity_label, activity_marker
+    if state is None:
         if activity_window:
             activity_window.destroy()
-            activity_window = activity_label = None
+            activity_window = activity_label = activity_marker = None
         return False
+    states = {
+        "ready": ("Screen access is on", (27, 39, 59), "#AAB4C3"),
+        "viewing": ("Viewing this screen", (25, 69, 150), "#8EC5FF"),
+        "controlling": ("Controlling this screen", (122, 46, 32), "#FFC08A"),
+    }
+    if state not in states:
+        raise ValueError("Unknown screen access indicator state")
     if activity_window is None:
         # Wayland toplevels cannot honor accept_focus=False. Use the existing
         # XWayland display for this noninteractive badge; capture/input stay portal-native.
@@ -55,7 +63,7 @@ def activity(active=None):
         display = Gdk.Display.open(display_name) if display_name else None
         if display is None or display.get_name() != display_name:
             raise RuntimeError("The non-focusing activity indicator requires the desktop X11 display")
-        activity_window = Gtk.Window(title="HostSpan computer use")
+        activity_window = Gtk.Window(title="HostSpan screen access")
         activity_window.set_screen(display.get_default_screen())
         activity_window.set_decorated(False)
         activity_window.set_accept_focus(False)
@@ -73,14 +81,24 @@ def activity(active=None):
         content.set_margin_bottom(9)
         title = Gtk.Label()
         title.set_xalign(0)
-        title.set_markup("<b>HostSpan</b>  |  Computer access")
+        title.set_markup('<span foreground="#FFFFFF"><b>HostSpan</b></span>')
+        status = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        activity_marker = Gtk.Label()
+        activity_marker.set_xalign(0)
         activity_label = Gtk.Label()
         activity_label.set_xalign(0)
+        status.pack_start(activity_marker, False, False, 0)
+        status.pack_start(activity_label, False, False, 0)
         content.pack_start(title, False, False, 0)
-        content.pack_start(activity_label, False, False, 0)
+        content.pack_start(status, False, False, 0)
         activity_window.add(content)
-    activity_label.set_text("IN USE - Agent observing or controlling" if active
-                            else "SESSION OPEN - Screen access available")
+    message, background, marker = states[state]
+    activity_window.override_background_color(
+        Gtk.StateFlags.NORMAL,
+        Gdk.RGBA(red=background[0] / 255, green=background[1] / 255,
+                 blue=background[2] / 255, alpha=0.97))
+    activity_marker.set_markup(f'<span foreground="{marker}">●</span>')
+    activity_label.set_markup(f'<span foreground="#FFFFFF">{message}</span>')
     activity_window.show_all()
     activity_window.get_display().flush()
     return False
@@ -260,7 +278,7 @@ def open_session():
         remote.NotifyKeyboardKeysym(session, options(), dbus.Int32(0xFFFFFF), dbus.UInt32(0))
         # A successfully consented session must be visible even between calls.
         # Failing to display the non-focusing badge closes the portal session.
-        activity(False)
+        activity("ready")
         return {"pipewire_node_id": int(stream), "backend": "wayland-portal", "text_supported": clipboard_enabled, "coordinate_width": stream_size[0],
                 "coordinate_height": stream_size[1]}
     except Exception:
@@ -418,19 +436,19 @@ def dispatch(command):
 
 
 def reply(command):
-    using_desktop = False
+    indicator_state = None
     try:
         if session and command.get("action") in ("observe", "move", "click", "key", "text", "scroll"):
-            activity(True)
-            using_desktop = True
+            indicator_state = "viewing" if command.get("action") == "observe" else "controlling"
+            activity(indicator_state)
         result = {"id": command["id"], "result": dispatch(command)}
     except Exception as error:
         result = {"id": command.get("id"), "error": str(error)}
         if isinstance(error, PortalRequestError):
             result["error_details"] = error.details
     finally:
-        if using_desktop and session:
-            activity(False)
+        if indicator_state and session:
+            activity("ready")
     print(json.dumps(result, ensure_ascii=True), flush=True)
     return False
 

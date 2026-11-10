@@ -2,6 +2,13 @@ $ErrorActionPreference = 'Stop'
 # Load only Dispatch from production source; this recorder never calls user32 or changes the clipboard.
 $tokens=$null; $errors=$null
 $source=Join-Path $PSScriptRoot '../../src/computer/native-windows.ps1'
+$sourceText=[System.IO.File]::ReadAllText((Resolve-Path $source))
+foreach ($expected in @('Screen access is on','Viewing this screen','Controlling this screen','HostSpanActivityState.Viewing','HostSpanActivityState.Controlling','FromArgb(27, 39, 59)','FromArgb(25, 69, 150)','FromArgb(122, 46, 32)')) {
+    if (-not $sourceText.Contains($expected)) { throw "Missing indicator contract: $expected" }
+}
+foreach ($forbidden in @('SESSION OPEN','IN USE - Agent','Screen access available','Computer access')) {
+    if ($sourceText.Contains($forbidden)) { throw "Old indicator wording remains: $forbidden" }
+}
 $ast=[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $source),[ref]$tokens,[ref]$errors)
 if ($errors.Count) { throw ($errors | Out-String) }
 $dispatch=$ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Dispatch' },$true)
@@ -19,12 +26,13 @@ public static class HostSpanInput {
     public static void Key(ushort key, bool up) { Record("key", key, up); }
     public static void ScanKey(ushort key, bool up) { Record("scan", key, up); }
 }
+public enum HostSpanActivityState { Ready, Viewing, Controlling }
 public static class HostSpanActivity {
     public static readonly List<string> Events = new List<string>();
     public static bool FailNextOpen;
-    public static void SetActive(bool active) {
-        Events.Add(active ? "active" : "session-open");
-        if (!active && FailNextOpen) { FailNextOpen = false; throw new InvalidOperationException("badge-unavailable"); }
+    public static void SetState(HostSpanActivityState state) {
+        Events.Add(state.ToString().ToLowerInvariant());
+        if (state == HostSpanActivityState.Ready && FailNextOpen) { FailNextOpen = false; throw new InvalidOperationException("badge-unavailable"); }
     }
     public static void HideIndicator() { Events.Add("hide"); }
 }
@@ -105,11 +113,11 @@ function Geometry { return @{ backend = 'fixture' } }
 [HostSpanActivity]::Events.Clear()
 $script:opened = $false
 $null = Dispatch ([pscustomobject]@{ action = 'open' })
-if (-not $script:opened -or [HostSpanActivity]::Events[0] -cne 'session-open') { throw 'Open has no persistent access badge' }
+if (-not $script:opened -or [HostSpanActivity]::Events[0] -cne 'ready') { throw 'Open has no persistent access badge' }
 $null = Dispatch ([pscustomobject]@{ action = 'close' })
 if ($script:opened -or [HostSpanActivity]::Events[1] -cne 'hide') { throw 'Close did not hide badge' }
 $null = Dispatch ([pscustomobject]@{ action = 'open' })
-if (-not $script:opened -or [HostSpanActivity]::Events[2] -cne 'session-open') { throw 'Reopen did not restore badge' }
+if (-not $script:opened -or [HostSpanActivity]::Events[2] -cne 'ready') { throw 'Reopen did not restore badge' }
 $null = Dispatch ([pscustomobject]@{ action = 'close' })
 
 # Refuse a session when the desktop badge cannot be shown.
@@ -120,4 +128,4 @@ try { $null = Dispatch ([pscustomobject]@{ action = 'open' }) }
 catch { if ($_.Exception.Message -notmatch 'badge-unavailable') { throw }; $caught = $true }
 if (-not $caught -or $script:opened) { throw 'Badge failure left a session open' }
 
-'PASS: Windows chords, guard and persistent non-focusing badge lifecycle; no OS input'
+'PASS: Windows chords, guard and ready/viewing/controlling indicator contract; no OS input'

@@ -63,6 +63,7 @@ export class PortalDesktop {
   private displayId: string | undefined;
   private permission: "screen_recording" | "accessibility" | undefined;
   private sessionCreatedAt: string | undefined;
+  private activity: "viewing" | "controlling" | undefined;
 
   constructor(private readonly operations: OperationsStore, private readonly backend = desktopBackend()) {}
 
@@ -87,10 +88,13 @@ export class PortalDesktop {
       worker_pid: this.child?.pid, lifetime: "explicit_close_or_os_end_or_worker_exit",
       state: this.opening ? this.backend === "native" && !this.permission ? "connecting" : "awaiting_consent" : this.pending.size || this.observing ? "processing" : this.captureError ? "unavailable" : "ready",
       ...(this.permission ? { required_os_permission: this.permission } : {}),
+      ...(this.activity ? { activity: this.activity } : {}),
       message: this.opening ? this.permission
         ? `Allow HostSpan in macOS ${this.permission === "screen_recording" ? "Screen Recording" : "Accessibility"} settings. Close computer to cancel waiting.`
         : this.backend === "native" ? "Connecting to this computer's logged-in desktop."
         : "Select a screen and allow control in the desktop sharing dialog. You can close to cancel."
+        : this.activity === "viewing" ? "HostSpan is viewing this screen."
+        : this.activity === "controlling" ? "HostSpan is controlling this screen."
         : this.pending.size || this.observing ? "A desktop action is processing. Wait before sending another input."
         : this.captureError ? `Desktop capture unavailable: ${this.captureError.message}`
         : "Desktop connected. Observe the screen before choosing where to act.",
@@ -177,6 +181,7 @@ export class PortalDesktop {
     this.displayId = this.permission = undefined;
     this.sessionCreatedAt = undefined;
     this.opening = undefined;
+    this.activity = undefined;
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
     this.observing = undefined;
@@ -208,8 +213,14 @@ export class PortalDesktop {
     // it. A retry must not send another capture or overwrite its correlation ID.
     // Starting a fresh capture invalidates the old image even if capture fails.
     this.observationId = undefined;
-    this.observing ??= this.call({ action: "observe" });
-    const capture = this.observing;
+    const capture = this.observing ?? (() => {
+      this.activity = "viewing";
+      const pending = this.call({ action: "observe" }).finally(() => {
+        if (this.activity === "viewing") this.activity = undefined;
+      });
+      this.observing = pending;
+      return pending;
+    })();
     const expired = new HostSpanError("DEADLINE_EXCEEDED", "Screen capture is still processing. Observe this same session again.", true,
       { reason: "desktop_observation_timeout", retry_after_ms: 1000 });
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -320,6 +331,7 @@ export class PortalDesktop {
       // Commit ambiguity before sending: a crash at any later point cannot cause duplicate input.
       this.operations.setState(input.idempotency_key, "unknown", { dispatched: "unknown" });
       this.observationId = undefined;
+      this.activity = "controlling";
       try {
         await this.call(input);
       } catch (error) {
@@ -337,6 +349,8 @@ export class PortalDesktop {
           error: error instanceof Error ? error.message : "Desktop input failed",
           message: "Input delivery is uncertain. Inspect the screen; do not resend automatically.",
           next_action: this.status().next_action };
+      } finally {
+        if (this.activity === "controlling") this.activity = undefined;
       }
       const receipt = { ...this.desktopTarget(), state: "completed", dispatched: true, outcome_verified: false, session_id: this.sessionId,
         ...(input.action === "text" ? { clipboard_modified: true } : {}) };
