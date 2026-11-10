@@ -6,6 +6,8 @@ struct DesktopAvailabilityTest {
     @MainActor
     static func main() throws {
         DesktopWorker.opened = true
+        precondition(DesktopWorker.activityMessage(false) == "SESSION OPEN - Screen access available")
+        precondition(DesktopWorker.activityMessage(true) == "IN USE - Agent observing or controlling")
         let sessions: [[String: Any]?] = [nil, [:], ["CGSSessionScreenIsLocked": false]]
         for session in sessions {
             try DesktopWorker.requireUnlockedDesktop(session)

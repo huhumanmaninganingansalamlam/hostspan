@@ -13,12 +13,13 @@ struct DesktopWorker {
     static var capture: DisplayCapture?
     @MainActor static var activityPanel: NSPanel?
     @MainActor static var activityLabel: NSTextField?
-    @MainActor static var activityTimer: Timer?
+
+    static func activityMessage(_ active: Bool) -> String {
+        return active ? "IN USE - Agent observing or controlling" : "SESSION OPEN - Screen access available"
+    }
 
     @MainActor
     static func activity(_ active: Bool?) {
-        activityTimer?.invalidate()
-        activityTimer = nil
         guard let active else {
             activityPanel?.orderOut(nil)
             activityPanel = nil
@@ -28,30 +29,34 @@ struct DesktopWorker {
         if activityPanel == nil {
             let screen = NSScreen.screens.first { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == displayID }
             let area = screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
-            let panel = NSPanel(contentRect: NSRect(x: area.maxX - 310, y: area.maxY - 48, width: 298, height: 36),
+            let panel = NSPanel(contentRect: NSRect(x: area.maxX - 372, y: area.maxY - 72, width: 360, height: 58),
                                 styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             panel.title = "HostSpan computer use"
             panel.level = .statusBar
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             panel.ignoresMouseEvents = true
             panel.hidesOnDeactivate = false
-            panel.backgroundColor = NSColor(calibratedRed: 0.10, green: 0.27, blue: 0.59, alpha: 0.95)
+            panel.isOpaque = false
+            panel.hasShadow = true
+            let heading = NSTextField(labelWithString: "HostSpan  |  Computer access")
+            heading.frame = NSRect(x: 14, y: 33, width: 332, height: 17)
+            heading.font = NSFont.boldSystemFont(ofSize: 11)
+            heading.textColor = .white
             let label = NSTextField(labelWithString: "")
-            label.frame = NSRect(x: 0, y: 9, width: 298, height: 18)
-            label.alignment = .center
+            label.frame = NSRect(x: 14, y: 11, width: 332, height: 17)
+            label.font = NSFont.systemFont(ofSize: 11)
             label.textColor = .white
+            panel.contentView?.addSubview(heading)
             panel.contentView?.addSubview(label)
             activityPanel = panel
             activityLabel = label
         }
-        activityLabel?.stringValue = active ? "● HostSpan · Using this computer" : "HostSpan · Activity finished"
+        activityPanel?.backgroundColor = active
+            ? NSColor(calibratedRed: 0.10, green: 0.27, blue: 0.59, alpha: 0.97)
+            : NSColor(calibratedRed: 0.11, green: 0.16, blue: 0.25, alpha: 0.97)
+        activityLabel?.stringValue = activityMessage(active)
         activityPanel?.orderFrontRegardless()
         activityPanel?.displayIfNeeded()
-        if !active {
-            activityTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: false) { _ in
-                MainActor.assumeIsolated { activityPanel?.orderOut(nil); activityTimer = nil }
-            }
-        }
     }
 
     final class DisplayCapture: @unchecked Sendable {
@@ -141,7 +146,8 @@ struct DesktopWorker {
             // Discard a capture retained after an earlier bounded observe; never return it after unlock.
             capture?.cancel()
             capture = nil
-            activity(nil)
+            // The session survives a lock; keep its badge truthful for the next unlock.
+            if activityPanel != nil { activity(false) }
             throw NSError(domain: "HostSpanDesktop", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "Desktop capture and input are unavailable while the macOS console is locked. Keep this session and observe again when the desktop is available.",
                 "error_details": ["reason": "macos_desktop_locked", "dispatched": false]
@@ -203,6 +209,8 @@ struct DesktopWorker {
                 while !AXIsProcessTrusted() { try await Task.sleep(nanoseconds: 500_000_000) }
             }
             displayID = CGMainDisplayID()
+            // Show an idle badge as soon as consented screen access opens.
+            activity(false)
             opened = true
             return geometry()
         }

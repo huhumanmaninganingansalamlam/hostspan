@@ -38,15 +38,11 @@ paste_wait = None
 paste_transferred = False
 activity_window = None
 activity_label = None
-activity_timer = None
 
 
 def activity(active=None):
-    """Local, noninteractive status; never display caller text or steal focus."""
-    global activity_window, activity_label, activity_timer
-    if activity_timer is not None:
-        GLib.source_remove(activity_timer)
-        activity_timer = None
+    """Persistent, non-focusing indicator for the lifetime of an approved screen session."""
+    global activity_window, activity_label
     if active is None:
         if activity_window:
             activity_window.destroy()
@@ -69,24 +65,25 @@ def activity(active=None):
         activity_window.set_skip_pager_hint(True)
         activity_window.set_type_hint(Gdk.WindowTypeHint.NOTIFICATION)
         activity_window.connect("realize", lambda window: window.get_window().set_pass_through(True))
+        activity_window.set_default_size(360, 58)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        content.set_margin_start(16)
+        content.set_margin_end(16)
+        content.set_margin_top(9)
+        content.set_margin_bottom(9)
+        title = Gtk.Label()
+        title.set_xalign(0)
+        title.set_markup("<b>HostSpan</b>  |  Computer access")
         activity_label = Gtk.Label()
-        activity_label.set_margin_start(14)
-        activity_label.set_margin_end(14)
-        activity_label.set_margin_top(8)
-        activity_label.set_margin_bottom(8)
-        activity_window.add(activity_label)
-    activity_label.set_text("● HostSpan · Using this computer" if active else "HostSpan · Activity finished")
+        activity_label.set_xalign(0)
+        content.pack_start(title, False, False, 0)
+        content.pack_start(activity_label, False, False, 0)
+        activity_window.add(content)
+    activity_label.set_text("IN USE - Agent observing or controlling" if active
+                            else "SESSION OPEN - Screen access available")
     activity_window.show_all()
     activity_window.get_display().flush()
-    if not active:
-        def hide():
-            global activity_timer
-            activity_timer = None
-            activity_window.hide()
-            return False
-        activity_timer = GLib.timeout_add(1000, hide)
     return False
-
 
 def selection_transfer(handle, mime, serial):
     if str(handle) != session:
@@ -261,6 +258,9 @@ def open_session():
         # VoidSymbol has no key mapping, so it creates no application key or modifier.
         remote.NotifyKeyboardKeysym(session, options(), dbus.Int32(0xFFFFFF), dbus.UInt32(1))
         remote.NotifyKeyboardKeysym(session, options(), dbus.Int32(0xFFFFFF), dbus.UInt32(0))
+        # A successfully consented session must be visible even between calls.
+        # Failing to display the non-focusing badge closes the portal session.
+        activity(False)
         return {"pipewire_node_id": int(stream), "backend": "wayland-portal", "text_supported": clipboard_enabled, "coordinate_width": stream_size[0],
                 "coordinate_height": stream_size[1]}
     except Exception:

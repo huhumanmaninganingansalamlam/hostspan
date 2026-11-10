@@ -79,8 +79,8 @@ public sealed class HostSpanActivity : System.Windows.Forms.Form {
     static Exception startupError;
     static System.Threading.Thread thread;
     static readonly System.Threading.ManualResetEvent ready = new System.Threading.ManualResetEvent(false);
-    readonly System.Windows.Forms.Label label = new System.Windows.Forms.Label();
-    readonly System.Windows.Forms.Timer finished = new System.Windows.Forms.Timer { Interval = 1000 };
+    readonly System.Windows.Forms.Label heading = new System.Windows.Forms.Label();
+    readonly System.Windows.Forms.Label statusText = new System.Windows.Forms.Label();
     protected override bool ShowWithoutActivation { get { return true; } }
     protected override System.Windows.Forms.CreateParams CreateParams {
         get { var p = base.CreateParams; p.ExStyle |= 0x08000000 | 0x20 | 0x80 | 0x80000; return p; }
@@ -92,19 +92,20 @@ public sealed class HostSpanActivity : System.Windows.Forms.Form {
     HostSpanActivity() {
         Text = "HostSpan computer use";
         FormBorderStyle = System.Windows.Forms.FormBorderStyle.None;
-        ShowInTaskbar = false; TopMost = true; Opacity = 0.95;
+        ShowInTaskbar = false; TopMost = true; Opacity = 0.97;
         StartPosition = System.Windows.Forms.FormStartPosition.Manual;
         var area = System.Windows.Forms.Screen.PrimaryScreen.WorkingArea;
-        Bounds = new System.Drawing.Rectangle(area.Right - 310, area.Top + 12, 298, 36);
-        BackColor = System.Drawing.Color.FromArgb(25, 69, 150);
+        Bounds = new System.Drawing.Rectangle(area.Right - 378, area.Top + 12, 366, 58);
         ForeColor = System.Drawing.Color.White;
-        label.Dock = System.Windows.Forms.DockStyle.Fill;
-        label.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
-        label.Text = "HostSpan - Using this computer";
-        Controls.Add(label);
-        finished.Tick += delegate { finished.Stop(); Hide(); };
+        heading.Bounds = new System.Drawing.Rectangle(14, 8, 338, 19);
+        heading.Font = new System.Drawing.Font("Segoe UI", 10.0f, System.Drawing.FontStyle.Bold);
+        heading.Text = "HostSpan  |  Computer access";
+        heading.ForeColor = System.Drawing.Color.White;
+        statusText.Bounds = new System.Drawing.Rectangle(14, 30, 338, 18);
+        statusText.Font = new System.Drawing.Font("Segoe UI", 9.0f, System.Drawing.FontStyle.Regular);
+        statusText.ForeColor = System.Drawing.Color.White;
+        Controls.Add(heading); Controls.Add(statusText);
         Shown += delegate { ready.Set(); };
-        FormClosed += delegate { finished.Dispose(); };
     }
     public static void SetActive(bool active) {
         if (thread == null) {
@@ -119,14 +120,19 @@ public sealed class HostSpanActivity : System.Windows.Forms.Form {
         }
         if (startupError != null) throw new InvalidOperationException("Could not show HostSpan activity indicator", startupError);
         window.Invoke(new Action(delegate {
-            window.finished.Stop();
-            window.label.Text = active ? "HostSpan - Using this computer" : "HostSpan - Activity finished";
+            window.BackColor = active ? System.Drawing.Color.FromArgb(25, 69, 150)
+                                      : System.Drawing.Color.FromArgb(27, 39, 59);
+            window.statusText.Text = active ? "IN USE - Agent observing or controlling"
+                                            : "SESSION OPEN - Screen access available";
             window.Show(); window.Update();
-            if (!active) window.finished.Start();
         }));
     }
     public static void MovePointer(int x, int y) {
         window.Invoke(new Action(delegate { HostSpanInput.MovePointer(x, y); }));
+    }
+    public static void HideIndicator() {
+        if (window != null && window.IsHandleCreated && !window.IsDisposed)
+            window.Invoke(new Action(delegate { window.Hide(); }));
     }
     public static void CloseIndicator() {
         if (window != null && window.IsHandleCreated && !window.IsDisposed)
@@ -167,11 +173,14 @@ function Geometry {
 
 function Dispatch($command) {
     $action = $command.action
-    if ($action -eq 'close') { $script:opened=$false; [HostSpanActivity]::CloseIndicator(); return @{closed=$true} }
+    if ($action -eq 'close') { $script:opened=$false; [HostSpanActivity]::HideIndicator(); return @{closed=$true} }
     if ($action -eq 'open') {
         AssertInteractiveDesktop
+        $geometry=Geometry
+        # Fail closed if the session cannot show a non-focusing access badge.
+        [HostSpanActivity]::SetActive($false)
         $script:opened=$true
-        return (Geometry)
+        return $geometry
     }
     if (-not $opened) { throw 'Desktop session is closed' }
     if ($action -in @('observe','move','click','key','text','scroll')) { AssertInteractiveDesktop }

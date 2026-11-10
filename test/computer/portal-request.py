@@ -150,11 +150,12 @@ for action in ("observe", "move", "click", "key", "text", "scroll", "open", "clo
         expected = ["dispatch"] if action in ("open", "close") else [True, "dispatch", False]
         assert events == expected, (action, fails, events)
 
-# A new request cancels the previous hide timer; close removes the badge immediately.
+# A request returns to a persistent, non-focusing session-open badge.
+# Only an explicit session close (or helper teardown) removes it.
 activity_code = compile(ast.Module(body=[node for node in source.body
     if isinstance(node, ast.FunctionDef) and node.name == "activity"], type_ignores=[]),
     "portal-worker.py", "exec")
-events, timers = [], {}
+events = []
 class Widget:
     def __init__(self, **kwargs):
         pass
@@ -164,36 +165,45 @@ class Widget:
         callback(SimpleNamespace(get_window=lambda: self))
     def get_display(self):
         return SimpleNamespace(flush=lambda: None)
-def timeout(milliseconds, callback):
-    assert milliseconds == 1000
-    timers[1] = callback
-    return 1
-namespace = {"activity_window": None, "activity_label": None, "activity_timer": None,
-             "Gtk": SimpleNamespace(Window=Widget, Label=Widget),
+namespace = {"activity_window": None, "activity_label": None,
+             "Gtk": SimpleNamespace(Window=Widget, Label=Widget, Box=Widget,
+                                    Orientation=SimpleNamespace(VERTICAL=1)),
              "Gdk": SimpleNamespace(WindowTypeHint=SimpleNamespace(NOTIFICATION=1),
                                     Display=SimpleNamespace(open=lambda name: SimpleNamespace(
                                         get_name=lambda: name, get_default_screen=lambda: "x11-screen"))),
-             "os": SimpleNamespace(environ={"DISPLAY": ":0"}),
-             "GLib": SimpleNamespace(timeout_add=timeout, source_remove=lambda key: timers.pop(key))}
+             "os": SimpleNamespace(environ={"DISPLAY": ":0"})}
 exec(activity_code, namespace)
-namespace["activity"](True)
+namespace["activity"](False)
 assert ("set_accept_focus", (False,)) in events
 assert ("set_pass_through", (True,)) in events
 assert ("set_screen", ("x11-screen",)) in events
-namespace["activity"](False)
-assert timers
+assert ("set_default_size", (360, 58)) in events
+assert ("set_text", ("SESSION OPEN - Screen access available",)) in events
 namespace["activity"](True)
-assert not timers
+assert ("set_text", ("IN USE - Agent observing or controlling",)) in events
 namespace["activity"](False)
-timers.pop(1)()
-assert ("hide", ()) in events and namespace["activity_timer"] is None
+assert events[-3][0] != "hide"
+assert not any(name in ("hide", "destroy") for name, _ in events)
 namespace["activity"]()
 assert ("destroy", ()) in events and namespace["activity_window"] is None
 
-# Missing non-focusing display must stop before a badge or input is created.
+# The real open path must show the session badge after portal consent,
+# with the existing exception cleanup guaranteeing fail-closed behavior.
+open_function = next(node for node in source.body
+                     if isinstance(node, ast.FunctionDef) and node.name == "open_session")
+try_body = next(node for node in open_function.body if isinstance(node, ast.Try))
+assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+           and node.func.id == "activity" and node.args
+           and isinstance(node.args[0], ast.Constant) and node.args[0].value is False
+           for node in ast.walk(try_body))
+assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+           and node.func.id == "close_session" for handler in try_body.handlers
+           for node in ast.walk(handler))
+
+# Missing non-focusing display must prevent the badge and reject open.
 namespace["os"].environ.clear()
 try:
-    namespace["activity"](True)
+    namespace["activity"](False)
     raise AssertionError("missing display was accepted")
 except RuntimeError as error:
     assert "X11 display" in str(error)

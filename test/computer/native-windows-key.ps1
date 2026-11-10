@@ -19,6 +19,15 @@ public static class HostSpanInput {
     public static void Key(ushort key, bool up) { Record("key", key, up); }
     public static void ScanKey(ushort key, bool up) { Record("scan", key, up); }
 }
+public static class HostSpanActivity {
+    public static readonly List<string> Events = new List<string>();
+    public static bool FailNextOpen;
+    public static void SetActive(bool active) {
+        Events.Add(active ? "active" : "session-open");
+        if (!active && FailNextOpen) { FailNextOpen = false; throw new InvalidOperationException("badge-unavailable"); }
+    }
+    public static void HideIndicator() { Events.Add("hide"); }
+}
 '@
 . ([scriptblock]::Create($dispatch.Extent.Text))
 function AssertInteractiveDesktop { }  # Recorder bypasses live OS checks; policy is tested below.
@@ -90,4 +99,25 @@ catch {
     $caught = $true
 }
 if (-not $caught -or $script:opened) { throw 'Open bypassed desktop guard' }
-'PASS: Windows chords, key release and desktop guard; no OS input'
+# Simulate repeated open -> idle -> close without creating any Windows UI.
+function AssertInteractiveDesktop { }
+function Geometry { return @{ backend = 'fixture' } }
+[HostSpanActivity]::Events.Clear()
+$script:opened = $false
+$null = Dispatch ([pscustomobject]@{ action = 'open' })
+if (-not $script:opened -or [HostSpanActivity]::Events[0] -cne 'session-open') { throw 'Open has no persistent access badge' }
+$null = Dispatch ([pscustomobject]@{ action = 'close' })
+if ($script:opened -or [HostSpanActivity]::Events[1] -cne 'hide') { throw 'Close did not hide badge' }
+$null = Dispatch ([pscustomobject]@{ action = 'open' })
+if (-not $script:opened -or [HostSpanActivity]::Events[2] -cne 'session-open') { throw 'Reopen did not restore badge' }
+$null = Dispatch ([pscustomobject]@{ action = 'close' })
+
+# Refuse a session when the desktop badge cannot be shown.
+[HostSpanActivity]::FailNextOpen = $true
+$script:opened = $false
+$caught = $false
+try { $null = Dispatch ([pscustomobject]@{ action = 'open' }) }
+catch { if ($_.Exception.Message -notmatch 'badge-unavailable') { throw }; $caught = $true }
+if (-not $caught -or $script:opened) { throw 'Badge failure left a session open' }
+
+'PASS: Windows chords, guard and persistent non-focusing badge lifecycle; no OS input'
