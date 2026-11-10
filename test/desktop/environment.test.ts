@@ -4,6 +4,7 @@ import { delimiter, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { buildSystemdServiceUnit, serviceExecutionPath, systemdServiceInstalled } from "../../src/services/systemd.js";
 import {
+  desktopDaemonStartupTimeoutMs,
   desktopLaunchSpec,
   extractMarkedPath,
   isDesktopLoginLaunch,
@@ -82,6 +83,13 @@ describe("desktop environment", () => {
     }
     expect(isDesktopLoginLaunch("darwin", ["HostSpan"], true)).toBe(true);
     expect(isDesktopLoginLaunch("darwin", ["HostSpan", "--hostspan-login"], false)).toBe(false);
+  });
+
+  it("allows a bounded macOS login grace without changing manual start or other OS startup", () => {
+    expect(desktopDaemonStartupTimeoutMs("darwin", true)).toBe(20_000);
+    expect(desktopDaemonStartupTimeoutMs("darwin", false)).toBe(5_000);
+    expect(desktopDaemonStartupTimeoutMs("linux", true)).toBe(5_000);
+    expect(desktopDaemonStartupTimeoutMs("win32", true)).toBe(5_000);
   });
 
   it("writes Linux autostart without a shell or PATH-dependent Electron shim", () => {

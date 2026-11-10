@@ -277,6 +277,7 @@ export async function startDaemon(
   configPath: string,
   cliPath = process.argv[1] ?? "hostspan",
   nodePath = process.execPath,
+  startupTimeoutMs = 5_000,
 ): Promise<{ running: boolean; pid: number | null }> {
   const current = daemonStatus(configPath);
   if (current.running) return { running: true, pid: current.pid };
@@ -291,7 +292,7 @@ export async function startDaemon(
   let launchError: NodeJS.ErrnoException | undefined;
   child.once("error", (error) => { launchError = error as NodeJS.ErrnoException; });
   child.unref();
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + startupTimeoutMs;
   while (Date.now() < deadline) {
     const status = daemonStatus(configPath);
     if (status.running) return { running: true, pid: status.pid };
@@ -303,7 +304,8 @@ export async function startDaemon(
     }
     await sleep(50);
   }
-  return { running: false, pid: null };
+  const final = daemonStatus(configPath);
+  return { running: final.running, pid: final.pid };
 }
 
 export async function stopDaemon(configPath: string): Promise<{ running: boolean; pid: number | null }> {

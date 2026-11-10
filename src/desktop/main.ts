@@ -19,7 +19,7 @@ import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath } from "../config/paths.js";
 import { PtySessionManager } from "../processes/pty-session.js";
 import { protectWindowsFile, protectWindowsTree } from "../security/windows-acl.js";
-import { desktopLaunchSpec, isDesktopLoginLaunch, linuxAutoStartContents, linuxAutoStartPath, prepareDesktopEnvironment } from "./environment.js";
+import { desktopDaemonStartupTimeoutMs, desktopLaunchSpec, isDesktopLoginLaunch, linuxAutoStartContents, linuxAutoStartPath, prepareDesktopEnvironment } from "./environment.js";
 import {
   installDashboardNavigationGuards,
   isTrustedDashboardIpc,
@@ -190,7 +190,7 @@ function checkedServiceAction(action: "start" | "stop") {
   return result;
 }
 
-async function daemonAction(action: "start" | "stop" | "restart") {
+async function daemonAction(action: "start" | "stop" | "restart", startupTimeoutMs?: number) {
   if (systemdServiceInstalled()) {
     if (action === "start") return checkedServiceAction("start");
     await stopDaemon(configPath);
@@ -198,9 +198,9 @@ async function daemonAction(action: "start" | "stop" | "restart") {
   }
   if (action === "restart") {
     await stopDaemon(configPath);
-    return startDaemon(configPath, cliPath, nodePath);
+    return startDaemon(configPath, cliPath, nodePath, startupTimeoutMs);
   }
-  return action === "start" ? startDaemon(configPath, cliPath, nodePath) : stopDaemon(configPath);
+  return action === "start" ? startDaemon(configPath, cliPath, nodePath, startupTimeoutMs) : stopDaemon(configPath);
 }
 
 async function confirmDaemonRestart(): Promise<boolean> {
@@ -405,8 +405,11 @@ void app.whenReady().then(async () => {
     );
     if (loginLaunch) {
       try {
-        const result = await daemonAction("start");
-        if ("running" in result && !result.running) throw new Error("HostSpan daemon did not start within five seconds.");
+        const startupTimeoutMs = desktopDaemonStartupTimeoutMs(process.platform, loginLaunch);
+        const result = await daemonAction("start", startupTimeoutMs);
+        if ("running" in result && !result.running) {
+          throw new Error(`HostSpan daemon did not start within ${startupTimeoutMs / 1000} seconds.`);
+        }
       } catch (error) {
         dialog.showErrorBox("HostSpan daemon could not start", error instanceof Error ? error.message : String(error));
       }
