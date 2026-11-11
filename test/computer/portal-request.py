@@ -207,6 +207,8 @@ namespace = {"activity_window": None, "activity_label": None, "activity_marker":
                                         get_name=lambda: name, get_default_screen=lambda: "x11-screen"))),
              "os": SimpleNamespace(environ={"DISPLAY": ":0"})}
 exec(activity_code, namespace)
+namespace["activity"]("waiting")
+assert ("set_markup", ('<span foreground="#FFFFFF">Waiting for screen approval</span>',)) in events
 namespace["activity"]("ready")
 assert ("set_accept_focus", (False,)) in events
 assert ("set_pass_through", (True,)) in events
@@ -218,25 +220,38 @@ assert ("set_markup", ('<span foreground="#FFFFFF">Viewing this screen</span>',)
 namespace["activity"]("controlling")
 assert ("set_markup", ('<span foreground="#FFFFFF">Controlling this screen</span>',)) in events
 backgrounds = [args[1] for name, args in events if name == "override_background_color"]
-assert len(backgrounds) == 3
-assert len({(value.red, value.green, value.blue) for value in backgrounds}) == 3
+assert len(backgrounds) == 4
+assert len({(value.red, value.green, value.blue) for value in backgrounds}) == 4
 markers = [args[0] for name, args in events if name == "set_markup" and "●" in args[0]]
-assert markers == ['<span foreground="#AAB4C3">●</span>',
+assert markers == ['<span foreground="#FCE17A">●</span>',
+                   '<span foreground="#AAB4C3">●</span>',
                    '<span foreground="#8EC5FF">●</span>',
                    '<span foreground="#FFC08A">●</span>']
 assert not any(name in ("hide", "destroy") for name, _ in events)
 namespace["activity"]()
 assert ("destroy", ()) in events and namespace["activity_window"] is None
 
-# The real open path must show the session badge after portal consent,
-# with the existing exception cleanup guaranteeing fail-closed behavior.
+# The waiting badge must be visible before portal consent, with the approved
+# session badge shown only after actual OS approval. Exception cleanup removes
+# either state without spoofing or auto-approving the system dialog.
 open_function = next(node for node in source.body
                      if isinstance(node, ast.FunctionDef) and node.name == "open_session")
 try_body = next(node for node in open_function.body if isinstance(node, ast.Try))
-assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-           and node.func.id == "activity" and node.args
-           and isinstance(node.args[0], ast.Constant) and node.args[0].value == "ready"
-           for node in ast.walk(try_body))
+assert isinstance(try_body.body[0], ast.Expr)
+assert isinstance(try_body.body[0].value, ast.Call)
+assert isinstance(try_body.body[0].value.func, ast.Name)
+assert try_body.body[0].value.func.id == "activity"
+assert isinstance(try_body.body[0].value.args[0], ast.Constant)
+assert try_body.body[0].value.args[0].value == "waiting"
+portal_start = next(node for node in ast.walk(try_body)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    and node.func.id == "request" and node.args
+    and isinstance(node.args[0], ast.Attribute) and node.args[0].attr == "Start")
+approved_badge = next(node for node in ast.walk(try_body)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    and node.func.id == "activity" and node.args
+    and isinstance(node.args[0], ast.Constant) and node.args[0].value == "ready")
+assert try_body.body[0].lineno < portal_start.lineno < approved_badge.lineno
 assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
            and node.func.id == "close_session" for handler in try_body.handlers
            for node in ast.walk(handler))

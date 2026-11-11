@@ -6,6 +6,8 @@ struct DesktopAvailabilityTest {
     @MainActor
     static func main() throws {
         DesktopWorker.opened = true
+        let waiting = DesktopWorker.activityAppearance(.waiting)
+        precondition(waiting.message == "Waiting for screen approval")
         let ready = DesktopWorker.activityAppearance(.ready)
         let viewing = DesktopWorker.activityAppearance(.viewing)
         let controlling = DesktopWorker.activityAppearance(.controlling)
@@ -13,12 +15,12 @@ struct DesktopAvailabilityTest {
         precondition(viewing.message == "Viewing this screen")
         precondition(controlling.message == "Controlling this screen")
         precondition(DesktopWorker.minimumControllingVisibilityNanoseconds == 250_000_000)
-        let backgrounds = [ready.background, viewing.background, controlling.background]
+        let backgrounds = [waiting.background, ready.background, viewing.background, controlling.background]
             .map { "\($0.0),\($0.1),\($0.2)" }
-        let markers = [ready.marker, viewing.marker, controlling.marker]
+        let markers = [waiting.marker, ready.marker, viewing.marker, controlling.marker]
             .map { "\($0.0),\($0.1),\($0.2)" }
-        precondition(Set(backgrounds).count == 3)
-        precondition(Set(markers).count == 3)
+        precondition(Set(backgrounds).count == 4)
+        precondition(Set(markers).count == 4)
         let sessions: [[String: Any]?] = [nil, [:], ["CGSSessionScreenIsLocked": false]]
         for session in sessions {
             try DesktopWorker.requireUnlockedDesktop(session)

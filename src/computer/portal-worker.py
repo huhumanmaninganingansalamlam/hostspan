@@ -54,6 +54,8 @@ def activity(state=None):
             activity_window = activity_label = activity_marker = None
         return False
     states = {
+        # Waiting is an instruction, never a claim that the OS granted access.
+        "waiting": ("Waiting for screen approval", (84, 65, 28), "#FCE17A"),
         "ready": ("Screen access is on", (27, 39, 59), "#AAB4C3"),
         "viewing": ("Viewing this screen", (25, 69, 150), "#8EC5FF"),
         "controlling": ("Controlling this screen", (122, 46, 32), "#FFC08A"),
@@ -261,6 +263,9 @@ def open_session():
         if not Gst.ElementFactory.find(plugin):
             raise RuntimeError(f"Required GStreamer plugin is unavailable: {plugin}")
     try:
+        # Display the non-focusing, click-through waiting state while the actual
+        # operating-system portal remains the sole authority for consent.
+        activity("waiting")
         created = request(remote.CreateSession, phase="CreateSession", session_handle_token="hostspan_" + uuid.uuid4().hex)
         session = str(created["session_handle"])
         closed_match = bus.add_signal_receiver(

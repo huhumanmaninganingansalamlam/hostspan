@@ -9,6 +9,7 @@ import ScreenCaptureKit
 #endif
 struct DesktopWorker {
     enum ActivityState: String {
+        case waiting
         case ready
         case viewing
         case controlling
@@ -30,6 +31,7 @@ struct DesktopWorker {
         message: String, background: (Int, Int, Int), marker: (Int, Int, Int)
     ) {
         switch state {
+        case .waiting: return ("Waiting for screen approval", (84, 65, 28), (252, 225, 122))
         case .ready: return ("Screen access is on", (27, 39, 59), (170, 180, 195))
         case .viewing: return ("Viewing this screen", (25, 69, 150), (142, 197, 255))
         case .controlling: return ("Controlling this screen", (122, 46, 32), (255, 192, 138))
@@ -307,6 +309,7 @@ struct DesktopWorker {
             }
             if !CGPreflightScreenCaptureAccess() {
                 try requireGUILaunch(for: "screen_recording")
+                activity(.waiting)
                 send(["event": "permission_required", "permission": "screen_recording"])
                 _ = CGRequestScreenCaptureAccess()
                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
@@ -314,6 +317,7 @@ struct DesktopWorker {
             }
             if !AXIsProcessTrusted() {
                 try requireGUILaunch(for: "accessibility")
+                activity(.waiting)
                 send(["event": "permission_required", "permission": "accessibility"])
                 let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
                 _ = AXIsProcessTrustedWithOptions(options)
