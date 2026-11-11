@@ -37,6 +37,22 @@ struct DesktopAvailabilityTest {
         }
         try DesktopWorker.requireUnlockedDesktop(["CGSSessionScreenIsLocked": false])
         precondition(DesktopWorker.opened)
-        print("PASS: locked rejection, same-session recovery, no capture/input/consent")
+
+        // Inject permission states: no OS prompt, capture, input, or TCC mutation.
+        try DesktopWorker.requireSessionPermissions(screenRecordingGranted: true, accessibilityGranted: true)
+        for permissions in [(false, true), (true, false), (false, false)] {
+            DesktopWorker.opened = true
+            do {
+                try DesktopWorker.requireSessionPermissions(
+                    screenRecordingGranted: permissions.0, accessibilityGranted: permissions.1)
+                fatalError("Revoked permission left the session open")
+            } catch {
+                let details = (error as NSError).userInfo["error_details"] as? [String: Any]
+                precondition(details?["reason"] as? String == "macos_permission_revoked")
+                precondition(!DesktopWorker.opened, "Revocation must close the session")
+                precondition(DesktopWorker.activityPanel == nil, "Revocation must remove its indicator")
+            }
+        }
+        print("PASS: locked rejection, same-session recovery, revoked-permission fail-close, no capture/input/consent")
     }
 }

@@ -130,7 +130,15 @@ struct DesktopWorker {
                 self.completedAt = Date()
                 self.completed.leave()
                 Task { @MainActor in
-                    if capture?.process === process { activity(.ready) }
+                    if capture?.process === process {
+                        // A failed capture or revoked entitlement must not leave "access is on".
+                        if self.error != nil || self.image == nil ||
+                           !CGPreflightScreenCaptureAccess() || !AXIsProcessTrusted() {
+                            closeSession()
+                        } else {
+                            activity(.ready)
+                        }
+                    }
                 }
             }
             do { try process.run() }
@@ -174,13 +182,36 @@ struct DesktopWorker {
     }
 
     @MainActor
+    static func closeSession() {
+        opened = false
+        capture?.cancel()
+        capture = nil
+        activity(nil)
+    }
+
+    @MainActor
+    static func requireSessionPermissions(
+        screenRecordingGranted: Bool = CGPreflightScreenCaptureAccess(),
+        accessibilityGranted: Bool = AXIsProcessTrusted()
+    ) throws {
+        guard screenRecordingGranted && accessibilityGranted else {
+            closeSession()
+            throw NSError(domain: "HostSpanDesktop", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "macOS screen access permission was revoked; this session is closed.",
+                "error_details": ["reason": "macos_permission_revoked"]
+            ])
+        }
+    }
+
+    @MainActor
     static func requireUnlockedDesktop(_ session: [String: Any]? = CGSessionCopyCurrentDictionary() as? [String: Any]) throws {
         if session?["CGSSessionScreenIsLocked"] as? Bool == true {
             // Discard a capture retained after an earlier bounded observe; never return it after unlock.
             capture?.cancel()
             capture = nil
-            // The session survives a lock; keep its badge truthful for the next unlock.
-            if activityPanel != nil { activity(.ready) }
+            // A locked console cannot be viewed or controlled. Keep the session,
+            // but hide its indicator until the next permitted desktop call.
+            activity(nil)
             throw NSError(domain: "HostSpanDesktop", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "Desktop capture and input are unavailable while the macOS console is locked. Keep this session and observe again when the desktop is available.",
                 "error_details": ["reason": "macos_desktop_locked", "dispatched": false]
@@ -221,7 +252,7 @@ struct DesktopWorker {
         // Stay inside the parent's unchanged 10s request budget, including encoding/IPC.
         let responseDeadline = DispatchTime.now() + 8
         let action = command["action"] as? String ?? ""
-        if action == "close" { opened = false; capture?.cancel(); capture = nil; activity(nil); return ["closed": true] }
+        if action == "close" { closeSession(); return ["closed": true] }
         if action == "open" {
             guard #available(macOS 14.0, *) else {
                 throw failure("Native screen capture requires macOS 14 or newer")
@@ -241,6 +272,8 @@ struct DesktopWorker {
                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
                 while !AXIsProcessTrusted() { try await Task.sleep(nanoseconds: 500_000_000) }
             }
+            // Both grants must still be present after the asynchronous prompts.
+            try requireSessionPermissions()
             displayID = CGMainDisplayID()
             // Show an idle badge as soon as consented screen access opens.
             activity(.ready)
@@ -248,13 +281,21 @@ struct DesktopWorker {
             return geometry()
         }
         guard opened else { throw failure("Desktop session is closed") }
+        try requireSessionPermissions()
         try requireUnlockedDesktop()
         let indicatorState: ActivityState = action == "observe" ? .viewing : .controlling
         activity(indicatorState)
-        defer { if capture?.process.isRunning != true && activityPanel != nil { activity(.ready) } }
+        defer {
+            if opened {
+                if CGPreflightScreenCaptureAccess() && AXIsProcessTrusted() {
+                    if capture?.process.isRunning != true && activityPanel != nil { activity(.ready) }
+                } else {
+                    closeSession()
+                }
+            }
+        }
         if action == "observe" {
             guard #available(macOS 14.0, *) else { throw failure("Native capture is unavailable") }
-            guard CGPreflightScreenCaptureAccess() else { throw failure("Screen Recording permission was revoked") }
             let image: CGImage
             var capturedPNG: Data?
             var startedAt = Date()
@@ -265,13 +306,18 @@ struct DesktopWorker {
                 if capture == nil { capture = try DisplayCapture(displayID: displayID) }
                 guard let pending = capture else { throw failure("Could not start display capture") }
                 let ready = await pending.ready(until: responseDeadline)
+                try requireSessionPermissions()
                 try requireUnlockedDesktop()
                 guard ready else {
                     throw capturePending()
                 }
                 capture = nil
-                if let error = pending.error { throw error }
+                if let error = pending.error {
+                    closeSession()
+                    throw error
+                }
                 guard let captured = pending.image else {
+                    closeSession()
                     throw failure("Could not capture the selected display")
                 }
                 image = captured
@@ -290,7 +336,8 @@ struct DesktopWorker {
                 let filter = SCContentFilter(display: display, excludingWindows: [])
                 image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
             }
-            // The console may have locked while capture was awaiting its result.
+            // Neither revoked entitlements nor a newly locked console can return a frame.
+            try requireSessionPermissions()
             try requireUnlockedDesktop()
             guard let png = capturedPNG ?? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
                 throw failure("Could not encode captured PNG")
