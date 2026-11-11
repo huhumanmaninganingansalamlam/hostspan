@@ -1,6 +1,8 @@
 appId: io.hostspan.desktop
 productName: HostSpan
 asar: true
+# Normalize Linux runtime file modes before deb/AppImage archives are built.
+afterPack: ./scripts/harden-linux-package.cjs
 npmRebuild: false
 compression: normal
 artifactName: ${productName}-${version}-${os}-${arch}.${ext}

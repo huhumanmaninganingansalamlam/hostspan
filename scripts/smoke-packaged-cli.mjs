@@ -321,6 +321,21 @@ function smokePackagedRuntime(executable, cli, runtime, nativeModule, ptyModule,
 	);
 }
 
+function assertLinuxPackagePermissions(appDir) {
+	const pending = [appDir];
+	while (pending.length > 0) {
+		const entry = pending.pop();
+		const stat = lstatSync(entry);
+		if (stat.isSymbolicLink()) continue;
+		if ((stat.mode & 0o022) !== 0) {
+			throw new Error("Unsafe group/other writable Linux package entry: " + entry);
+		}
+		if (stat.isDirectory()) {
+			for (const name of readdirSync(entry)) pending.push(join(entry, name));
+		}
+	}
+}
+
 function smokeLinuxArtifact(artifactPath) {
 	const scratch = mkdtempSync(join(tmpdir(), "hostspan-linux-artifact-smoke-"));
 	try {
@@ -344,6 +359,7 @@ function smokeLinuxArtifact(artifactPath) {
 			}
 			appDir = join(scratch, "squashfs-root");
 		}
+		assertLinuxPackagePermissions(appDir);
 		const paths = packagedPaths(join(appDir, "resources", "app.asar"), "linux");
 		if (!existsSync(paths.executable)) {
 			throw new Error(`Linux package executable not found: ${paths.executable}`);
