@@ -48,7 +48,7 @@ describe.skipIf(process.platform === "win32")("Linux desktop package mode harden
     }
   });
 
-  it("repairs old installation directory modes without following symlinks", () => {
+  it.skipIf(process.platform !== "linux")("repairs old installation directory modes without following symlinks", () => {
     const scratch = mkdtempSync(join(tmpdir(), "hostspan-installed-modes-"));
     try {
       const app = join(scratch, "HostSpan");
