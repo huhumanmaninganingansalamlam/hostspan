@@ -53,6 +53,19 @@ struct DesktopAvailabilityTest {
                 precondition(DesktopWorker.activityPanel == nil, "Revocation must remove its indicator")
             }
         }
-        print("PASS: locked rejection, same-session recovery, revoked-permission fail-close, no capture/input/consent")
+        // The background access monitor is tested with injected state only:
+        // never change real TCC grants or lock the user's console.
+        DesktopWorker.opened = true
+        DesktopWorker.monitorAccess(
+            screenRecordingGranted: true, accessibilityGranted: true, sessionLocked: true)
+        precondition(DesktopWorker.opened, "Lock must preserve the session")
+        precondition(DesktopWorker.activityPanel == nil, "Locked console must hide the badge")
+        DesktopWorker.monitorAccess(
+            screenRecordingGranted: false, accessibilityGranted: true, sessionLocked: false)
+        precondition(!DesktopWorker.opened, "Permission revocation must end idle access")
+        precondition(DesktopWorker.activityPanel == nil, "Idle revocation must remove the badge")
+        precondition(DesktopWorker.accessMonitor == nil, "Revocation must stop background polling")
+
+        print("PASS: locked rejection/recovery, idle permission revocation fail-close, no capture/input/consent")
     }
 }

@@ -24,6 +24,7 @@ struct DesktopWorker {
     @MainActor static var activityPanel: NSPanel?
     @MainActor static var activityLabel: NSTextField?
     @MainActor static var activityMarker: NSView?
+    @MainActor static var accessMonitor: Timer?
 
     static func activityAppearance(_ state: ActivityState) -> (
         message: String, background: (Int, Int, Int), marker: (Int, Int, Int)
@@ -183,10 +184,48 @@ struct DesktopWorker {
 
     @MainActor
     static func closeSession() {
+        accessMonitor?.invalidate()
+        accessMonitor = nil
         opened = false
         capture?.cancel()
         capture = nil
         activity(nil)
+    }
+
+    // Keep the idle badge honest even between calls. A revoked grant closes
+    // the session; a locked console hides the badge without disclosing frames.
+    @MainActor
+    static func monitorAccess(
+        screenRecordingGranted: Bool, accessibilityGranted: Bool, sessionLocked: Bool
+    ) {
+        guard opened else { return }
+        if !screenRecordingGranted || !accessibilityGranted {
+            closeSession()
+        } else if sessionLocked {
+            capture?.cancel()
+            capture = nil
+            activity(nil)
+        } else if activityPanel == nil && capture?.process.isRunning != true {
+            // An unlocked, still-consented session is available again.
+            activity(.ready)
+        }
+    }
+
+    @MainActor
+    static func startAccessMonitor() {
+        accessMonitor?.invalidate()
+        let monitor = Timer(timeInterval: 0.5, repeats: true) { _ in
+            Task { @MainActor in
+                let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+                monitorAccess(
+                    screenRecordingGranted: CGPreflightScreenCaptureAccess(),
+                    accessibilityGranted: AXIsProcessTrusted(),
+                    sessionLocked: session?["CGSSessionScreenIsLocked"] as? Bool == true
+                )
+            }
+        }
+        RunLoop.main.add(monitor, forMode: .common)
+        accessMonitor = monitor
     }
 
     @MainActor
@@ -272,12 +311,14 @@ struct DesktopWorker {
                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
                 while !AXIsProcessTrusted() { try await Task.sleep(nanoseconds: 500_000_000) }
             }
-            // Both grants must still be present after the asynchronous prompts.
+            // Both grants and an unlocked console are required before the badge
+            // can claim that screen access is on.
             try requireSessionPermissions()
+            try requireUnlockedDesktop()
             displayID = CGMainDisplayID()
-            // Show an idle badge as soon as consented screen access opens.
             activity(.ready)
             opened = true
+            startAccessMonitor()
             return geometry()
         }
         guard opened else { throw failure("Desktop session is closed") }
@@ -454,8 +495,7 @@ struct DesktopWorker {
 
     @MainActor
     static func shutdown() {
-        capture?.cancel()
-        activity(nil)
+        closeSession()
         NSApplication.shared.terminate(nil)
     }
 }
