@@ -197,10 +197,12 @@ struct DesktopWorker {
     @MainActor
     static func monitorAccess(
         screenRecordingGranted: Bool, accessibilityGranted: Bool, sessionLocked: Bool
-    ) {
-        guard opened else { return }
+    ) -> Bool {
+        // A timer queued before an explicit close must not end a fresh session.
+        guard opened else { return true }
         if !screenRecordingGranted || !accessibilityGranted {
             closeSession()
+            return false
         } else if sessionLocked {
             capture?.cancel()
             capture = nil
@@ -209,6 +211,7 @@ struct DesktopWorker {
             // An unlocked, still-consented session is available again.
             activity(.ready)
         }
+        return true
     }
 
     @MainActor
@@ -217,11 +220,17 @@ struct DesktopWorker {
         let monitor = Timer(timeInterval: 0.5, repeats: true) { _ in
             Task { @MainActor in
                 let session = CGSessionCopyCurrentDictionary() as? [String: Any]
-                monitorAccess(
+                let permitted = monitorAccess(
                     screenRecordingGranted: CGPreflightScreenCaptureAccess(),
                     accessibilityGranted: AXIsProcessTrusted(),
                     sessionLocked: session?["CGSSessionScreenIsLocked"] as? Bool == true
                 )
+                if !permitted {
+                    // Notify the parent before ending the worker: the daemon must
+                    // clear its own ready status, not just hide our local panel.
+                    send(["event": "closed"])
+                    shutdown()
+                }
             }
         }
         RunLoop.main.add(monitor, forMode: .common)
