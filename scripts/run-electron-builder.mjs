@@ -11,6 +11,8 @@ if (process.platform === "linux") {
   const require = createRequire(import.meta.url);
   const { hardenDirectory } = require("./harden-linux-package.cjs");
   await hardenDirectory(resolve(root, "assets", "icons"));
+  const { prepareLinuxAfterInstall } = require("./linux-after-install.cjs");
+  await prepareLinuxAfterInstall(root);
 }
 const cli = resolve(root, "node_modules", "electron-builder", "cli.js");
 const child = spawnSync(process.execPath, [cli, ...process.argv.slice(2)], {

@@ -37,6 +37,9 @@ linux:
   target:
     - AppImage
     - deb
+deb:
+  # Upgrade installations keep old directory modes unless postinst repairs them.
+  afterInstall: out/linux-after-install.tpl
 mac:
   icon: assets/icons/app.icns
   category: public.app-category.developer-tools

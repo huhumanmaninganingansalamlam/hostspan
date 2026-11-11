@@ -347,6 +347,27 @@ function smokeLinuxArtifact(artifactPath) {
 			if (extracted.status !== 0) {
 				throw new Error(`Could not extract Debian package: ${extracted.stderr || extracted.stdout}`);
 			}
+
+			const controlDir = join(scratch, "deb-control");
+			const controls = spawnSync("dpkg-deb", ["-e", artifactPath, controlDir], { encoding: "utf8" });
+			if (controls.status !== 0) {
+			    throw new Error("Could not inspect Debian post-install hook: " + (controls.stderr || controls.stdout));
+			}
+			const postinst = readFileSync(join(controlDir, "postinst"), "utf8");
+			for (const required of [
+			    "HostSpan install/upgrade hardening",
+			    'hostspan_install_root=\'/opt/HostSpan\'',
+			    "find -P",
+			    "-perm /022",
+			    "chmod go-w",
+			    "update-alternatives",
+			    "chrome-sandbox",
+			    "apparmor_parser",
+			]) {
+			    if (!postinst.includes(required)) {
+			        throw new Error("Debian post-install hook lacks required hardening or sandbox setup: " + required);
+			    }
+			}
 			appDir = join(debRoot, "opt", "HostSpan");
 		} else {
 			const extracted = spawnSync(artifactPath, ["--appimage-extract"], {
