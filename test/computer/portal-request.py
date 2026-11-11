@@ -141,15 +141,46 @@ for action in ("observe", "move", "click", "key", "text", "scroll", "open", "clo
                 raise RuntimeError("request failed")
             return {"dispatched": True}
         namespace = {"session": "existing-session", "activity": lambda active: events.append(active),
-                     "dispatch": dispatch, "PortalRequestError": RuntimeError,
+                     "dispatch": dispatch, "hold_controlling_visible": lambda: events.append("hold"),
+                     "PortalRequestError": RuntimeError,
                      "json": __import__("json"), "print": lambda *args, **kwargs: None}
         # The fake ordinary failure carries no structured portal details.
         namespace["PortalRequestError"] = type("PortalFailure", (Exception,), {})
         exec(reply_code, namespace)
         namespace["reply"]({"id": "status-test", "action": action, "text": "private input"})
-        expected = ["dispatch"] if action in ("open", "close") else [
-            "viewing" if action == "observe" else "controlling", "dispatch", "ready"]
+        if action in ("open", "close"):
+            expected = ["dispatch"]
+        elif action == "observe":
+            expected = ["viewing", "dispatch", "ready"]
+        elif fails:
+            expected = ["controlling", "dispatch", "ready"]
+        else:
+            expected = ["controlling", "dispatch", "hold", "ready"]
         assert events == expected, (action, fails, events)
+
+# The visibility dwell must paint pending GTK work and delay only successful input.
+hold_node = next(node for node in source.body
+                 if isinstance(node, ast.FunctionDef) and node.name == "hold_controlling_visible")
+hold_code = compile(ast.Module(body=[hold_node], type_ignores=[]), "portal-worker.py", "exec")
+minimum_node = next(node for node in source.body if isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name)
+                            and target.id == "MINIMUM_CONTROLLING_VISIBLE_SECONDS"
+                            for target in node.targets))
+minimum_seconds = ast.literal_eval(minimum_node.value)
+assert minimum_seconds == 0.25
+hold_events = []
+pending = [True, False]
+context = SimpleNamespace(
+    pending=lambda: pending.pop(0),
+    iteration=lambda may_block: hold_events.append(("iteration", may_block)))
+hold_namespace = {
+    "GLib": SimpleNamespace(MainContext=SimpleNamespace(default=lambda: context)),
+    "time": SimpleNamespace(sleep=lambda seconds: hold_events.append(("sleep", seconds))),
+    "MINIMUM_CONTROLLING_VISIBLE_SECONDS": minimum_seconds,
+}
+exec(hold_code, hold_namespace)
+hold_namespace["hold_controlling_visible"]()
+assert hold_events == [("iteration", False), ("sleep", 0.25)]
 
 # A request returns to a persistent, non-focusing session-open badge.
 # Only an explicit session close (or helper teardown) removes it.

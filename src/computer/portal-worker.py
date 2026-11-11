@@ -39,6 +39,10 @@ paste_transferred = False
 activity_window = None
 activity_label = None
 activity_marker = None
+# Input is posted before this dwell. Holding the acknowledgement prevents the
+# parent's automatic observation from replacing the controlling state too fast
+# for a person (or a display refresh) to see it.
+MINIMUM_CONTROLLING_VISIBLE_SECONDS = 0.25
 
 
 def activity(state=None):
@@ -102,6 +106,15 @@ def activity(state=None):
     activity_window.show_all()
     activity_window.get_display().flush()
     return False
+
+
+def hold_controlling_visible():
+    """Paint the controlling state, then retain it for a human-visible interval."""
+    context = GLib.MainContext.default()
+    while context.pending():
+        context.iteration(False)
+    time.sleep(MINIMUM_CONTROLLING_VISIBLE_SECONDS)
+
 
 def selection_transfer(handle, mime, serial):
     if str(handle) != session:
@@ -441,7 +454,10 @@ def reply(command):
         if session and command.get("action") in ("observe", "move", "click", "key", "text", "scroll"):
             indicator_state = "viewing" if command.get("action") == "observe" else "controlling"
             activity(indicator_state)
-        result = {"id": command["id"], "result": dispatch(command)}
+        dispatch_result = dispatch(command)
+        if indicator_state == "controlling" and dispatch_result.get("dispatched") is True:
+            hold_controlling_visible()
+        result = {"id": command["id"], "result": dispatch_result}
     except Exception as error:
         result = {"id": command.get("id"), "error": str(error)}
         if isinstance(error, PortalRequestError):

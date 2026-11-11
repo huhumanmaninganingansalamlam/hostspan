@@ -12,6 +12,7 @@ struct DesktopAvailabilityTest {
         precondition(ready.message == "Screen access is on")
         precondition(viewing.message == "Viewing this screen")
         precondition(controlling.message == "Controlling this screen")
+        precondition(DesktopWorker.minimumControllingVisibilityNanoseconds == 250_000_000)
         let backgrounds = [ready.background, viewing.background, controlling.background]
             .map { "\($0.0),\($0.1),\($0.2)" }
         let markers = [ready.marker, viewing.marker, controlling.marker]

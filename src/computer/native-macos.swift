@@ -14,6 +14,10 @@ struct DesktopWorker {
         case controlling
     }
 
+    // Keep successful input visible across multiple display refreshes before the
+    // parent's automatic follow-up observation changes the state to viewing.
+    static let minimumControllingVisibilityNanoseconds: UInt64 = 250_000_000
+
     static var opened = false
     static var displayID = CGMainDisplayID()
     static var capture: DisplayCapture?
@@ -366,6 +370,9 @@ struct DesktopWorker {
             event.post(tap: .cghidEventTap)
         default: throw failure("Unsupported desktop action")
         }
+        // Input is already dispatched. Delay only the acknowledgement so the
+        // non-focusing indicator remains human-visible before auto-observe.
+        try? await Task.sleep(nanoseconds: minimumControllingVisibilityNanoseconds)
         return ["dispatched": true]
     }
 

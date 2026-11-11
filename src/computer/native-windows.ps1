@@ -161,6 +161,9 @@ public sealed class HostSpanActivity : System.Windows.Forms.Form {
 '@
 [void][HostSpanInput]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
 $opened = $false
+# Input is sent immediately; only its acknowledgement waits long enough for the
+# controlling indicator to survive multiple display refreshes.
+$MinimumControllingVisibilityMilliseconds = 250
 
 # The input desktop can change after open (lock, UAC, console switch).
 # Recheck console ownership and input desktop before every capture/input.
@@ -308,7 +311,11 @@ try { while ($null -ne ($line=[Console]::ReadLine())) {
             }
             [HostSpanActivity]::SetState($indicatorState)
         }
-        $reply=@{id=$command.id;result=(Dispatch $command)}
+        $dispatchResult = Dispatch $command
+        if ($indicatorState -eq [HostSpanActivityState]::Controlling) {
+            [System.Threading.Thread]::Sleep($MinimumControllingVisibilityMilliseconds)
+        }
+        $reply=@{id=$command.id;result=$dispatchResult}
     } catch { $reply=@{id=$command.id;error=$_.Exception.Message} }
     finally { if ($null -ne $indicatorState) { [HostSpanActivity]::SetState([HostSpanActivityState]::Ready) } }
     [Console]::WriteLine(($reply | ConvertTo-Json -Depth 8 -Compress))
