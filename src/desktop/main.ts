@@ -32,6 +32,7 @@ import {
 import { prepareDesktopConfig } from "./first-run.js";
 import { trayMenuStateKey } from "./tray-menu-state.js";
 import { dashboardHtml } from "./dashboard.js";
+import { acquireDesktopPrimaryInstance } from "./single-instance.js";
 
 declare global {
   interface Window {
@@ -371,11 +372,14 @@ ipcMain.handle("hostspan:copy", (event, rawText: unknown) => {
   return { ok: true };
 });
 
-if (!app.requestSingleInstanceLock()) app.quit();
+const ownsSingleInstanceLock = acquireDesktopPrimaryInstance(app);
 app.on("second-instance", () => { const w = createWindow(); w.show(); w.focus(); });
 app.on("window-all-closed", () => undefined);
 
-void app.whenReady().then(async () => {
+// app.quit() on a rejected instance does not guarantee that the already queued
+// whenReady handler will be canceled. Never start another GUI/daemon without
+// holding the process-wide single-instance lock.
+if (ownsSingleInstanceLock) void app.whenReady().then(async () => {
   try {
     prepareDesktopEnvironment();
     configPath = prepareDesktopConfig(app.getPath("userData"));
