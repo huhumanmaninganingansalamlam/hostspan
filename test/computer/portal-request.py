@@ -1,5 +1,6 @@
 """Exercise consent and keyboard dispatch without a desktop/DBus session."""
 import ast
+import ctypes
 from pathlib import Path
 from types import SimpleNamespace
 import uuid
@@ -182,6 +183,62 @@ exec(hold_code, hold_namespace)
 hold_namespace["hold_controlling_visible"]()
 assert hold_events == [("iteration", False), ("sleep", 0.25)]
 
+# XWayland may report GDK pass-through while its ShapeInput still covers the
+# entire strip. The X server's actual input shape must be empty (or fail closed).
+shape_code = compile(ast.Module(body=[node for node in source.body
+    if isinstance(node, ast.FunctionDef) and node.name == "enforce_x11_click_through"],
+    type_ignores=[]), "portal-worker.py", "exec")
+
+
+class XCall:
+    def __init__(self, action):
+        self.action = action
+
+    def __call__(self, *args):
+        return self.action(*args)
+
+
+for injected_rectangles in (0, 1):
+    shape_calls = []
+    native = SimpleNamespace(set_pass_through=lambda enabled: shape_calls.append(("gdk", enabled)))
+    x11 = SimpleNamespace(
+        XOpenDisplay=XCall(lambda name: 101 if name == b":0" else 0),
+        XCloseDisplay=XCall(lambda value: shape_calls.append(("close", value))),
+        XSync=XCall(lambda *args: shape_calls.append(("sync", args[1]))),
+        XFree=XCall(lambda *_: shape_calls.append(("free",))),
+    )
+    def shape_count(display, xid, kind, count, order):
+        assert (display, xid, kind) == (101, 73, 2)
+        count._obj.value = injected_rectangles
+        return None
+
+    xext = SimpleNamespace(
+        XShapeQueryExtension=XCall(lambda *args: 1),
+        XShapeCombineRectangles=XCall(lambda *args: shape_calls.append(("shape", args))),
+        XShapeGetRectangles=XCall(shape_count),
+    )
+    fake_ctypes = SimpleNamespace(
+        CDLL=lambda library: x11 if library == "libX11.so.6" else xext,
+        c_void_p=ctypes.c_void_p, c_char_p=ctypes.c_char_p,
+        c_int=ctypes.c_int, c_ulong=ctypes.c_ulong,
+        POINTER=ctypes.POINTER, byref=ctypes.byref,
+    )
+    shape_namespace = {
+        "ctypes": fake_ctypes, "os": SimpleNamespace(environ={"DISPLAY": ":0"}),
+        "GdkX11": SimpleNamespace(X11Window=SimpleNamespace(get_xid=lambda *_: 73)),
+    }
+    exec(shape_code, shape_namespace)
+    try:
+        shape_namespace["enforce_x11_click_through"](
+            SimpleNamespace(get_window=lambda: native))
+        assert injected_rectangles == 0
+    except RuntimeError as error:
+        assert injected_rectangles == 1 and "not click-through" in str(error)
+    assert ("gdk", True) in shape_calls
+    assert ("shape", (101, 73, 2, 0, 0, None, 0, 0, 0)) in shape_calls
+    assert ("sync", 0) in shape_calls
+    assert shape_calls[-1] == ("close", 101)
+
 # A request returns to a persistent, non-focusing session status strip.
 # Only an explicit session close (or helper teardown) removes it.
 activity_code = compile(ast.Module(body=[node for node in source.body
@@ -217,6 +274,7 @@ namespace = {"activity_window": None, "activity_label": None, "activity_icon": N
                                             get_rgba_visual=lambda: None, get_primary_monitor=lambda: 0,
                                             get_monitor_geometry=lambda i: SimpleNamespace(x=0, y=0, width=1366, height=768))))),
              "Pango": SimpleNamespace(EllipsizeMode=SimpleNamespace(END=3)),
+             "enforce_x11_click_through": lambda window: events.append(("shape_input_empty", ())),
              "os": SimpleNamespace(environ={"DISPLAY": ":0"})}
 exec(activity_code, namespace)
 namespace["activity"]("waiting")
@@ -233,6 +291,7 @@ namespace["activity"]("viewing")
 assert ("set_text", ("HostSpan is viewing this screen",)) in events
 namespace["activity"]("controlling")
 assert ("set_text", ("HostSpan is controlling this screen",)) in events
+assert len([1 for name, _ in events if name == "shape_input_empty"]) == 8
 css = [args[0].decode("utf-8") for name, args in events if name == "load_from_data"]
 assert len(css) == 1 and "border-radius: 8px" in css[0]
 assert "@theme_bg_color" in css[0] and "@theme_fg_color" in css[0]

@@ -1,6 +1,7 @@
 """Session-local Wayland capture/input. Private parent pipe; no listening service."""
 
 import base64
+import ctypes
 import json
 import os
 import select
@@ -15,7 +16,8 @@ import gi
 
 gi.require_version("Gst", "1.0")
 gi.require_version("Gtk", "3.0")
-from gi.repository import GLib, Gst, Gtk, Gdk, Pango
+gi.require_version("GdkX11", "3.0")
+from gi.repository import GLib, Gst, Gtk, Gdk, GdkX11, Pango
 
 DBusGMainLoop(set_as_default=True)
 Gst.init(None)
@@ -44,6 +46,68 @@ activity_card = None
 # parent's automatic observation from replacing the controlling state too fast
 # for a person (or a display refresh) to see it.
 MINIMUM_CONTROLLING_VISIBLE_SECONDS = 0.25
+
+
+def enforce_x11_click_through(window):
+    """Fail closed unless XWayland's actual ShapeInput is empty.
+
+    Gdk.Window.set_pass_through(True) alone can report success while the X11
+    window still has a full-size input region (observed on Ubuntu XWayland).
+    Use XShape directly on this *own* GTK window and verify the server result.
+    No screen, portal grant, or other window is modified.
+    """
+    native = window.get_window()
+    if native is None:
+        raise RuntimeError("Screen access indicator has no native X11 window")
+    native.set_pass_through(True)
+    xid = int(GdkX11.X11Window.get_xid(native))
+    if not xid:
+        raise RuntimeError("Screen access indicator has no X11 window ID")
+
+    x11 = ctypes.CDLL("libX11.so.6")
+    xext = ctypes.CDLL("libXext.so.6")
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    x11.XFree.argtypes = [ctypes.c_void_p]
+    xext.XShapeQueryExtension.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)
+    ]
+    xext.XShapeQueryExtension.restype = ctypes.c_int
+    xext.XShapeCombineRectangles.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int
+    ]
+    xext.XShapeGetRectangles.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)
+    ]
+    xext.XShapeGetRectangles.restype = ctypes.c_void_p
+
+    display_name = os.environ.get("DISPLAY")
+    display = x11.XOpenDisplay(display_name.encode("utf-8") if display_name else None)
+    if not display:
+        raise RuntimeError("Cannot verify screen access indicator X11 input region")
+    try:
+        event = ctypes.c_int()
+        error = ctypes.c_int()
+        if not xext.XShapeQueryExtension(display, ctypes.byref(event), ctypes.byref(error)):
+            raise RuntimeError("X11 Shape extension is required for click-through")
+        # ShapeInput=2, ShapeSet=0, Unsorted=0: no area intercepts a click.
+        xext.XShapeCombineRectangles(display, xid, 2, 0, 0, None, 0, 0, 0)
+        x11.XSync(display, 0)
+        count = ctypes.c_int()
+        ordering = ctypes.c_int()
+        rectangles = xext.XShapeGetRectangles(
+            display, xid, 2, ctypes.byref(count), ctypes.byref(ordering)
+        )
+        if rectangles:
+            x11.XFree(rectangles)
+        if count.value != 0:
+            raise RuntimeError("Screen access indicator is not click-through")
+    finally:
+        x11.XCloseDisplay(display)
 
 
 def activity(state=None):
@@ -134,7 +198,16 @@ def activity(state=None):
     activity_icon.set_from_icon_name(icon_name, Gtk.IconSize.BUTTON)
     activity_icon.set_pixel_size(18)
     activity_label.set_text(message)
-    activity_window.show_all()
+    # Set ShapeInput before mapping as well as after; GTK/XWayland can reset
+    # the input shape while mapping or changing the displayed status.
+    try:
+        activity_window.realize()
+        enforce_x11_click_through(activity_window)
+        activity_window.show_all()
+        enforce_x11_click_through(activity_window)
+    except Exception:
+        activity(None)
+        raise
     # Keep the strip inside the primary monitor's usable top-right corner.
     screen = activity_window.get_screen()
     primary = screen.get_primary_monitor()
