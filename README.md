@@ -22,7 +22,7 @@ The MCP tool registry is versioned as `hostspan-v3.5` (v0.11.0):
 
 Every file/process request names a persistent `target_id`; no ChatGPT session ID or temporary workspace handle is product state. File mutation uses expected SHA-256 values, dry-run/staging, per-file atomic replacement, a durable transaction journal, and postcondition hashes. Non-interactive commands use the durable native process supervisor. Interactive commands use the same `process_id` lifecycle through a HostSpan-owned, daemon-independent PTY session worker: start with `tty=true`, read through `process_poll`, write/resize through `process_write`, and close through `process_cancel`.
 
-Linux x64 and both macOS architectures use Unix PTYs and POSIX process groups. Native Windows x64 uses ConPTY plus a Job Object-backed process-tree controller. WSL2 remains a Linux runtime and is not counted as Windows qualification. Linux x64, native Windows x64, and both native macOS architectures have passed the full core gate, installed CLI smoke, and packaged-runtime verification. The installed macOS arm64 app was also smoked on a separate native Mac. GUI observation/input/result verification has passed through the Linux Wayland portal backend in source and packaged runtimes; Windows/macOS GUI and browser DOM integration are not implemented. Multi-host routing, LSP/CodeGraph, and claims of sandboxed execution remain out of scope.
+Linux x64 and both macOS architectures use Unix PTYs and POSIX process groups. Native Windows x64 uses ConPTY plus a Job Object-backed process-tree controller. WSL2 remains a Linux runtime and is not counted as Windows qualification. Linux x64, native Windows x64, and both native macOS architectures have passed the full core gate, installed CLI smoke, and packaged-runtime verification. The installed macOS arm64 app was also smoked on a separate native Mac. Native macOS 14+, Windows and GNOME Wayland Computer Use are packaged with OS-specific permission and interactive-session guards. The v0.13.0 pre-release qualification covers real owned-window input and desktop indicator lifecycle across the three OS families; macOS actual post-grant permission revocation and Ubuntu actual OS stop-sharing were tested on their respective native environments. This does not constitute all-hardware qualification. Browser DOM integration, server-side multi-host routing, LSP/CodeGraph, and claims of sandboxed execution remain out of scope.
 
 ## Requirements
 
@@ -43,6 +43,20 @@ node dist/src/cli/index.js --version
 ```
 
 During development, commands below can be run as `node dist/src/cli/index.js <command>`. After installing the package binary, use `hostspan <command>`.
+
+### Build identity and diagnostics
+
+`pnpm build` embeds `dist/src/build-identity.json` into CLI and desktop packages. The receipt records the full Git commit, Git tree object ID and its actual object format (`sha1` or `sha256`), build variant (`development`, `candidate`, or `release`), dirty state, and a deterministic receipt `build_id`. It contains no absolute source path or build timestamp. Installed executables read the embedded receipt; they do **not** run Git or require a checkout.
+
+```bash
+hostspan --version --verbose  # packaged CLI identity, without loading a config
+hostspan status --verbose     # local configuration and installed identity
+hostspan admin snapshot      # detailed local operator state
+```
+
+The authenticated MCP `system_status`, support export, and desktop dashboard also include the build identity. Public `/healthz` exposes only the opaque `build_id`, not the source commit/tree. The local dashboard identifies the *installed app*, while an already-running daemon may still use an older build until explicitly restarted; query that daemon's `system_status` to confirm the loaded runtime. A missing/invalid receipt is reported as `development` with unknown fields, never mistaken for a release.
+
+Release workflows set `HOSTSPAN_BUILD_VARIANT=release` and fail if Git identity cannot be determined or the working tree is dirty. The `build_id` fingerprints the declared receipt; it is **not** a signed attestation or an SHA-256 of the installer. Distributed artifacts should have their own checksums.
 
 ## Quick start
 
@@ -75,6 +89,19 @@ For a complete file, use `file_read(start_byte=0)` and continue from `next_byte`
 
 Recover lost execution IDs with read-only `process_list(target_id, cwd)`; it lists active HostSpan-owned processes in that directory and descendants. Use `active_only=false` for completed work and the returned `cursor` for another page. Poll the recovered ID using its output cursors. `exit_code_scope=spawned_command` identifies the wrapper's exit status; read a nested program's result file separately. Continue polling while `has_more_output`; `output_expired` and dropped-byte counters distinguish expired or evicted history from empty output.
 
+If your native client has no registered HostSpan `process_list` or `process_poll` tool, use the installed CLI on the HostSpan host as the same profile owner. A ChatGPT plugin connection does not itself register tools in a separate native client. The CLI uses the existing authenticated local daemon channel and the same polling handler; it does not start a process, attach a terminal, or require another OAuth flow:
+
+```bash
+hostspan process list --target TARGET --cwd project/relative/path --active-only false \
+  --limit 100 --config /path/to/config.yaml
+hostspan process poll --process ORIGINAL_PROCESS_ID --config /path/to/config.yaml \
+  --stdout-cursor 0 --stderr-cursor 0 --wait-ms 1000 --max-bytes 65536
+```
+
+List defaults to active records only; use `--active-only false` for terminal and unknown records. Continue a truncated list with `--cursor` from that response. Listings contain lifecycle metadata, not command arguments, environment or output. Directory membership does not prove caller/task binding, and recorded state is not a fresh OS liveness check. Only existing configured targets and allowed paths are visible.
+
+Use your retained cursors instead of `0` after an earlier read, then continue with `next_stdout_cursor` and `next_stderr_cursor`. `wait_ms` is 0–1500 (default 0); `max_bytes` is 1–4194304 (default 131072). `has_more_output` covers the available output at that response, not process completion. Read `state`, `exit_code` and `signal` separately; a successful CLI retrieval exits 0 even when the original command failed. `output_expired`, `stdout_dropped_bytes`, `stderr_dropped_bytes` and earliest cursors identify unavailable history. A missing or older daemon returns `TARGET_NOT_READY`; it never triggers a reconnect, restarts the daemon, or replays the command. Keep one recovery owner for the original process.
+
 `file_read` may scan forward to a requested late line independently of the response `max_bytes`, but each call has a fixed 64 MiB line-scan ceiling. Requests beyond that bound fail explicitly with `reason=file_read_scan_limit`; use `file_search` to narrow the location first rather than turning one read into an unbounded filesystem scan.
 
 ## Run the server
@@ -91,11 +118,11 @@ Health    http://127.0.0.1:39393/healthz
 Readiness http://127.0.0.1:39393/readyz
 ```
 
-The default bind is loopback-only, but `server.listen_host` is configurable for LAN/container/reverse-proxy deployments. Host header validation remains enabled for every bind. **Any non-loopback HostSpan server additionally requires built-in OAuth and fails closed when OAuth is missing.** `readyz` represents server/database readiness; missing ripgrep is reported as degraded so non-search tools stay usable, while `file_search` returns `SEARCH_BACKEND_UNAVAILABLE`.
+The default bind is loopback-only, but `server.listen_host` is configurable for LAN/container/reverse-proxy deployments. Host header validation remains enabled for every bind. **Every non-loopback listener requires explicit OAuth or a protected private-direct `private_token` profile; `none` remains loopback-only.** `readyz` represents server/database readiness; missing ripgrep is reported as degraded so non-search tools stay usable, while `file_search` returns `SEARCH_BACKEND_UNAVAILABLE`.
 
 Process response budgets and execution lifetime are separate. `wait_ms` bounds response waiting and `max_bytes` bounds returned output. Omit `deadline_ms` to run without an implicit deadline, set it for an explicit timeout, or use `process_cancel`. `max_output_bytes` caps retained output; filling it stops capture, never the process. `output_budget` reports the retained bytes and remaining capacity. Later output is drained but not retained; human PTY attachments still receive live output. Redirect full logs to a target file when needed.
 
-HostSpan also applies local overload and retention boundaries so several agents cannot amplify one burst into unbounded host work. Defaults are 128 in-flight MCP requests and 8 concurrent ripgrep searches with 16 queued; the search queue times out after 1 second. Search overflow returns retryable `SERVER_BUSY`. Native execution and PTY sessions each default to 16 concurrent processes per target; reaching capacity also returns retryable `SERVER_BUSY`. Existing configurations with explicit limits retain those values until changed and the daemon is restarted. Durable audit history is bounded by both `audit_days` and `max_audit_events` (500,000 by default). Completed process output expires after 60 minutes by default, the retained spool budget defaults to 1 GiB, and old operation response payloads are compacted after 14 days without deleting their idempotency-key tombstones. Once those payloads and retained output are gone, redundant completed process/patch detail rows are also pruned while the operation tombstone remains.
+HostSpan also applies local overload and retention boundaries so several agents cannot amplify one burst into unbounded host work. Defaults are 128 in-flight MCP requests and 8 concurrent ripgrep searches with 16 queued; the search queue times out after 1 second. Search overflow returns retryable `SERVER_BUSY`. Native execution and PTY sessions each default to 16 concurrent processes per target; reaching capacity also returns retryable `SERVER_BUSY`. Existing configurations with explicit limits retain those values until changed and the daemon is restarted. Durable audit history is bounded by both `audit_days` and `max_audit_events` (500,000 by default). New or omitted settings retain completed process output for up to 24 hours (1,440 minutes) by default; explicit existing TTL settings remain unchanged. This is not a minimum guarantee: process output caps and the 1 GiB spool budget can cause earlier output loss/eviction, reflected by expiry and dropped-byte metadata. Old operation response payloads are compacted after 14 days without deleting their idempotency-key tombstones. Once those payloads and retained output are gone, redundant completed process/patch detail rows are also pruned while the operation tombstone remains.
 
 ```yaml
 server:
@@ -105,7 +132,7 @@ server:
   search_queue_timeout_ms: 1000
 
 retention:
-  completed_process_output_ttl_minutes: 60
+  completed_process_output_ttl_minutes: 1440
   operation_result_days: 14
   audit_days: 30
   max_audit_events: 500000
@@ -194,13 +221,35 @@ server:
 
 `listen_host: ::` works the same way for all IPv6 interfaces and also requires non-empty `allowed_hosts`. Entries are hostname/IP values only—no scheme, path, or port.
 
-Before starting any non-loopback/public deployment, initialize HostSpan OAuth with the exact public MCP URL:
+For a public non-loopback endpoint, initialize HostSpan OAuth with the exact public MCP URL:
 
 ```bash
 hostspan oauth init --public-url https://mcp.example.com/mcp
 ```
 
 The command adds the public hostname to `allowed_hosts`, persists only a salted scrypt hash of the approval credential, and writes the recoverable credential to a local mode-`0600` `approval_secret_file`. Access tokens are short-lived, refresh tokens rotate, and authorization-code/access/refresh token values are stored in SQLite only as hashes.
+
+A separate private-direct option uses explicit `authentication.mode: private_token` on an exact IP assigned to an operator-approved encrypted private network. It works with different VPN/private-link implementations; Tailscale is only one possible deployment transport. It is **not** safe to expose over plain LAN or public HTTP. Example fragment (substitute an actual approved interface IP):
+
+```yaml
+authentication:
+  mode: private_token
+  protected_transport: encrypted_private_network
+server:
+  listen_host: YOUR_APPROVED_INTERFACE_IP
+  allowed_hosts: [YOUR_APPROVED_INTERFACE_IP]
+```
+
+Issue a distinct scope-limited credential for each MCP client from the local administrative terminal, then configure that client to send it as `Authorization: Bearer <token>` on every request:
+
+```bash
+hostspan access token create --name agent-a --scopes hostspan.read --output /private/path/agent-a.token
+hostspan access token list
+hostspan access token rotate TOKEN_ID --output /private/path/agent-a-rotated.token
+hostspan access token revoke TOKEN_ID
+```
+
+`--output` creates a protected file, never prints the secret to command output, and refuses overwrite. `--show` is reserved for a trusted interactive TTY. The server verifies a hash-only credential, enforces the same five tool scopes as OAuth, and does not expose OAuth discovery in this mode. The setting `protected_transport` is an explicit operator security assertion; HostSpan cannot detect encryption solely from an IP. See [Security model](docs/SECURITY.md) for transport, Host, and token lifecycle requirements.
 
 If you want a normal public MCP endpoint instead of Secure MCP Tunnel, run your own reverse proxy in front of HostSpan. A same-host proxy can keep HostSpan on loopback:
 
@@ -211,7 +260,7 @@ MCP client
   -> http://127.0.0.1:39393/mcp
 ```
 
-Preserve the public `Host` header so HostSpan can validate it against the hostname added by `hostspan oauth init`. If your proxy runs in another container/VM/host, bind HostSpan to a reachable private IP or `0.0.0.0`/`::`; OAuth is still mandatory for that non-loopback server.
+Preserve the public `Host` header so HostSpan can validate it against the hostname added by `hostspan oauth init`. If your public OAuth proxy runs in another container/VM/host, bind HostSpan to a reachable interface with a narrow Host allowlist; OAuth remains mandatory for that public profile. The separate private-token profile disallows wildcard binds.
 
 Example Caddy upstream:
 
@@ -316,7 +365,7 @@ The `computer` tool connects observation, input and a fresh PNG observation in t
 
 Linux requirements: `/usr/bin/python3` with PyGObject, dbus-python, GStreamer introspection and `pipewiresrc`, `videoconvert`, `pngenc`, `appsink`; a working session D-Bus and RemoteDesktop/ScreenCast portal backend. Exact text paste additionally requires the portal Clipboard interface and its session grant. macOS 14+ uses the bundled ScreenCaptureKit/CoreGraphics helper; Windows uses Windows PowerShell with Windows Forms/GDI and SendInput. OS permission, locked desktops, protected content and Windows UIPI still apply. Packages bundle helpers, not host desktop services. No display/security setup is changed automatically.
 
-For private-IP access to another computer, run HostSpan in that guest's logged-in desktop with its normal loopback listener, then forward it through your existing authenticated SSH connection, for example `ssh -NT -o ExitOnForwardFailure=yes -L 127.0.0.1:13906:127.0.0.1:39393 user@100.64.0.6`. Connect your MCP client to `http://127.0.0.1:13906/mcp`. The screen belongs to that guest, not the SSH client. SSH carries the loopback connection; it does not move a Session 0 daemon into an interactive Windows session. A non-loopback HostSpan listener still requires OAuth.
+For private-IP access to another computer, run HostSpan in that guest's logged-in desktop with its normal loopback listener, then forward it through your existing authenticated SSH connection, for example `ssh -NT -o ExitOnForwardFailure=yes -L 127.0.0.1:13906:127.0.0.1:39393 user@100.64.0.6`. Connect your MCP client to `http://127.0.0.1:13906/mcp`. The screen belongs to that guest, not the SSH client. SSH carries the loopback connection; it does not move a Session 0 daemon into an interactive Windows session. A non-loopback HostSpan listener requires OAuth or explicit scope-limited `private_token` authentication over an approved encrypted private path.
 
 Call `open`, retain `session_id`, then `observe` until consent completes. The image response includes `observation_id`, image dimensions and `coordinate_width/height`; convert resized image coordinates to the latter before clicking. Call `click`, `move`, `scroll`, `key` or `text` with that observation ID and a new idempotency key. `text` writes only the supplied UTF-8 text to the consented clipboard and pastes it; this replaces clipboard content and never reads/restores prior clipboard data. Input returns `dispatched` separately from `outcome_verified`; inspect the fresh image for the actual outcome. When a response is lost, reuse the identical key/arguments; an unknown delivery is never replayed. Call `close` to release the portal session.
 

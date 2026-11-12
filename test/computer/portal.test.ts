@@ -1,16 +1,58 @@
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, expect, it, vi } from "vitest";
 import { ComputerInputSchema, PortalDesktop } from "../../src/computer/portal.js";
+import { errorResult } from "../../src/mcp/result.js";
 import { openDatabase } from "../../src/state/database.js";
 import { OperationsRepo } from "../../src/state/operations-repo.js";
 
 vi.mock("node:child_process", async (original) => ({ ...await original<typeof import("node:child_process")>(), spawn: vi.fn() }));
 afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks(); vi.useRealTimers(); });
 
+it.skipIf(process.platform !== "darwin")("rejects locked desktop use without capture, input, consent or session loss", () => {
+  const directory = mkdtempSync(join(tmpdir(), "hostspan-desktop-availability-"));
+  try {
+    const fixture = join(directory, "availability-test");
+    execFileSync("xcrun", ["swiftc", "-parse-as-library", "-D", "HOSTSPAN_DESKTOP_AVAILABILITY_TEST",
+      "src/computer/native-macos.swift", "test/computer/native-macos-availability.swift", "-o", fixture],
+    { stdio: "pipe", timeout: 90_000 });
+    expect(execFileSync(fixture, { encoding: "utf8", timeout: 10_000 })).toContain("PASS:");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 110_000);
+
 it.skipIf(process.platform !== "linux")("waits for actual consent and balances physical keys without clipboard access", () => {
   execFileSync("python3", ["-I", "test/computer/portal-request.py"], { stdio: "pipe" });
+});
+
+it.skipIf(process.platform !== "win32")("validates Windows chords and releases keys on failure without OS input", () => {
+  execFileSync("powershell.exe", ["-NoProfile", "-Sta", "-File", "test/computer/native-windows-key.ps1"], { stdio: "pipe" });
+});
+
+it("advertises Alt and Meta only on Windows and rejects duplicate or unsupported modifiers", async () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  const key = { action: "key", key: "KeyE", session_id: "00000000-0000-4000-8000-000000000001",
+    observation_id: "00000000-0000-4000-8000-000000000002", idempotency_key: "windows-chord" };
+  try {
+    for (const os of ["win32", "linux", "darwin"]) {
+      Object.defineProperty(process, "platform", { value: os });
+      vi.resetModules();
+      const schema = (await import("../../src/computer/portal.js")).ComputerInputSchema;
+      for (const modifiers of [["Meta"], ["Alt"], ["Shift", "Alt", "Meta"]]) {
+        expect(schema.safeParse({ ...key, modifiers }).success).toBe(os === "win32");
+      }
+      expect(schema.safeParse({ ...key, key: "Tab", modifiers: ["Alt"] }).success).toBe(os === "win32");
+      for (const modifiers of [["Alt", "Alt"], ["Meta", "Meta"], ["Control"], ["Win"], ["meta"], "Meta", null]) {
+        expect(schema.safeParse({ ...key, modifiers }).success).toBe(false);
+      }
+    }
+  } finally {
+    if (platform) Object.defineProperty(process, "platform", platform);
+    vi.resetModules();
+  }
 });
 
 it("accepts physical key positions and optional Shift without changing legacy arguments", () => {
@@ -34,6 +76,9 @@ it("uses the native helper with the same session, observation and cancellation c
   Object.defineProperty(process, "platform", { value: "win32" });
   const commands: Array<Record<string, unknown>> = [];
   let capturePending = true;
+  let desktopLocked = false;
+  let inputErrorDetails: Record<string, unknown> | undefined;
+  const lockDetails = { reason: "macos_desktop_locked", dispatched: false };
   const pendingCaptureDetails = { reason: "native_capture_pending", capture_phase: "screen_capture", retry_after_ms: 1000 };
   function makeWorker() {
     const worker = Object.assign(new EventEmitter(), {
@@ -42,6 +87,13 @@ it("uses the native helper with the same session, observation and cancellation c
     worker.stdin.on("data", (data: Buffer) => {
       const command = JSON.parse(data.toString()) as Record<string, unknown>;
       commands.push(command);
+      const details = command.action === "observe" && desktopLocked ? lockDetails
+        : command.action === "key" ? inputErrorDetails : undefined;
+      if (details) {
+        queueMicrotask(() => worker.stdout.write(`${JSON.stringify({ id: command.id,
+          error: "Desktop capture and input unavailable", error_details: details })}\n`));
+        return;
+      }
       if (command.action === "observe" && capturePending) {
         capturePending = false;
         queueMicrotask(() => worker.stdout.write(`${JSON.stringify({ id: command.id,
@@ -105,6 +157,47 @@ it("uses the native helper with the same session, observation and cancellation c
     expect(commands).toHaveLength(commandCount);
     expect(await desktop.run({ action: "observe", session_id: opened.session_id })).toMatchObject({
       session_id: opened.session_id, state: "ready" });
+
+    desktopLocked = true;
+    const lockedCapture = await desktop.run({ action: "observe", session_id: opened.session_id }).catch((error: unknown) => error);
+    expect(lockedCapture).toMatchObject({ code: "TARGET_NOT_READY", details: lockDetails });
+    expect(errorResult({ toolset_hash: "fixture", policy_epoch: 1 }, lockedCapture)).toMatchObject({
+      isError: true, structuredContent: { error: { code: "TARGET_NOT_READY", details: lockDetails } },
+    });
+    expect(errorResult({ toolset_hash: "fixture", policy_epoch: 1 }, lockedCapture)).not.toHaveProperty("_meta");
+    expect(desktop.status()).toMatchObject({ state: "unavailable", frame_ready: false, session_id: opened.session_id });
+    expect(desktop.status()).not.toHaveProperty("required_os_permission");
+    expect(desktop.status().next_action).toMatchObject({ arguments: { action: "observe", session_id: opened.session_id } });
+    desktopLocked = false;
+    image = await desktop.run({ action: "observe", session_id: opened.session_id });
+    inputErrorDetails = lockDetails;
+    const rejectedKey = { ...physical, observation_id: image.observation_id, idempotency_key: "locked-before-key" };
+    await expect(desktop.run(rejectedKey)).rejects.toMatchObject({ code: "TARGET_NOT_READY", details: lockDetails });
+    expect(oldOperations.getState(rejectedKey.idempotency_key)).toBe("failed");
+    expect(desktop.status()).toMatchObject({ state: "unavailable", frame_ready: false, session_id: opened.session_id });
+    const afterRejection = commands.length;
+    await expect(desktop.run(rejectedKey)).rejects.toMatchObject({ code: "TARGET_NOT_READY", details: lockDetails });
+    expect(commands).toHaveLength(afterRejection);
+    inputErrorDetails = undefined;
+    image = await desktop.run({ action: "observe", session_id: opened.session_id });
+    expect(image).toMatchObject({ state: "ready", session_id: opened.session_id });
+    desktopLocked = true;
+    const sentKey = { ...physical, observation_id: image.observation_id, idempotency_key: "sent-before-lock" };
+    expect(await desktop.run(sentKey)).toMatchObject({ state: "completed", dispatched: true,
+      observation_required: true, observation_error_details: lockDetails });
+    expect(oldOperations.getState(sentKey.idempotency_key)).toBe("completed");
+    const afterSent = commands.length;
+    expect(await desktop.run(sentKey)).toMatchObject({ replayed: true, dispatched: true });
+    expect(commands).toHaveLength(afterSent);
+    desktopLocked = false;
+    image = await desktop.run({ action: "observe", session_id: opened.session_id });
+    // A missing explicit no-dispatch guarantee must retain ambiguity and never replay.
+    inputErrorDetails = { reason: "macos_desktop_locked" };
+    const uncertainKey = { ...physical, observation_id: image.observation_id, idempotency_key: "uncertain-key" };
+    expect(await desktop.run(uncertainKey)).toMatchObject({ state: "unknown", dispatched: "unknown" });
+    const afterUncertain = commands.length;
+    expect(await desktop.run(uncertainKey)).toMatchObject({ state: "unknown", dispatched: "unknown" });
+    expect(commands).toHaveLength(afterUncertain);
     expect(worker.kill).not.toHaveBeenCalled();
     expect(await desktop.run({ action: "close", session_id: opened.session_id })).toMatchObject({ state: "closed" });
     expect(worker.kill).toHaveBeenCalledOnce();
@@ -156,11 +249,14 @@ it.skipIf(process.platform !== "linux")("keeps a timed-out observation alive, co
     const input = { action: "text", session_id: opened.session_id, observation_id: first.observation_id,
       text: "already-delivered", idempotency_key: "slow-followup" };
     const delivered = desktop.run(input);
+    expect(desktop.status()).toMatchObject({ state: "processing", activity: "controlling" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(desktop.status()).toMatchObject({ state: "processing", activity: "viewing" });
     await vi.advanceTimersByTimeAsync(10_000);
     expect(await delivered).toMatchObject({ state: "completed", dispatched: true, clipboard_modified: true,
       observation_required: true, observation_error_details: { reason: "desktop_observation_timeout" },
       next_action: { arguments: { action: "observe", session_id: opened.session_id } } });
-    expect(desktop.status()).toMatchObject({ session_id: opened.session_id, state: "processing" });
+    expect(desktop.status()).toMatchObject({ session_id: opened.session_id, state: "processing", activity: "viewing" });
     expect(worker.kill).not.toHaveBeenCalled();
     const count = commands.length;
     expect(await desktop.run(input)).toMatchObject({ dispatched: true, replayed: true });
@@ -180,6 +276,7 @@ it.skipIf(process.platform !== "linux")("keeps a timed-out observation alive, co
     reply(capture, frame);
     const recovered = await desktop.run({ action: "observe", session_id: opened.session_id });
     expect(recovered).toMatchObject({ session_id: opened.session_id, state: "ready", image: "cG5n" });
+    expect(desktop.status()).not.toHaveProperty("activity");
     expect(commands).toHaveLength(count);
     expect(worker.kill).not.toHaveBeenCalled();
 
@@ -303,7 +400,8 @@ it.skipIf(process.platform !== "linux")("observes after input and never resends 
     await Promise.resolve();
     expect(desktop.status()).toMatchObject({ state: "ready", session_id: reopened.session_id });
     // The portal notifies the owner when OS sharing is revoked. The next open must request fresh consent.
-    currentWorker!.stdout.emit("data", '{"event":"closed"}\n');
+    if (!currentWorker) throw new Error("Missing current portal worker");
+    currentWorker.stdout.emit("data", '{"event":"closed"}\n');
     expect(desktop.status()).toMatchObject({ state: "failed", next_action: { arguments: { action: "open" } } });
     await expect(desktop.run({ action: "observe", session_id: reopened.session_id })).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
     expect(await desktop.run(input)).toMatchObject({ replayed: true, dispatched: true, session_id: first.session_id, pipewire_node_id: 73 });

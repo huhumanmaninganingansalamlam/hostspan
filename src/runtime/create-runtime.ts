@@ -6,7 +6,8 @@ import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { OAuthService } from "../auth/oauth-service.js";
-import type { HostSpanConfig } from "../config/schema.js";
+import { PrivateTokenStore } from "../auth/private-token.js";
+import { TerminalConfigSchema, resolveAuthenticationMode, type HostSpanAuthMode, type HostSpanConfig } from "../config/schema.js";
 import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath, oauthApprovalSecretPath } from "../config/paths.js";
 import { fileList } from "../files/list.js";
@@ -16,7 +17,7 @@ import { fileRead } from "../files/read.js";
 import { fileSearch } from "../files/search.js";
 import { ripgrepExecutable } from "../files/ripgrep.js";
 import { asHostSpanError } from "../errors.js";
-import { TOOL_NAMES, TOOLSET_HASH, type HostSpanToolAuthorization, type HostSpanToolHandlers, type ToolCaller } from "../mcp/registry.js";
+import { TOOL_NAMES, toolsetHash, type HostSpanToolAuthorization, type HostSpanToolHandlers, type ToolCaller } from "../mcp/registry.js";
 import type {
   FileListToolInput,
   FilePatchToolInput,
@@ -53,11 +54,13 @@ import { OAuthRepo } from "../state/oauth-repo.js";
 import { ProcessesRepo } from "../state/processes-repo.js";
 import { TransactionsRepo } from "../state/transactions-repo.js";
 import { targetConfigDigest, TargetRegistry } from "../targets/registry.js";
-import { PROTOCOL_VERSION, SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
+import { BUILD_IDENTITY, PROTOCOL_VERSION, SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
 import { BoundedConcurrencyLimiter } from "./concurrency-limiter.js";
 
 export interface HostSpanRuntime {
   config: HostSpanConfig;
+  authenticationMode: HostSpanAuthMode;
+  privateTokens?: PrivateTokenStore;
   configPath: string;
   db: HostSpanDatabase;
   targets: TargetRegistry;
@@ -93,7 +96,7 @@ export function runtimeReadiness(runtime: HostSpanRuntime) {
   return {
     ready: databaseReady && processReady,
     degraded: !searchReady || !terminalReady,
-    toolset_hash: TOOLSET_HASH,
+    toolset_hash: toolsetHash(runtime.authenticationMode),
     policy_epoch: runtime.config.policy_epoch,
     backends: {
       database: databaseReady,
@@ -145,12 +148,20 @@ export function createRuntime(
 ): HostSpanRuntime {
   const resolvedConfigPath = resolve(configPath);
   const config = loadConfig(resolvedConfigPath);
+  const authenticationMode = resolveAuthenticationMode(config);
   protectWindowsFile(resolvedConfigPath);
   protectWindowsFile(`${resolvedConfigPath}.bak`);
   protectWindowsFile(oauthApprovalSecretPath(resolvedConfigPath));
   protectWindowsTree(config.server.data_dir);
   const targets = new TargetRegistry(config);
   const db = openDatabase(join(config.server.data_dir, "state.db"));
+  let privateTokens: PrivateTokenStore | undefined;
+  try {
+    if (authenticationMode === "private_token") privateTokens = new PrivateTokenStore(config.server.data_dir);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
   const operations = new OperationsRepo(db);
   const processes = new ProcessesRepo(db);
   const computer = config.computer ? new PortalDesktop(operations, config.computer.backend) : undefined;
@@ -167,10 +178,12 @@ export function createRuntime(
     resolvedConfigPath,
     `${resolvedConfigPath}.bak`,
     oauthApprovalSecretPath(resolvedConfigPath),
+    join(config.server.data_dir, "private-access.db"),
   ]);
   const terminal = config.terminal
     ? new PtySessionManager(config.server.data_dir, config.terminal, { requireOwnership: true, configPath: resolvedConfigPath })
     : undefined;
+  const native = new PtySessionManager(config.server.data_dir, TerminalConfigSchema.parse({}), { requireOwnership: true, backend: "native" });
   let runtimeActive = false;
   const runRetentionMaintenance = () => {
     const now = new Date().toISOString();
@@ -223,7 +236,9 @@ export function createRuntime(
   };
   const activate = (): void => {
     if (runtimeActive) return;
-    if (terminal) terminal.activateOwnership(claimRuntimeGeneration(db));
+    const generation = claimRuntimeGeneration(db);
+    native.activateOwnership(generation);
+    terminal?.activateOwnership(generation);
     recoverPatchTransactions(targets, transactions);
     const removedPatchJournals = cleanupTerminalPatchJournals(transactions);
     if (removedPatchJournals.length) logger.info("patch.journals_cleaned", { count: removedPatchJournals.length });
@@ -244,6 +259,7 @@ export function createRuntime(
       operations,
       terminal,
       config.retention.completed_process_output_ttl_minutes,
+      native,
     );
     for (const recovered of recoveredProcesses) logger.info("process.recovered", recovered);
     runtimeActive = true;
@@ -252,7 +268,7 @@ export function createRuntime(
   if (!options.deferActivation) activate();
 
   const patchService = new FilePatchService({ data_dir: config.server.data_dir, operations, transactions, policy });
-  const supervisor = new ProcessSupervisor({ config, targets, policy, operations, processes, ...(terminal ? { terminal } : {}), logger });
+  const supervisor = new ProcessSupervisor({ config, targets, policy, operations, processes, native, ...(terminal ? { terminal } : {}), logger });
   let closing = false;
   let processMaintenanceInflight: Promise<void> | undefined;
   let closeRuntimePromise: Promise<void> | undefined;
@@ -354,6 +370,7 @@ export function createRuntime(
         const processReady = isQualifiedCorePlatform();
         return {
           server_version: SERVER_VERSION,
+          build: BUILD_IDENTITY,
           host: { hostname: hostname(), platform: process.platform, arch: process.arch },
           protocol_version: PROTOCOL_VERSION,
           toolset_version: TOOLSET_VERSION,
@@ -451,6 +468,8 @@ export function createRuntime(
 
   return {
     config,
+    authenticationMode,
+    ...(privateTokens ? { privateTokens } : {}),
     configPath: resolvedConfigPath,
     db,
     targets,
@@ -480,6 +499,7 @@ export function createRuntime(
         await processMaintenanceInflight;
         await supervisor.settleForRuntimeClose();
         if (db.open) db.close();
+        privateTokens?.close();
       })();
       return closeRuntimePromise;
     },

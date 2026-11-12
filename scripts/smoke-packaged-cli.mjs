@@ -103,6 +103,8 @@ function smokeWindowsPackage(executable, asarPath, arch) {
 		throw new Error("Packaged ASAR is missing the HostSpan CLI entrypoint");
 	if (!entries.has("/dist/src/desktop/main.js"))
 		throw new Error("Packaged ASAR is missing the HostSpan desktop entrypoint");
+	if (!entries.has("/dist/src/build-identity.json"))
+		throw new Error("Packaged ASAR is missing the immutable build identity");
 	if (!entries.has("/assets/icons/app.ico"))
 		throw new Error("Packaged ASAR is missing the Windows application icon payload");
 
@@ -145,6 +147,11 @@ function smokePackagedRuntime(executable, cli, runtime, nativeModule, ptyModule,
 		throw new Error(
 			`Packaged CLI version ${version} does not match package.json ${packageJson.version}`,
 		);
+	}
+
+	const verbose = JSON.parse(run(executable, [cli, "--version", "--verbose"]));
+	if (verbose.server_version !== packageJson.version || !verbose.build?.build_id) {
+		throw new Error("Packaged desktop runtime has no known build identity");
 	}
 
 	const nativeProbe = [
@@ -302,6 +309,9 @@ function smokePackagedRuntime(executable, cli, runtime, nativeModule, ptyModule,
 				`Packaged admin snapshot version mismatch: ${snapshot.server_version}`,
 			);
 		}
+		if (JSON.stringify(snapshot.build) !== JSON.stringify(verbose.build)) {
+			throw new Error("Packaged desktop CLI and admin snapshot disagree on build identity");
+		}
 	} finally {
 		rmSync(scratch, { recursive: true, force: true });
 	}
@@ -309,6 +319,21 @@ function smokePackagedRuntime(executable, cli, runtime, nativeModule, ptyModule,
 	console.log(
 		`Packaged HostSpan smoke passed: ${targetPlatform}/${targetArch} ${packageJson.version}`,
 	);
+}
+
+function assertLinuxPackagePermissions(appDir) {
+	const pending = [appDir];
+	while (pending.length > 0) {
+		const entry = pending.pop();
+		const stat = lstatSync(entry);
+		if (stat.isSymbolicLink()) continue;
+		if ((stat.mode & 0o022) !== 0) {
+			throw new Error("Unsafe group/other writable Linux package entry: " + entry);
+		}
+		if (stat.isDirectory()) {
+			for (const name of readdirSync(entry)) pending.push(join(entry, name));
+		}
+	}
 }
 
 function smokeLinuxArtifact(artifactPath) {
@@ -322,6 +347,27 @@ function smokeLinuxArtifact(artifactPath) {
 			if (extracted.status !== 0) {
 				throw new Error(`Could not extract Debian package: ${extracted.stderr || extracted.stdout}`);
 			}
+
+			const controlDir = join(scratch, "deb-control");
+			const controls = spawnSync("dpkg-deb", ["-e", artifactPath, controlDir], { encoding: "utf8" });
+			if (controls.status !== 0) {
+			    throw new Error("Could not inspect Debian post-install hook: " + (controls.stderr || controls.stdout));
+			}
+			const postinst = readFileSync(join(controlDir, "postinst"), "utf8");
+			for (const required of [
+			    "HostSpan install/upgrade hardening",
+			    'hostspan_install_root=\'/opt/HostSpan\'',
+			    "find -P",
+			    "-perm /022",
+			    "chmod go-w",
+			    "update-alternatives",
+			    "chrome-sandbox",
+			    "apparmor_parser",
+			]) {
+			    if (!postinst.includes(required)) {
+			        throw new Error("Debian post-install hook lacks required hardening or sandbox setup: " + required);
+			    }
+			}
 			appDir = join(debRoot, "opt", "HostSpan");
 		} else {
 			const extracted = spawnSync(artifactPath, ["--appimage-extract"], {
@@ -334,6 +380,7 @@ function smokeLinuxArtifact(artifactPath) {
 			}
 			appDir = join(scratch, "squashfs-root");
 		}
+		assertLinuxPackagePermissions(appDir);
 		const paths = packagedPaths(join(appDir, "resources", "app.asar"), "linux");
 		if (!existsSync(paths.executable)) {
 			throw new Error(`Linux package executable not found: ${paths.executable}`);

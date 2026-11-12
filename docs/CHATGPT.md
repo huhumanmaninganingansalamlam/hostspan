@@ -2,7 +2,7 @@
 
 HostSpan is designed for ChatGPT Web Developer Mode through OpenAI Secure MCP Tunnel.
 
-As an alternative, you can operate any ordinary HTTPS reverse proxy or tunnel gateway yourself. HostSpan does not create or manage provider-specific public endpoints. Non-loopback HostSpan requires its built-in OAuth layer.
+You can also operate a user-managed HTTPS reverse proxy or tunnel gateway. HostSpan does not create or manage public endpoints. Public non-loopback profiles require OAuth. Separately, an encrypted private-network MCP client can use `private_token` with an exact interface bind and scoped bearer credentials; the ChatGPT Web path below does not assume private IP reachability or static-header support. See [private-direct setup](../README.md).
 
 ## 1. Verify HostSpan locally
 
@@ -65,7 +65,7 @@ server:
   data_dir: ~/.local/state/hostspan
 ```
 
-Wildcard binds (`0.0.0.0` or `::`) fail configuration validation unless `allowed_hosts` is non-empty. A specific bind such as `192.168.10.20` automatically permits that Host value when no explicit allowlist is supplied. `hostspan oauth init` automatically adds the public OAuth hostname to `allowed_hosts`. Non-loopback `serve` fails when OAuth is absent.
+Wildcard binds (`0.0.0.0` or `::`) fail configuration validation unless `allowed_hosts` is non-empty. A specific bind such as `192.168.10.20` automatically permits that Host value when no explicit allowlist is supplied. `hostspan oauth init` automatically adds the public OAuth hostname to `allowed_hosts`. This reverse-proxy example is for public OAuth; a separate `private_token` profile requires an approved encrypted private transport and an exact non-wildcard bind.
 
 Minimal Caddy example:
 
@@ -119,7 +119,7 @@ OpenAI connection guide: <https://developers.openai.com/apps-sdk/deploy/connect-
 
 ## Refresh after metadata changes
 
-ChatGPT may cache tool names/descriptions/schemas. `hostspan-v3.5` adds `process_list` and optional byte continuation to `file_read`; `computer` remains the Linux Wayland portal tool. If a HostSpan release changes tool metadata, compare `server_version` and `toolset_hash`, then open the existing connection at [ChatGPT Plugins](https://chatgpt.com/plugins) and select **Refresh** before diagnosing a cached schema as a HostSpan runtime failure.
+ChatGPT may cache tool names/descriptions/schemas. `hostspan-v3.5` adds `process_list` and optional byte continuation to `file_read`; `computer` uses the supported OS-specific desktop backend (Linux Wayland portal, macOS native, or Windows native). If a HostSpan release changes tool metadata, compare `server_version` and `toolset_hash`, then open the existing connection at [ChatGPT Plugins](https://chatgpt.com/plugins) and select **Refresh** before diagnosing a cached schema as a HostSpan runtime failure.
 
 Refreshing metadata does not expand an existing OAuth grant. `tools/list` includes `computer` even without its scope; its `_meta.securitySchemes` declares `hostspan.computer`. Calling it with an insufficient grant returns the original `SCOPE_DENIED` plus `_meta["mcp/www_authenticate"]`, requesting the required scope together with the already granted supported scopes. ChatGPT can then present normal reauthorization for the existing connection. Refresh tokens cannot add scopes. Never edit token records or bypass a target/OS denial; those denials do not trigger OAuth relinking. See [OpenAI authentication UI requirements](https://developers.openai.com/apps-sdk/build/auth#triggering-authentication-ui).
 
@@ -130,6 +130,8 @@ A breaking contract must use a new toolset version rather than silently changing
 ## Interactive terminal use
 
 Targets with the explicit `terminal` capability may start `process_start` with `tty=true`. ChatGPT then uses the same durable `process_id` with `process_poll`, `process_write`, and `process_cancel`. `process_write` can send text, control keys such as `C-c`, and resize updates, and every write carries its own UUIDv7 idempotency key. The HostSpan PTY session worker survives daemon restart; an ambiguous write that crosses a crash boundary is reported as unknown rather than replayed automatically.
+
+`process_start.wait_ms` accepts integer milliseconds from 0 to 1500 (default 1200). This short response-wait budget does not limit the command's execution time. If it is still running, keep the returned `process_id` and continue with `process_poll`, whose `wait_ms` also accepts 0–1500 (default 0); do not start the command again to wait longer. Use `deadline_ms` only when execution should actually be stopped after that duration.
 
 An `exec` target can run native non-interactive programs. A target with `terminal` can also host a writable shell, REPL, or TUI. Both paths run as the HostSpan OS user; deadline, output, concurrency, and idempotency controls remain enforced. Enable these capabilities only on targets where that authority is acceptable.
 
@@ -143,6 +145,16 @@ hostspan support-export ./hostspan-support.json
 ```
 
 HostSpan records transport requests and accepted tool calls, plus pre-handler `validation` and `authorization` failures. Correlate `request_id` with the client request and the server version/time window: absence in a retained journal alone does not prove a global permission denial. `system_status.authorization` reports the granted scopes; client tool visibility and approval-card state are not observable by HostSpan. A client pre-dispatch refusal creates no HostSpan process ID. Do not fabricate an execution result or retry through another authority.
+
+For an authenticated call with an out-of-range `wait_ms`, HostSpan returns HTTP 200 with an MCP tool error (`isError: true`, `VALIDATION_FAILED`, reason `invalid_tool_arguments`) identifying the allowed bound. It sends no OAuth challenge for that argument error; correct the argument under the existing authority. A genuine `SCOPE_DENIED` with reason `oauth_scope` remains a separate authorization failure.
+
+Client tool approval (including “Always allow” or full tool permissions) does not add OAuth scopes. `process_start` and `process_cancel` publish both `hostspan.exec` and `hostspan.terminal` in their static OAuth metadata so discovery can request the scopes for either backend. Each invocation still requires only its branch: `hostspan.exec` for non-TTY/native execution and `hostspan.terminal` for `tty=true`/PTY. Existing grants are preserved; discovery and refresh tokens never add scopes. Inspect the existing grant through `system_status.authorization`, rather than treating terminal authority as exec authority. HostSpan has no `all` scope or full-access consent preset; its consent page displays the exact scopes requested by the client.
+
+`tools/list` publishes canonical `securitySchemes` and its identical `_meta.securitySchemes` compatibility mirror. HostSpan uses the SDK's public request-handler API because SDK 2's high-level `registerTool` omits the canonical field. Missing execution scope is a tool-specific authorization failure on an authenticated connection; successful file reads and metadata discovery can continue. It is not evidence that the whole connection expired. Neither metadata refresh nor a new chat expands an existing grant.
+
+Retain the original UUIDv7 idempotency key and any returned HostSpan request ID when reporting a failed invocation. HostSpan records only valid UUIDv7 keys in ingress and early-rejection diagnostics; a per-HTTP `transport_request_id` joins ingress to authentication/validation rejection, and validation errors return `x-hostspan-request-id`. Scope rejections retain the key in audit diagnostics and the request ID in the typed tool result. These records do not include tokens, command bodies, environment values, or arbitrary client request IDs; an invocation without a valid key cannot be found by that key.
+
+`transport.response` records one local HTTP completion or close-before-finish, including whether headers were sent and the response write finished. `prepared_response_*` fields describe the public SDK/Fastify response before sending; they are separate from Node's observed status and headers. `transport.sdk_selected` records the SDK-selected modern/legacy era. Requested version fields are not negotiated versions: an exact selected revision, response-envelope validity, and MCP-body challenge presence remain `unobserved` when the SDK does not expose them. Server finish never proves remote receipt, parsing, or UI presentation. No response body or stream is inspected for these diagnostics.
 
 If the trace shows `GET /authorize` and a successful `POST /authorize`, an authorization code exists, but ChatGPT never sends `POST /token`, compare the public OAuth metadata and redirect response against a known-working MCP SDK server before attributing the failure to the client. HostSpan intentionally uses the SDK-compatible root authorization paths and does not add an RFC 9207 `iss` parameter that the working DevSpace flow does not advertise.
 
@@ -162,7 +174,7 @@ If the approval credential is lost or suspected compromised, run `hostspan oauth
 
 ## Inspector validation
 
-Before ChatGPT interoperability testing, MCP Inspector can be used against the local or tunnel endpoint to verify 2026-07-28 `server/discover`, per-request `tools/list`, schemas, annotations, and tool calls independently of ChatGPT UI behavior. The repository contract suite pins the approved hash for the versioned 11-tool registry, while integration coverage verifies tool calls and OAuth authorization. HostSpan v3 targets the 2026-07-28 contract directly and does not carry an older stateless transport fallback.
+Before ChatGPT interoperability testing, MCP Inspector can be used against the local or tunnel endpoint to verify 2026-07-28 `server/discover`, per-request `tools/list`, schemas, annotations, and tool calls independently of ChatGPT UI behavior. The repository contract suite pins the approved hash for the versioned 12-tool registry, while integration coverage verifies tool calls and OAuth authorization. HostSpan v3 targets the 2026-07-28 contract directly and does not carry an older stateless transport fallback.
 
 ## Read-only review and remote work
 

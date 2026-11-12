@@ -7,6 +7,7 @@ export interface InteractiveSessionSnapshot {
   pid: number | null;
   columns: number | null;
   rows: number | null;
+  ended_at?: string;
 }
 
 export interface StartInteractiveSessionInput {
@@ -26,7 +27,7 @@ export interface InteractiveOutputDrainResult {
 }
 
 export interface InteractiveSessionManager {
-  readonly backend: "pty";
+  readonly backend: "pty" | "native";
   sessionName(processId: string): string;
   humanAttachCommand(session: string, readOnly?: boolean): string;
   available(): Promise<boolean>;
@@ -39,7 +40,7 @@ export interface InteractiveSessionManager {
   ): Promise<void>;
   close(session: string, graceMs?: number): Promise<void>;
   closeSync(session: string): void;
-  outputBytes(processId: string): number;
+  outputBytes(processId: string, stream?: "stdout" | "stderr"): number;
   outputDrained(processId: string): boolean;
   waitForOutputDrain(processId: string, waitMs?: number): Promise<InteractiveOutputDrainResult>;
   waitForExitStatus(session: string, waitMs?: number): Promise<InteractiveSessionSnapshot>;

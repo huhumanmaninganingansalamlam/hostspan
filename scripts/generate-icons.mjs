@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import png2icons from "png2icons";
@@ -37,6 +37,15 @@ for (const [name, svg, size] of [
 ]) {
   await sharp(svg).resize(size, size).png().toFile(resolve(outputDir, `${name}.png`));
   await sharp(svg).resize(size * 2, size * 2).png().toFile(resolve(outputDir, `${name}@2x.png`));
+}
+
+// electron-builder copies Linux desktop icons outside the afterPack tree.
+// Keep generated build resources safe even when the caller uses umask 0002.
+if (process.platform !== "win32") {
+  const entries = await readdir(outputDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isFile()) await chmod(resolve(outputDir, entry.name), 0o644);
+  }
 }
 
 console.log(`Generated HostSpan icons in ${outputDir}`);

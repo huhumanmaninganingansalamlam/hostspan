@@ -22,7 +22,7 @@ jobs:
             os: windows-latest
             arch: x64
           - label: macOS Apple Silicon
-            os: macos-14
+            os: macos-15
             arch: arm64
           - label: macOS Intel
             os: macos-15-intel
@@ -63,7 +63,7 @@ jobs:
 
   installer:
     name: Installer ${{ matrix.label }}
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/dev')
     strategy:
       fail-fast: false
       matrix:
@@ -72,7 +72,7 @@ jobs:
             os: windows-latest
             arch: x64
           - label: macOS Apple Silicon
-            os: macos-14
+            os: macos-15
             arch: arm64
           - label: macOS Intel
             os: macos-15-intel
@@ -82,7 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: pnpm/setup@v2
         with:
           version: 12.4.2
@@ -94,7 +94,7 @@ jobs:
       - name: Verify candidate and runner architecture
         shell: bash
         run: |
-          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
           git rev-parse HEAD
           actual="$(node -p 'process.arch')"
           expected="${{ matrix.arch }}"
@@ -132,3 +132,14 @@ jobs:
           hdiutil detach "$mount"
           trap - EXIT
           node scripts/smoke-packaged-cli.mjs --platform darwin --arch "${{ matrix.arch }}" --installed-dir "$installed"
+      - name: Retain tested unsigned candidate installers
+        uses: actions/upload-artifact@v7
+        with:
+          name: hostspan-unsigned-candidate-${{ runner.os }}-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            out/*.exe
+            out/*.dmg
+            out/*.zip
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

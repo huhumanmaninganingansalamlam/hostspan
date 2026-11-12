@@ -19,7 +19,7 @@ import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath } from "../config/paths.js";
 import { PtySessionManager } from "../processes/pty-session.js";
 import { protectWindowsFile, protectWindowsTree } from "../security/windows-acl.js";
-import { desktopLaunchSpec, isDesktopLoginLaunch, linuxAutoStartContents, linuxAutoStartPath, prepareDesktopEnvironment } from "./environment.js";
+import { desktopDaemonStartupTimeoutMs, desktopLaunchSpec, isDesktopLoginLaunch, linuxAutoStartContents, linuxAutoStartPath, prepareDesktopEnvironment } from "./environment.js";
 import {
   installDashboardNavigationGuards,
   isTrustedDashboardIpc,
@@ -32,6 +32,7 @@ import {
 import { prepareDesktopConfig } from "./first-run.js";
 import { trayMenuStateKey } from "./tray-menu-state.js";
 import { dashboardHtml } from "./dashboard.js";
+import { acquireDesktopPrimaryInstance } from "./single-instance.js";
 
 declare global {
   interface Window {
@@ -190,7 +191,7 @@ function checkedServiceAction(action: "start" | "stop") {
   return result;
 }
 
-async function daemonAction(action: "start" | "stop" | "restart") {
+async function daemonAction(action: "start" | "stop" | "restart", startupTimeoutMs?: number) {
   if (systemdServiceInstalled()) {
     if (action === "start") return checkedServiceAction("start");
     await stopDaemon(configPath);
@@ -198,20 +199,22 @@ async function daemonAction(action: "start" | "stop" | "restart") {
   }
   if (action === "restart") {
     await stopDaemon(configPath);
-    return startDaemon(configPath, cliPath, nodePath);
+    return startDaemon(configPath, cliPath, nodePath, startupTimeoutMs);
   }
-  return action === "start" ? startDaemon(configPath, cliPath, nodePath) : stopDaemon(configPath);
+  return action === "start" ? startDaemon(configPath, cliPath, nodePath, startupTimeoutMs) : stopDaemon(configPath);
 }
 
 async function confirmDaemonRestart(): Promise<boolean> {
   const current = await snapshot();
-  const activeNative = current.active_processes.filter((process) => process.backend !== "pty").length;
+  const activeNative = current.active_processes.filter((process) => process.backend !== "pty" && !process.backend_ref).length;
+  const durableNative = current.active_processes.filter((process) => process.backend === "native" && process.backend_ref).length;
   const activePty = current.active_processes.filter((process) => process.backend === "pty").length;
   const impact = [
     "HostSpan loads target and policy configuration once when the daemon starts.",
-    "Restarting applies saved workspace, capability, and computer-use settings atomically.",
-    "Finish current desktop calls and return shared desktop ownership before restarting. Restart ends HostSpan desktop sharing; Linux sharing needs OS consent again. Enabling computer-use does not open a portal.",
+    "Restarting applies saved workspace, capability, and screen-access settings atomically.",
+    "Finish the current screen session before restarting. Restart ends screen sharing; Linux requires OS approval again. Saving Screen access does not open an approval dialog.",
     activeNative > 0 ? `${activeNative} active native process(es) will be stopped.` : "No active native process will be stopped.",
+    ...(durableNative > 0 ? [`${durableNative} durable native process(es) will remain alive and reconnect after restart.`] : []),
     activePty > 0 ? `${activePty} durable PTY session(s) will remain alive and reconnect after restart.` : "No live PTY session needs recovery.",
   ].join("\n\n");
   const options = {
@@ -261,6 +264,14 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
+function showDaemonActionError(action: "start" | "stop" | "restart", error: unknown): void {
+  dialog.showErrorBox(`HostSpan could not ${action}`, error instanceof Error ? error.message : String(error));
+}
+
+function runTrayDaemonAction(action: "start" | "stop"): void {
+  void daemonAction(action).then(refreshUi).catch((error: unknown) => showDaemonActionError(action, error));
+}
+
 async function refreshUi(): Promise<void> {
   const data = await snapshot();
   const tooltip = `HostSpan ${data.daemon.running ? "running" : "stopped"}`;
@@ -276,9 +287,9 @@ async function refreshUi(): Promise<void> {
         { label: "Open Dashboard", click: () => { const w = createWindow(); w.show(); w.focus(); } },
         { type: "separator" },
         data.daemon.running
-          ? { label: "Stop HostSpan", click: () => void daemonAction("stop").then(refreshUi) }
-          : { label: "Start HostSpan", click: () => void daemonAction("start").then(refreshUi) },
-        { label: "Restart HostSpan", enabled: data.daemon.running, click: () => void restartDaemonWithConfirmation() },
+          ? { label: "Stop HostSpan", click: () => runTrayDaemonAction("stop") }
+          : { label: "Start HostSpan", click: () => runTrayDaemonAction("start") },
+        { label: "Restart HostSpan", enabled: data.daemon.running, click: () => void restartDaemonWithConfirmation().catch((error: unknown) => showDaemonActionError("restart", error)) },
         { label: "Start at login", type: "checkbox", checked: data.auto_start, click: (item) => { setAutoStart(item.checked); void refreshUi(); } },
         { type: "separator" },
         { label: `Targets: ${data.targets.length}`, enabled: false },
@@ -361,11 +372,14 @@ ipcMain.handle("hostspan:copy", (event, rawText: unknown) => {
   return { ok: true };
 });
 
-if (!app.requestSingleInstanceLock()) app.quit();
+const ownsSingleInstanceLock = acquireDesktopPrimaryInstance(app);
 app.on("second-instance", () => { const w = createWindow(); w.show(); w.focus(); });
 app.on("window-all-closed", () => undefined);
 
-void app.whenReady().then(async () => {
+// app.quit() on a rejected instance does not guarantee that the already queued
+// whenReady handler will be canceled. Never start another GUI/daemon without
+// holding the process-wide single-instance lock.
+if (ownsSingleInstanceLock) void app.whenReady().then(async () => {
   try {
     prepareDesktopEnvironment();
     configPath = prepareDesktopConfig(app.getPath("userData"));
@@ -395,8 +409,11 @@ void app.whenReady().then(async () => {
     );
     if (loginLaunch) {
       try {
-        const result = await daemonAction("start");
-        if ("running" in result && !result.running) throw new Error("HostSpan daemon did not start within five seconds.");
+        const startupTimeoutMs = desktopDaemonStartupTimeoutMs(process.platform, loginLaunch);
+        const result = await daemonAction("start", startupTimeoutMs);
+        if ("running" in result && !result.running) {
+          throw new Error(`HostSpan daemon did not start within ${startupTimeoutMs / 1000} seconds.`);
+        }
       } catch (error) {
         dialog.showErrorBox("HostSpan daemon could not start", error instanceof Error ? error.message : String(error));
       }

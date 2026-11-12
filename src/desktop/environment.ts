@@ -56,6 +56,10 @@ export function isDesktopLoginLaunch(platform: NodeJS.Platform, argv: string[], 
   return platform === "darwin" ? wasOpenedAtLogin : argv.includes("--hostspan-login");
 }
 
+export function desktopDaemonStartupTimeoutMs(platform: NodeJS.Platform, loginLaunch: boolean): number {
+  return platform === "darwin" && loginLaunch ? 20_000 : 5_000;
+}
+
 function desktopExecQuote(value: string): string {
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }

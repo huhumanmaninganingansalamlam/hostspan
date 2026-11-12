@@ -4,52 +4,113 @@ import ImageIO
 import ScreenCaptureKit
 
 // Private JSON-lines helper, launched by the logged-in HostSpan desktop runtime.
+#if !HOSTSPAN_DESKTOP_AVAILABILITY_TEST
 @main
+#endif
 struct DesktopWorker {
+    enum ActivityState: String {
+        case waiting
+        case ready
+        case viewing
+        case controlling
+    }
+
+    // Keep successful input visible across multiple display refreshes before the
+    // parent's automatic follow-up observation changes the state to viewing.
+    static let minimumControllingVisibilityNanoseconds: UInt64 = 250_000_000
+
     static var opened = false
     static var displayID = CGMainDisplayID()
     static var capture: DisplayCapture?
     @MainActor static var activityPanel: NSPanel?
     @MainActor static var activityLabel: NSTextField?
-    @MainActor static var activityTimer: Timer?
+    @MainActor static var activityIcon: NSImageView?
+    @MainActor static var accessMonitor: Timer?
+
+    // One plain sentence carries the state. The symbol is redundant with the
+    // wording so the distinction never depends on color alone.
+    static func activityAppearance(_ state: ActivityState) -> (
+        message: String, symbol: String
+    ) {
+        switch state {
+        case .waiting: return ("Waiting to share screen with HostSpan", "hourglass")
+        case .ready: return ("HostSpan has screen access", "display")
+        case .viewing: return ("HostSpan is viewing this screen", "eye")
+        case .controlling: return ("HostSpan is controlling this screen", "cursorarrow")
+        }
+    }
+
+    static func activityTint(_ state: ActivityState) -> NSColor {
+        switch state {
+        case .waiting: return .systemYellow
+        case .ready: return .secondaryLabelColor
+        case .viewing: return .systemBlue
+        case .controlling: return .systemOrange
+        }
+    }
+
+    static func activityMessage(_ state: ActivityState) -> String {
+        activityAppearance(state).message
+    }
 
     @MainActor
-    static func activity(_ active: Bool?) {
-        activityTimer?.invalidate()
-        activityTimer = nil
-        guard let active else {
+    static func activity(_ state: ActivityState?) {
+        guard let state else {
             activityPanel?.orderOut(nil)
             activityPanel = nil
             activityLabel = nil
+            activityIcon = nil
             return
         }
         if activityPanel == nil {
             let screen = NSScreen.screens.first { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == displayID }
             let area = screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
-            let panel = NSPanel(contentRect: NSRect(x: area.maxX - 310, y: area.maxY - 48, width: 298, height: 36),
+            let panel = NSPanel(contentRect: NSRect(x: area.maxX - 328, y: area.maxY - 48, width: 320, height: 40),
                                 styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-            panel.title = "HostSpan computer use"
+            panel.title = "HostSpan screen access"
             panel.level = .statusBar
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             panel.ignoresMouseEvents = true
             panel.hidesOnDeactivate = false
-            panel.backgroundColor = NSColor(calibratedRed: 0.10, green: 0.27, blue: 0.59, alpha: 0.95)
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = true
+
+            let surface = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 320, height: 40))
+            surface.material = .popover
+            surface.blendingMode = .behindWindow
+            surface.state = .active
+            surface.wantsLayer = true
+            surface.layer?.cornerRadius = 8
+            surface.layer?.masksToBounds = true
+            surface.layer?.borderWidth = 0.5
+            surface.layer?.borderColor = NSColor.separatorColor.cgColor
+            panel.contentView = surface
+
+            let icon = NSImageView(frame: NSRect(x: 14, y: 11, width: 18, height: 18))
+            icon.imageScaling = .scaleProportionallyDown
+
             let label = NSTextField(labelWithString: "")
-            label.frame = NSRect(x: 0, y: 9, width: 298, height: 18)
-            label.alignment = .center
-            label.textColor = .white
-            panel.contentView?.addSubview(label)
+            label.frame = NSRect(x: 44, y: 10, width: 262, height: 20)
+            label.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+            label.textColor = .labelColor
+            label.lineBreakMode = .byTruncatingTail
+            label.cell?.usesSingleLineMode = true
+
+            surface.addSubview(icon)
+            surface.addSubview(label)
             activityPanel = panel
             activityLabel = label
+            activityIcon = icon
         }
-        activityLabel?.stringValue = active ? "● HostSpan · Using this computer" : "HostSpan · Activity finished"
+        let appearance = activityAppearance(state)
+        activityPanel?.title = appearance.message
+        activityIcon?.image = NSImage(systemSymbolName: appearance.symbol,
+                                      accessibilityDescription: appearance.message)
+        activityIcon?.contentTintColor = activityTint(state)
+        activityLabel?.stringValue = appearance.message
         activityPanel?.orderFrontRegardless()
         activityPanel?.displayIfNeeded()
-        if !active {
-            activityTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: false) { _ in
-                MainActor.assumeIsolated { activityPanel?.orderOut(nil); activityTimer = nil }
-            }
-        }
     }
 
     final class DisplayCapture: @unchecked Sendable {
@@ -90,7 +151,15 @@ struct DesktopWorker {
                 self.completedAt = Date()
                 self.completed.leave()
                 Task { @MainActor in
-                    if capture?.process === process { activity(false) }
+                    if capture?.process === process {
+                        // A failed capture or revoked entitlement must not leave "access is on".
+                        if self.error != nil || self.image == nil ||
+                           !CGPreflightScreenCaptureAccess() || !AXIsProcessTrusted() {
+                            closeSession()
+                        } else {
+                            activity(.ready)
+                        }
+                    }
                 }
             }
             do { try process.run() }
@@ -133,6 +202,91 @@ struct DesktopWorker {
         NSError(domain: "HostSpanDesktop", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 
+    @MainActor
+    static func closeSession() {
+        accessMonitor?.invalidate()
+        accessMonitor = nil
+        opened = false
+        capture?.cancel()
+        capture = nil
+        activity(nil)
+    }
+
+    // Keep the idle badge honest even between calls. A revoked grant closes
+    // the session; a locked console hides the badge without disclosing frames.
+    @MainActor
+    static func monitorAccess(
+        screenRecordingGranted: Bool, accessibilityGranted: Bool, sessionLocked: Bool
+    ) -> Bool {
+        // A timer queued before an explicit close must not end a fresh session.
+        guard opened else { return true }
+        if !screenRecordingGranted || !accessibilityGranted {
+            closeSession()
+            return false
+        } else if sessionLocked {
+            capture?.cancel()
+            capture = nil
+            activity(nil)
+        } else if activityPanel == nil && capture?.process.isRunning != true {
+            // An unlocked, still-consented session is available again.
+            activity(.ready)
+        }
+        return true
+    }
+
+    @MainActor
+    static func startAccessMonitor() {
+        accessMonitor?.invalidate()
+        let monitor = Timer(timeInterval: 0.5, repeats: true) { _ in
+            Task { @MainActor in
+                let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+                let permitted = monitorAccess(
+                    screenRecordingGranted: CGPreflightScreenCaptureAccess(),
+                    accessibilityGranted: AXIsProcessTrusted(),
+                    sessionLocked: session?["CGSSessionScreenIsLocked"] as? Bool == true
+                )
+                if !permitted {
+                    // Notify the parent before ending the worker: the daemon must
+                    // clear its own ready status, not just hide our local panel.
+                    send(["event": "closed"])
+                    shutdown()
+                }
+            }
+        }
+        RunLoop.main.add(monitor, forMode: .common)
+        accessMonitor = monitor
+    }
+
+    @MainActor
+    static func requireSessionPermissions(
+        screenRecordingGranted: Bool = CGPreflightScreenCaptureAccess(),
+        accessibilityGranted: Bool = AXIsProcessTrusted()
+    ) throws {
+        guard screenRecordingGranted && accessibilityGranted else {
+            closeSession()
+            throw NSError(domain: "HostSpanDesktop", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "macOS screen access permission was revoked; this session is closed.",
+                "error_details": ["reason": "macos_permission_revoked"]
+            ])
+        }
+    }
+
+    @MainActor
+    static func requireUnlockedDesktop(_ session: [String: Any]? = CGSessionCopyCurrentDictionary() as? [String: Any]) throws {
+        if session?["CGSSessionScreenIsLocked"] as? Bool == true {
+            // Discard a capture retained after an earlier bounded observe; never return it after unlock.
+            capture?.cancel()
+            capture = nil
+            // A locked console cannot be viewed or controlled. Keep the session,
+            // but hide its indicator until the next permitted desktop call.
+            activity(nil)
+            throw NSError(domain: "HostSpanDesktop", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Desktop capture and input are unavailable while the macOS console is locked. Keep this session and observe again when the desktop is available.",
+                "error_details": ["reason": "macos_desktop_locked", "dispatched": false]
+            ])
+        }
+    }
+
     static func requireGUILaunch(for permission: String) throws {
         let environment = ProcessInfo.processInfo.environment
         if environment["SSH_CONNECTION"] != nil || environment["SSH_TTY"] != nil {
@@ -166,13 +320,14 @@ struct DesktopWorker {
         // Stay inside the parent's unchanged 10s request budget, including encoding/IPC.
         let responseDeadline = DispatchTime.now() + 8
         let action = command["action"] as? String ?? ""
-        if action == "close" { opened = false; capture?.cancel(); capture = nil; activity(nil); return ["closed": true] }
+        if action == "close" { closeSession(); return ["closed": true] }
         if action == "open" {
             guard #available(macOS 14.0, *) else {
                 throw failure("Native screen capture requires macOS 14 or newer")
             }
             if !CGPreflightScreenCaptureAccess() {
                 try requireGUILaunch(for: "screen_recording")
+                activity(.waiting)
                 send(["event": "permission_required", "permission": "screen_recording"])
                 _ = CGRequestScreenCaptureAccess()
                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
@@ -180,22 +335,39 @@ struct DesktopWorker {
             }
             if !AXIsProcessTrusted() {
                 try requireGUILaunch(for: "accessibility")
+                activity(.waiting)
                 send(["event": "permission_required", "permission": "accessibility"])
                 let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
                 _ = AXIsProcessTrustedWithOptions(options)
                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
                 while !AXIsProcessTrusted() { try await Task.sleep(nanoseconds: 500_000_000) }
             }
+            // Both grants and an unlocked console are required before the badge
+            // can claim that screen access is on.
+            try requireSessionPermissions()
+            try requireUnlockedDesktop()
             displayID = CGMainDisplayID()
+            activity(.ready)
             opened = true
+            startAccessMonitor()
             return geometry()
         }
         guard opened else { throw failure("Desktop session is closed") }
-        activity(true)
-        defer { if capture?.process.isRunning != true { activity(false) } }
+        try requireSessionPermissions()
+        try requireUnlockedDesktop()
+        let indicatorState: ActivityState = action == "observe" ? .viewing : .controlling
+        activity(indicatorState)
+        defer {
+            if opened {
+                if CGPreflightScreenCaptureAccess() && AXIsProcessTrusted() {
+                    if capture?.process.isRunning != true && activityPanel != nil { activity(.ready) }
+                } else {
+                    closeSession()
+                }
+            }
+        }
         if action == "observe" {
             guard #available(macOS 14.0, *) else { throw failure("Native capture is unavailable") }
-            guard CGPreflightScreenCaptureAccess() else { throw failure("Screen Recording permission was revoked") }
             let image: CGImage
             var capturedPNG: Data?
             var startedAt = Date()
@@ -205,12 +377,19 @@ struct DesktopWorker {
                 // The system rectangle capture includes system UI, unlike window composition.
                 if capture == nil { capture = try DisplayCapture(displayID: displayID) }
                 guard let pending = capture else { throw failure("Could not start display capture") }
-                guard await pending.ready(until: responseDeadline) else {
+                let ready = await pending.ready(until: responseDeadline)
+                try requireSessionPermissions()
+                try requireUnlockedDesktop()
+                guard ready else {
                     throw capturePending()
                 }
                 capture = nil
-                if let error = pending.error { throw error }
+                if let error = pending.error {
+                    closeSession()
+                    throw error
+                }
                 guard let captured = pending.image else {
+                    closeSession()
                     throw failure("Could not capture the selected display")
                 }
                 image = captured
@@ -229,6 +408,9 @@ struct DesktopWorker {
                 let filter = SCContentFilter(display: display, excludingWindows: [])
                 image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
             }
+            // Neither revoked entitlements nor a newly locked console can return a frame.
+            try requireSessionPermissions()
+            try requireUnlockedDesktop()
             guard let png = capturedPNG ?? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
                 throw failure("Could not encode captured PNG")
             }
@@ -307,6 +489,9 @@ struct DesktopWorker {
             event.post(tap: .cghidEventTap)
         default: throw failure("Unsupported desktop action")
         }
+        // Input is already dispatched. Delay only the acknowledgement so the
+        // non-focusing indicator remains human-visible before auto-observe.
+        try? await Task.sleep(nanoseconds: minimumControllingVisibilityNanoseconds)
         return ["dispatched": true]
     }
 
@@ -341,8 +526,7 @@ struct DesktopWorker {
 
     @MainActor
     static func shutdown() {
-        capture?.cancel()
-        activity(nil)
+        closeSession()
         NSApplication.shared.terminate(nil)
     }
 }

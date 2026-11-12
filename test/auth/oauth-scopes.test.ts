@@ -12,7 +12,7 @@ import type { HostSpanConfig } from "../../src/config/schema.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
 import { HostSpanError } from "../../src/errors.js";
 import { errorResult } from "../../src/mcp/result.js";
-import { TOOL_NAMES, TOOLSET_HASH, type HostSpanToolHandlers } from "../../src/mcp/registry.js";
+import { TOOL_NAMES, TOOLSET_HASH, toolsetDocument, type HostSpanToolHandlers } from "../../src/mcp/registry.js";
 import { createHostSpanHttpServer } from "../../src/mcp/server.js";
 
 const roots: string[] = [];
@@ -147,7 +147,7 @@ function fakeHandlers(calls: string[]): HostSpanToolHandlers {
   };
 }
 
-function testApp(runtime: HostSpanRuntime, calls: string[]) {
+function testApp(runtime: HostSpanRuntime, calls: string[], traces?: Array<Record<string, unknown>>, overrides: Partial<HostSpanToolHandlers> = {}) {
   const oauth = runtime.oauth;
   if (!oauth) throw new Error("OAuth runtime was not initialized.");
   const backends = new Map<string, "native" | "pty">([
@@ -160,13 +160,14 @@ function testApp(runtime: HostSpanRuntime, calls: string[]) {
     allowed_hosts: ["127.0.0.1", "mcp.example.com"],
     oauth,
     authorization: { ...runtime.authorization, processBackend: (processId) => backends.get(processId) },
-    handlers: fakeHandlers(calls),
+    handlers: { ...fakeHandlers(calls), ...overrides },
     responseContext: () => ({ toolset_hash: TOOLSET_HASH, policy_epoch: runtime.config.policy_epoch }),
     status: { health: () => ({ server_version: "test" }), readiness: () => ({ ready: true }) },
+    ...(traces ? { trace: (event: string, metadata: Record<string, unknown>) => traces.push({ event, ...metadata }) } : {}),
   });
 }
 
-async function callTool(app: FastifyInstance, token: string, name: string, args: Record<string, unknown>) {
+async function callTool(app: FastifyInstance, token: string, name: string, args: Record<string, unknown>, protocolVersion = "2026-07-28") {
   const response = await app.inject({
     method: "POST",
     url: "/mcp",
@@ -177,18 +178,20 @@ async function callTool(app: FastifyInstance, token: string, name: string, args:
       "content-type": "application/json",
       "mcp-method": "tools/call",
       "mcp-name": name,
-      "mcp-protocol-version": "2026-07-28",
+      "mcp-protocol-version": protocolVersion,
     },
     payload: {
       jsonrpc: "2.0",
       id: `call-${name}-${uuidv7()}`,
       method: "tools/call",
-      params: { name, arguments: args, _meta: modernMeta() },
+      params: { name, arguments: args, ...(protocolVersion === "2026-07-28" ? { _meta: modernMeta() } : {}) },
     },
   });
   expect(response.statusCode, response.body).toBe(200);
+  expect(response.headers["www-authenticate"]).toBeUndefined();
   return response.json() as {
     result?: {
+      resultType?: string;
       isError?: boolean;
       _meta?: { "mcp/www_authenticate"?: string[] };
       structuredContent?: Record<string, unknown>;
@@ -234,6 +237,298 @@ const startArgs = (tty: boolean) => ({
   deadline_ms: 1_000,
   max_output_bytes: 1_024,
   tty,
+});
+
+it("keeps invalid response waits distinct from insufficient scope without dispatch", async () => {
+  const { runtime, approvalSecret } = fixture();
+  const oauth = runtime.oauth;
+  if (!oauth) throw new Error("OAuth runtime was not initialized.");
+  const calls: string[] = [];
+  const app = testApp(runtime, calls);
+  try {
+    expect(toolsetDocument().tools.find((tool) => tool.name === "process_start")?.input_schema).toMatchObject({
+      properties: { wait_ms: { type: "integer", minimum: 0, maximum: 1_500, default: 1_200 } },
+    });
+    const exec = issueToken(oauth, approvalSecret, "hostspan.read hostspan.exec");
+    const terminal = issueToken(oauth, approvalSecret, "hostspan.read hostspan.terminal", exec.clientId);
+    for (const grant of [exec, terminal]) {
+      const body = await callTool(app, grant.token.access_token, "process_start", { ...startArgs(false), wait_ms: 10_000 });
+      expect(body.result).toMatchObject({ resultType: "complete", isError: true, structuredContent: { error: {
+        code: "VALIDATION_FAILED", message: expect.stringMatching(/wait_ms.*1500/),
+        details: { reason: "invalid_tool_arguments" },
+      } } });
+      expect(body.result?._meta?.["mcp/www_authenticate"]).toBeUndefined();
+    }
+    const legacy = await callTool(app, exec.token.access_token, "process_start", { ...startArgs(false), wait_ms: 10_000 }, "2025-11-25");
+    expect(legacy.result).toMatchObject({ isError: true, structuredContent: { error: { code: "VALIDATION_FAILED" } } });
+    expect(legacy.result?.resultType).toBeUndefined();
+    expect(legacy.result?._meta?.["mcp/www_authenticate"]).toBeUndefined();
+    const denied = await callTool(app, terminal.token.access_token, "process_start", { ...startArgs(false), wait_ms: 1_000 });
+    expect(denied.result?.resultType).toBe("complete");
+    expectScopeDenied(denied, "hostspan.exec");
+    const challenge = denied.result?._meta?.["mcp/www_authenticate"];
+    expect(challenge).toHaveLength(1);
+    for (const value of ['error="insufficient_scope"', "hostspan.read", "hostspan.terminal", "hostspan.exec"]) {
+      expect(challenge?.[0]).toContain(value);
+    }
+    expect(calls).toEqual([]);
+    const allowed = await callTool(app, exec.token.access_token, "system_status", {});
+    expectAllowed(allowed, "system_status");
+    expect(allowed.result?.resultType).toBe("complete");
+    expect(calls).toEqual(["system_status"]);
+  } finally {
+    await app.close();
+    await runtime.close();
+  }
+});
+
+it("records bounded HTTP completion and close-before-finish over real local sockets", async () => {
+  const http = await import("node:http");
+  const { runtime, approvalSecret } = fixture();
+  const oauth = runtime.oauth;
+  if (!oauth) throw new Error("OAuth runtime was not initialized.");
+  const traces: Array<Record<string, unknown>> = [];
+  const calls: string[] = [];
+  let hold = false;
+  let entered!: () => void;
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { entered = resolve; });
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const app = testApp(runtime, calls, traces, { file_patch: async () => {
+    calls.push("fixture-file_patch");
+    if (hold) { entered(); await held; }
+    return { tool: "file_patch" };
+  } });
+  const grant = issueToken(oauth, approvalSecret, "hostspan.write");
+  const secret = "PRIVATE_HTTP_CANARY";
+  try {
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const headers = (version: string, authenticated = true) => ({ host: "mcp.example.com",
+      accept: "application/json, text/event-stream", "content-type": "application/json",
+      "mcp-method": "tools/call", "mcp-name": "file_patch", "mcp-protocol-version": version,
+      ...(authenticated ? { authorization: `Bearer ${grant.token.access_token}` } : {}),
+    });
+    const payload = (version: string, key: string) => ({ jsonrpc: "2.0", id: secret, method: "tools/call",
+      params: { name: "file_patch", arguments: { ...patchArgs(), idempotency_key: key, dry_run: true },
+        ...(version === "2026-07-28" ? { _meta: modernMeta() } : {}) } });
+    for (const [version, media, era] of [["2026-07-28", "application/json", "modern"], ["2025-11-25", "text/event-stream", "legacy"]] as const) {
+      const key = uuidv7();
+      const response = await fetch(`${address}/mcp`, { method: "POST", headers: headers(version),
+        body: JSON.stringify(payload(version, key)), signal: AbortSignal.timeout(5_000) });
+      await response.text();
+      expect(response.status).toBe(200);
+      await vi.waitFor(() => expect(traces.some((row) => row.event === "transport.response" && row.idempotency_key === key)).toBe(true));
+      const terminal = traces.filter((row) => row.event === "transport.response" && row.idempotency_key === key);
+      expect(terminal).toHaveLength(1);
+      expect(terminal[0]).toMatchObject({ outcome: "finished", headers_sent: true, writable_finished: true,
+        http_status: 200, content_type: "unobserved", http_auth_challenge_present: "unobserved",
+        prepared_response_source: "sdk", prepared_response_status: 200, prepared_response_content_type: media, prepared_response_http_auth_challenge_present: false,
+        requested_protocol_header: version, selected_protocol_version: "unobserved", response_envelope_validity: "unobserved" });
+      expect(traces).toContainEqual(expect.objectContaining({ event: "transport.sdk_selected", idempotency_key: key,
+        transport_request_id: terminal[0]?.transport_request_id, sdk_era: era }));
+    }
+    const unauthKey = uuidv7();
+    const unauth = await fetch(`${address}/mcp`, { method: "POST", headers: headers("2026-07-28", false),
+      body: JSON.stringify(payload("2026-07-28", unauthKey)), signal: AbortSignal.timeout(5_000) });
+    await unauth.text();
+    expect(unauth.status).toBe(401);
+    await vi.waitFor(() => expect(traces.some((row) => row.event === "transport.response" && row.idempotency_key === unauthKey)).toBe(true));
+    expect(traces).toContainEqual(expect.objectContaining({ event: "transport.response", idempotency_key: unauthKey,
+      http_status: 401, prepared_response_source: "fastify", prepared_response_http_auth_challenge_present: true,
+      request_id: unauth.headers.get("x-hostspan-request-id") }));
+
+    hold = true;
+    const abortedKey = uuidv7();
+    const client = http.request(`${address}/mcp`, { method: "POST", headers: headers("2026-07-28") });
+    client.on("error", () => undefined);
+    client.end(JSON.stringify(payload("2026-07-28", abortedKey)));
+    await pending;
+    // A legacy response completes while the modern request is still in its handler.
+    hold = false;
+    const concurrentKey = uuidv7();
+    const concurrent = await fetch(`${address}/mcp`, { method: "POST", headers: headers("2025-11-25"),
+      body: JSON.stringify(payload("2025-11-25", concurrentKey)), signal: AbortSignal.timeout(5_000) });
+    await concurrent.text();
+    expect(concurrent.status).toBe(200);
+    expect(traces).toContainEqual(expect.objectContaining({ event: "transport.sdk_selected", idempotency_key: concurrentKey, sdk_era: "legacy" }));
+    expect(traces).toContainEqual(expect.objectContaining({ event: "transport.sdk_selected", idempotency_key: abortedKey, sdk_era: "modern" }));
+    const closed = new Promise<void>((resolve) => client.once("close", resolve));
+    client.destroy();
+    await closed;
+    await vi.waitFor(() => expect(traces.some((row) => row.event === "transport.response" && row.idempotency_key === abortedKey)).toBe(true));
+    const aborted = traces.filter((row) => row.event === "transport.response" && row.idempotency_key === abortedKey);
+    expect(aborted).toHaveLength(1);
+    expect(aborted[0]).toMatchObject({ outcome: "closed_before_finish", headers_sent: false, writable_finished: false,
+      http_status: null, content_type: null, http_auth_challenge_present: null });
+    expect(traces).toContainEqual(expect.objectContaining({ event: "transport.response", idempotency_key: concurrentKey,
+      outcome: "finished", prepared_response_content_type: "text/event-stream", http_status: 200 }));
+    const terminal = JSON.stringify(traces.filter((row) => row.event === "transport.response" || row.event === "transport.sdk_selected"));
+    expect(terminal).not.toContain(secret);
+    expect(terminal).not.toContain(grant.token.access_token);
+  } finally {
+    release();
+    await app.close();
+    await runtime.close();
+  }
+}, 15_000);
+
+it("preserves advertised granular grants and enforces exec separately from terminal", async () => {
+  const { runtime, approvalSecret } = fixture();
+  const oauth = runtime.oauth;
+  if (!oauth) throw new Error("OAuth runtime was not initialized.");
+  const calls: string[] = [];
+  const app = testApp(runtime, calls);
+  try {
+    for (const path of ["/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource"]) {
+      const metadata = await app.inject({ method: "GET", url: path, headers: { host: "mcp.example.com" } });
+      expect(metadata.statusCode).toBe(200);
+      expect(metadata.json().scopes_supported).toEqual([
+        "hostspan.computer", "hostspan.read", "hostspan.write", "hostspan.exec", "hostspan.terminal",
+      ]);
+    }
+    // Static discovery requests both possible scopes; each call still enforces only its branch.
+    const allScopes = ["hostspan.computer", "hostspan.read", "hostspan.write", "hostspan.exec", "hostspan.terminal"];
+    const full = issueToken(oauth, approvalSecret, allScopes.join(" "));
+    expect(oauth.verifyAccessToken(full.token.access_token)?.scopes).toEqual(allScopes);
+    const refreshed = refreshToken(oauth, full.clientId, full.token.refresh_token);
+    expect(oauth.verifyAccessToken(refreshed.access_token)?.scopes).toEqual(allScopes);
+    const listed = await app.inject({ method: "POST", url: "/mcp",
+      headers: { host: "mcp.example.com", accept: "application/json, text/event-stream", "content-type": "application/json",
+        "mcp-method": "tools/list", "mcp-protocol-version": "2026-07-28", authorization: `Bearer ${refreshed.access_token}` },
+      payload: { jsonrpc: "2.0", id: 1, method: "tools/list", params: { _meta: modernMeta() } },
+    });
+    expect(listed.statusCode).toBe(200);
+    const tools = listed.json().result.tools as Array<{ name: string; securitySchemes?: unknown; _meta?: { securitySchemes?: unknown } }>;
+    for (const name of ["process_start", "process_cancel"]) {
+      expect(tools.find((tool) => tool.name === name)?.securitySchemes)
+        .toEqual([{ type: "oauth2", scopes: ["hostspan.exec", "hostspan.terminal"] }]);
+      expect(tools.find((tool) => tool.name === name)?._meta?.securitySchemes)
+        .toEqual([{ type: "oauth2", scopes: ["hostspan.exec", "hostspan.terminal"] }]);
+    }
+    const scopes = ["hostspan.computer", "hostspan.read", "hostspan.write", "hostspan.terminal"];
+    const grant = issueToken(oauth, approvalSecret, scopes.join(" "));
+    expect(oauth.verifyAccessToken(grant.token.access_token)?.scopes).toEqual(scopes);
+    const status = await callTool(app, grant.token.access_token, "system_status", {});
+    expect(status.result?.structuredContent?.authorization).toMatchObject({ mode: "oauth", granted_scopes: scopes });
+    const denied = await callTool(app, grant.token.access_token, "process_start", { ...startArgs(false), wait_ms: 1_000 });
+    expectScopeDenied(denied, "hostspan.exec");
+    expect(denied.result?._meta?.["mcp/www_authenticate"]?.[0]).toContain('error="insufficient_scope"');
+    expect(calls).toEqual(["system_status"]);
+    expectAllowed(await callTool(app, grant.token.access_token, "process_start", startArgs(true)), "process_start");
+    expect(calls).toEqual(["system_status", "process_start"]);
+  } finally {
+    await app.close();
+    await runtime.close();
+  }
+});
+
+it("correlates early authentication, validation and scope rejects without retaining payloads", async () => {
+  const { runtime, approvalSecret } = fixture();
+  const oauth = runtime.oauth;
+  if (!oauth) throw new Error("OAuth runtime was not initialized.");
+  const calls: string[] = [];
+  const traces: Array<Record<string, unknown>> = [];
+  const app = testApp(runtime, calls, traces);
+  const secret = "HOSTSPAN_SECRET_CANARY_EARLY_REJECT";
+  const grant = issueToken(oauth, approvalSecret, "hostspan.read");
+  const inject = (idempotency_key: string, wait_ms: number, authenticated = true) => app.inject({
+    method: "POST", url: "/mcp",
+    headers: { host: "mcp.example.com", accept: "application/json, text/event-stream",
+      "content-type": "application/json", "mcp-method": "tools/call", "mcp-name": "process_start",
+      "mcp-protocol-version": "2026-07-28",
+      ...(authenticated ? { authorization: `Bearer ${grant.token.access_token}` } : {}),
+    },
+    payload: { jsonrpc: "2.0", id: secret, method: "tools/call", params: { name: "process_start",
+      arguments: { ...startArgs(false), idempotency_key, wait_ms, argv: [secret], env: { SECRET: secret } }, _meta: modernMeta() } },
+  });
+  try {
+    const unauthKey = uuidv7();
+    const unauth = await inject(unauthKey, 10_000, false);
+    expect(unauth.statusCode).toBe(401);
+    expect(unauth.headers["www-authenticate"]).toContain("Bearer");
+    const ingress = traces.find((row) => row.event === "transport.request" && row.idempotency_key === unauthKey);
+    expect(ingress).toMatchObject({ transport_request_id: expect.any(String), tool: "process_start" });
+    expect(traces).toContainEqual(expect.objectContaining({ event: "authorization.rejected",
+      idempotency_key: unauthKey, transport_request_id: ingress?.transport_request_id,
+      request_id: unauth.headers["x-hostspan-request-id"], stage: "authentication", http_status: 401 }));
+
+    for (const wait_ms of [10_000, 1_000]) {
+      const key = uuidv7();
+      const response = await inject(key, wait_ms);
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["www-authenticate"]).toBeUndefined();
+      const result = response.json().result;
+      const validation = wait_ms > 1_500;
+      expect(result).toMatchObject({ resultType: "complete", isError: true, structuredContent: { error: {
+        code: validation ? "VALIDATION_FAILED" : "SCOPE_DENIED",
+      } } });
+      expect(Boolean(result._meta?.["mcp/www_authenticate"])).toBe(!validation);
+      expect(runtime.audit.recent()).toContainEqual(expect.objectContaining({ request_id: result.structuredContent.request_id,
+        metadata: expect.objectContaining({ idempotency_key: key, tool: "process_start", stage: validation ? "validation" : "authorization" }) }));
+      if (validation) {
+        expect(response.headers["x-hostspan-request-id"]).toBe(result.structuredContent.request_id);
+        expect(traces).toContainEqual(expect.objectContaining({ event: "validation.rejected", idempotency_key: key,
+          request_id: result.structuredContent.request_id, transport_request_id: expect.any(String) }));
+      }
+    }
+    await inject(secret, 10_000);
+    expect(JSON.stringify({ traces, audit: runtime.audit.recent() })).not.toContain(secret);
+    expect(calls).toEqual([]);
+  } finally {
+    await app.close();
+    await runtime.close();
+  }
+});
+
+it("retains bounded schema field and issue codes without validation payloads", async () => {
+  const { runtime, approvalSecret } = fixture();
+  if (!runtime.oauth) throw new Error("OAuth runtime was not initialized.");
+  const calls: string[] = [];
+  const traces: Array<Record<string, unknown>> = [];
+  const app = testApp(runtime, calls, traces);
+  const grant = issueToken(runtime.oauth, approvalSecret, "hostspan.read hostspan.exec");
+  const secret = "private-validation-value-DO-NOT-RETAIN";
+  try {
+    for (const protocol of ["2026-07-28", "2025-11-25"]) {
+      const body = await callTool(app, grant.token.access_token, "process_start", {
+        ...startArgs(false), idempotency_key: secret, wait_ms: 10_000,
+        argv: [secret], env: { [secret]: { value: secret } }, [secret]: secret,
+      }, protocol);
+      expect(body.result).toMatchObject({ isError: true, structuredContent: { error: { code: "VALIDATION_FAILED" } } });
+      expect(body.result?._meta?.["mcp/www_authenticate"]).toBeUndefined();
+      const rejected = traces.find((row) => row.event === "validation.rejected"
+        && row.request_id === body.result?.structuredContent?.request_id);
+      expect(rejected).toMatchObject({ validation_issue_count: 4, validation_issues: [
+        { field: "idempotency_key", code: "invalid_format" },
+        { field: "env", code: "invalid_type" },
+        { field: "wait_ms", code: "too_big" },
+        { field: "arguments", code: "unrecognized_keys" },
+      ] });
+    }
+    const many = await callTool(app, grant.token.access_token, "process_start", {
+      ...startArgs(false), env: Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`${secret}-${i}`, null])),
+    });
+    const bounded = traces.find((row) => row.event === "validation.rejected"
+      && row.request_id === many.result?.structuredContent?.request_id);
+    expect(bounded).toMatchObject({ validation_issue_count: 40 });
+    expect(bounded?.validation_issues).toHaveLength(16);
+    expect(bounded?.validation_issues).toEqual(Array.from({ length: 16 }, () => ({ field: "env", code: "invalid_type" })));
+
+    const union = await callTool(app, grant.token.access_token, "computer", { action: secret });
+    expect(traces).toContainEqual(expect.objectContaining({ request_id: union.result?.structuredContent?.request_id,
+      validation_issues: [{ field: "action", code: "invalid_union" }] }));
+    const budget = await callTool(app, grant.token.access_token, "process_start", {
+      ...startArgs(false), env: Object.fromEntries(Array.from({ length: 10_001 }, (_, i) => [`${secret}-${i}`, secret])),
+    });
+    expect(traces).toContainEqual(expect.objectContaining({ request_id: budget.result?.structuredContent?.request_id,
+      validation_issue_count: 1, validation_issues: [{ field: "arguments", code: "input_budget_exceeded" }] }));
+    expect(JSON.stringify({ traces, audit: runtime.audit.recent() })).not.toContain(secret);
+    expect(calls).toEqual([]);
+    expect(runtime.processes.active()).toEqual([]);
+  } finally {
+    await app.close();
+    await runtime.close();
+  }
 });
 
 describe("OAuth scope split", () => {

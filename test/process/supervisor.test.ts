@@ -4,11 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { v7 as uuidv7 } from "uuid";
-import type { HostSpanConfig } from "../../src/config/schema.js";
+import { HostSpanError } from "../../src/errors.js";
+import { HostSpanConfigSchema, TerminalConfigSchema, type HostSpanConfig } from "../../src/config/schema.js";
+import { createInitialConfig } from "../../src/config/defaults.js";
 import { createRuntime } from "../../src/runtime/create-runtime.js";
 import { writeConfigAtomic } from "../../src/config/writer.js";
 import type { InteractiveSessionManager } from "../../src/processes/interactive-session.js";
 import { ProcessSupervisor } from "../../src/processes/supervisor.js";
+import { PtySessionManager } from "../../src/processes/pty-session.js";
 import { processGroupAlive } from "../../src/processes/recovery.js";
 import { OutputSpool, cleanupExpiredProcessSpools } from "../../src/processes/output-spool.js";
 import { PolicyEvaluator } from "../../src/policy/evaluator.js";
@@ -20,8 +23,10 @@ import { TargetRegistry } from "../../src/targets/registry.js";
 const roots: string[] = [];
 const databases: Array<ReturnType<typeof openDatabase>> = [];
 const supervisors: ProcessSupervisor[] = [];
+const nativeSessions: Array<{ manager: PtySessionManager; session: string }> = [];
 
 afterEach(async () => {
+  for (const { manager, session } of nativeSessions.splice(0)) manager.closeSync(session);
   for (const supervisor of supervisors.splice(0)) await supervisor.shutdown();
   for (const db of databases.splice(0)) {
     try {
@@ -43,7 +48,7 @@ afterEach(async () => {
   }
 });
 
-function fixture(maxTotalSpoolBytes = 64 * 1024 * 1024, terminal?: InteractiveSessionManager) {
+function fixture(maxTotalSpoolBytes = 64 * 1024 * 1024, terminal?: InteractiveSessionManager, completedOutputTtlMinutes = 60) {
   const root = mkdtempSync(join(tmpdir(), "hostspan-process-"));
   roots.push(root);
   const targetRoot = join(root, "target");
@@ -54,7 +59,7 @@ function fixture(maxTotalSpoolBytes = 64 * 1024 * 1024, terminal?: InteractiveSe
     policy_epoch: 1,
     server: { listen_host: "127.0.0.1", listen_port: 39393, data_dir: dataDir },
     retention: {
-      completed_process_output_ttl_minutes: 60,
+      completed_process_output_ttl_minutes: completedOutputTtlMinutes,
       operation_result_days: 14,
       audit_days: 30,
       max_total_spool_bytes: maxTotalSpoolBytes,
@@ -139,6 +144,171 @@ async function waitForNativeOutput(supervisor: ProcessSupervisor, processes: Pro
 }
 
 describe("process supervisor", () => {
+  it("defaults new and omitted process output retention to 24 hours while honoring an explicit 60 minutes", () => {
+    const initial = createInitialConfig();
+    expect(initial.retention).toMatchObject({
+      completed_process_output_ttl_minutes: 1_440,
+      operation_result_days: 14,
+      audit_days: 30,
+      max_total_spool_bytes: 1_073_741_824,
+    });
+    const omittedRetention: Partial<HostSpanConfig["retention"]> = { ...initial.retention };
+    delete omittedRetention.completed_process_output_ttl_minutes;
+    const omitted = HostSpanConfigSchema.parse({ ...initial, retention: omittedRetention });
+    expect(omitted.retention.completed_process_output_ttl_minutes).toBe(1_440);
+    const explicit = HostSpanConfigSchema.parse({
+      ...initial,
+      retention: { ...omittedRetention, completed_process_output_ttl_minutes: 60 },
+    });
+    expect(explicit.retention.completed_process_output_ttl_minutes).toBe(60);
+  });
+
+  it("retains completed output up to 24 hours and reports expiry without losing process metadata", async () => {
+    const { supervisor, processes } = fixture(64 * 1024 * 1024, undefined, 1_440);
+    const earliestFinishMs = Date.now();
+    const started = await supervisor.start(startInput({ wait_ms: 0 }), "req_output_ttl_24h");
+    const id = String(started.process_id);
+    const completed = await pollUntilTerminal(supervisor, id);
+    expect(completed).toMatchObject({ state: "succeeded", stdout: "ok", output_expired: false });
+
+    const expiry = Date.parse(String(processes.get(id)?.output_expires_at));
+    const expectedTtlMs = 1_440 * 60_000;
+    expect(expiry).toBeGreaterThanOrEqual(earliestFinishMs + expectedTtlMs);
+    expect(expiry).toBeLessThanOrEqual(Date.now() + expectedTtlMs);
+
+    const input = { process_id: id, stdout_cursor: 0, stderr_cursor: 0, max_bytes: 1024, wait_ms: 0 };
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date(expiry - 1));
+      expect(await supervisor.poll(input)).toMatchObject({ state: "succeeded", stdout: "ok", output_expired: false });
+      vi.setSystemTime(new Date(expiry));
+      expect(await supervisor.poll(input)).toMatchObject({
+        state: "succeeded",
+        exit_code: 0,
+        stdout: "",
+        output_expired: true,
+        stdout_dropped_bytes: 2,
+        stdout_earliest_cursor: 2,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps an unconfirmed native worker launch recoverable without replaying it", async () => {
+    const { config, processes, operations } = fixture();
+    const targets = new TargetRegistry(config);
+    const native = {
+      sessionName: (id: string) => id,
+      start: vi.fn(async () => { throw new HostSpanError("PROCESS_UNKNOWN", "worker startup wait elapsed"); }),
+      inspect: async () => ({ exists: false }),
+      outputBytes: () => 0,
+    } as unknown as InteractiveSessionManager;
+    const supervisor = new ProcessSupervisor({ config, targets, processes, operations, policy: new PolicyEvaluator(config), native });
+    const input = startInput();
+    await expect(supervisor.start(input, "req_native_uncertain")).rejects.toMatchObject({ code: "PROCESS_UNKNOWN", details: { process_id: expect.any(String) } });
+    expect(processes.getByKey(input.idempotency_key)).toMatchObject({ state: "launching", backend: "native", backend_ref: expect.any(String), output_expires_at: null });
+    expect(await supervisor.start(input, "req_native_uncertain_replay")).toMatchObject({ state: "launching" });
+    expect(native.start).toHaveBeenCalledTimes(1);
+    expect(operations.getState(input.idempotency_key)).toBe("unknown");
+  });
+
+  it("preserves native stdout/stderr and final exit across daemon replacement without terminal capability", async () => {
+    const { config, targetRoot } = fixture();
+    const configPath = join(config.server.data_dir, "config.yaml");
+    writeConfigAtomic(configPath, config);
+    let runtime = createRuntime(configPath);
+    const manager = new PtySessionManager(config.server.data_dir, TerminalConfigSchema.parse({}), { backend: "native" });
+    const stale = new PtySessionManager(config.server.data_dir, TerminalConfigSchema.parse({}), { backend: "native", requireOwnership: true });
+    const generation = manager.currentOwnerGeneration();
+    if (generation === null) throw new Error("native ownership was not activated");
+    stale.activateOwnership(generation);
+    const { deadline_ms: _deadline, ...input } = startInput({
+      argv: [process.execPath, "-e", "const fs=require('node:fs');fs.appendFileSync('starts','1');process.stdout.write('before-out\\n');process.stderr.write('before-err\\n');const t=setInterval(()=>{if(fs.existsSync('finish')){clearInterval(t);process.stdout.write('after-out\\n');process.stderr.write('after-err\\n');process.exitCode=7}},20)"],
+      wait_ms: 0,
+    });
+    try {
+      const started = await runtime.supervisor.start(input, "req_native_durable");
+      const id = String(started.process_id);
+      nativeSessions.push({ manager, session: id });
+      expect(started).toMatchObject({ backend: "native", interactive: false });
+      expect(started).not.toHaveProperty("terminal_session");
+      expect(runtime.processes.get(id)?.backend_ref).toBe(id);
+      await expect.poll(() => manager.outputBytes(id)).toBeGreaterThan(0);
+      await runtime.supervisor.shutdown();
+      await runtime.close();
+      expect(manager.inspectSync(id)).toMatchObject({ exists: true, dead: false });
+
+      runtime = createRuntime(configPath);
+      expect(runtime.processes.get(id)?.state).toBe("running");
+      await expect(stale.close(id)).rejects.toMatchObject({ code: "SERVER_BUSY", details: { reason: "stale_runtime_owner" } });
+      await expect(runtime.supervisor.write({ process_id: id, idempotency_key: uuidv7(), chars: "x", control_keys: [], stdout_cursor: 0, wait_ms: 0, max_bytes: 100 })).rejects.toMatchObject({ code: "TERMINAL_NOT_INTERACTIVE" });
+      const replay = await runtime.supervisor.start(input, "req_native_replay");
+      expect(replay.process_id).toBe(id);
+      expect(readFileSync(join(targetRoot, "starts"), "utf8")).toBe("1");
+      await runtime.supervisor.shutdown();
+      await runtime.close();
+      writeFileSync(join(targetRoot, "finish"), "finish");
+      await expect(manager.waitForExitStatus(id, 5_000)).resolves.toMatchObject({ exists: true, dead: true, exit_code: 7 });
+      runtime = createRuntime(configPath);
+      const result = await pollUntilTerminal(runtime.supervisor, id);
+      expect(result).toMatchObject({ state: "failed", exit_code: 7, stdout: "before-out\nafter-out\n", stderr: "before-err\nafter-err\n" });
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("enforces the original native deadline while the daemon is absent and recovers the final output", async () => {
+    const { config } = fixture();
+    const configPath = join(config.server.data_dir, "config.yaml");
+    writeConfigAtomic(configPath, config);
+    let runtime = createRuntime(configPath);
+    const manager = new PtySessionManager(config.server.data_dir, TerminalConfigSchema.parse({}), { backend: "native" });
+    try {
+      const started = await runtime.supervisor.start(startInput({ argv: [process.execPath, "-e", "process.stdout.write('deadline-out');process.stderr.write('deadline-err');setInterval(()=>{},1000)"], deadline_ms: 10_000, wait_ms: 0 }), "req_native_deadline");
+      const id = String(started.process_id);
+      nativeSessions.push({ manager, session: id });
+      await expect.poll(() => manager.outputBytes(id) > 0 && manager.outputBytes(id, "stderr") > 0, { timeout: 8_000 }).toBe(true);
+      await runtime.supervisor.shutdown();
+      await runtime.close();
+      await expect(manager.waitForExitStatus(id, 15_000)).resolves.toMatchObject({ exists: true, dead: true, reason: "deadline_exceeded" });
+      runtime = createRuntime(configPath);
+      expect(await runtime.supervisor.poll({ process_id: id, stdout_cursor: 0, stderr_cursor: 0, wait_ms: 0, max_bytes: 1024 })).toMatchObject({ state: "timed_out", stdout: "deadline-out", stderr: "deadline-err", deadline_at: started.deadline_at });
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("cancels a durable native process through the recovered worker", async () => {
+    const { config } = fixture();
+    const configPath = join(config.server.data_dir, "config.yaml");
+    writeConfigAtomic(configPath, config);
+    let runtime = createRuntime(configPath);
+    const manager = new PtySessionManager(config.server.data_dir, TerminalConfigSchema.parse({}), { backend: "native" });
+    try {
+      const descendant = "process.on('SIGTERM',()=>{});process.stdout.write(String(process.pid));setInterval(()=>{},1000)";
+      const script = `process.on('SIGTERM',()=>{});require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore','inherit','inherit']});setInterval(()=>{},1000)`;
+      const started = await runtime.supervisor.start(startInput({ argv: [process.execPath, "-e", script], wait_ms: 0 }), "req_native_cancel");
+      const id = String(started.process_id);
+      nativeSessions.push({ manager, session: id });
+      await expect.poll(() => manager.outputBytes(id), { timeout: 10_000 }).toBeGreaterThan(0);
+      await runtime.supervisor.shutdown();
+      await runtime.close();
+      runtime = createRuntime(configPath);
+      expect(manager.outputBytes(id)).toBeGreaterThan(0);
+      const before = await runtime.supervisor.poll({ process_id: id, stdout_cursor: 0, stderr_cursor: 0, wait_ms: 0, max_bytes: 1024 });
+      const descendantPid = Number(before.stdout);
+      expect(descendantPid).toBeGreaterThan(0);
+      const input = { process_id: id, idempotency_key: uuidv7(), grace_ms: 100 };
+      expect(await runtime.supervisor.cancel(input)).toMatchObject({ state: "cancelled", process_id: id });
+      expect(await runtime.supervisor.cancel(input)).toMatchObject({ state: "cancelled", process_id: id });
+      expect(manager.inspectSync(id)).toMatchObject({ exists: true, dead: true });
+      await expect.poll(() => { try { process.kill(descendantPid, 0); return true; } catch { return false; } }).toBe(false);
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("replays a proven pre-dispatch write failure without delivering input", async () => {
     const failure = new Error("output unavailable before dispatch");
     const terminal = { outputBytes: vi.fn(() => { throw failure; }), write: vi.fn() } as unknown as InteractiveSessionManager;

@@ -13,6 +13,11 @@ const mutation = {
   idempotency_key: z.string().min(1).max(128),
 };
 const pointer = { x: z.number().finite().nonnegative(), y: z.number().finite().nonnegative() };
+const keyModifiers = process.platform === "win32"
+  ? z.array(z.enum(["Shift", "Alt", "Meta"])).max(3)
+    .refine((values) => new Set(values).size === values.length, "Duplicate modifiers")
+    .describe("Windows modifiers: Meta is the Windows key (KeyE+Meta opens Explorer; Tab+Alt switches apps).")
+  : z.array(z.literal("Shift")).max(1);
 export const ComputerInputSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("open") }).strict(),
   z.object({ action: z.literal("observe"), ...session }).strict(),
@@ -28,7 +33,7 @@ export const ComputerInputSchema = z.discriminatedUnion("action", [
     key: z.enum(["Enter", "Tab", "Escape", "Backspace", "Delete", "Left", "Up", "Right", "Down", "Home", "End",
       "KeyA", "KeyB", "KeyC", "KeyD", "KeyE", "KeyF", "KeyG", "KeyH", "KeyI", "KeyJ", "KeyK", "KeyL", "KeyM",
       "KeyN", "KeyO", "KeyP", "KeyQ", "KeyR", "KeyS", "KeyT", "KeyU", "KeyV", "KeyW", "KeyX", "KeyY", "KeyZ"]),
-    modifiers: z.array(z.literal("Shift")).max(1).optional() }).strict(),
+    modifiers: keyModifiers.optional() }).strict(),
   z.object({ action: z.literal("scroll"), ...mutation,
     dx: z.number().finite().min(-10000).max(10000), dy: z.number().finite().min(-10000).max(10000) }).strict(),
 ]);
@@ -58,6 +63,7 @@ export class PortalDesktop {
   private displayId: string | undefined;
   private permission: "screen_recording" | "accessibility" | undefined;
   private sessionCreatedAt: string | undefined;
+  private activity: "viewing" | "controlling" | undefined;
 
   constructor(private readonly operations: OperationsStore, private readonly backend = desktopBackend()) {}
 
@@ -82,12 +88,15 @@ export class PortalDesktop {
       worker_pid: this.child?.pid, lifetime: "explicit_close_or_os_end_or_worker_exit",
       state: this.opening ? this.backend === "native" && !this.permission ? "connecting" : "awaiting_consent" : this.pending.size || this.observing ? "processing" : this.captureError ? "unavailable" : "ready",
       ...(this.permission ? { required_os_permission: this.permission } : {}),
+      ...(this.activity ? { activity: this.activity } : {}),
       message: this.opening ? this.permission
         ? `Allow HostSpan in macOS ${this.permission === "screen_recording" ? "Screen Recording" : "Accessibility"} settings. Close computer to cancel waiting.`
         : this.backend === "native" ? "Connecting to this computer's logged-in desktop."
         : "Select a screen and allow control in the desktop sharing dialog. You can close to cancel."
+        : this.activity === "viewing" ? "HostSpan is viewing this screen."
+        : this.activity === "controlling" ? "HostSpan is controlling this screen."
         : this.pending.size || this.observing ? "A desktop action is processing. Wait before sending another input."
-        : this.captureError ? `Desktop capture unavailable: ${this.captureError.message}. Observe again or close this session before normal recovery.`
+        : this.captureError ? `Desktop capture unavailable: ${this.captureError.message}`
         : "Desktop connected. Observe the screen before choosing where to act.",
       frame_ready: !!this.observationId && !this.captureError && !this.observing,
       ...(this.captureError instanceof HostSpanError ? { error_details: this.captureError.details } : {}),
@@ -147,7 +156,7 @@ export class PortalDesktop {
           this.pending.delete(reply.id);
           if (reply.error) pending.reject(new HostSpanError(
             reply.error_details?.reason === "portal_local_timeout" ? "DEADLINE_EXCEEDED"
-              : reply.error_details?.reason === "macos_gui_launch_required" ? "TARGET_NOT_READY" : "INTERNAL_ERROR",
+              : ["macos_gui_launch_required", "macos_desktop_locked"].includes(String(reply.error_details?.reason)) ? "TARGET_NOT_READY" : "INTERNAL_ERROR",
             reply.error, false, reply.error_details));
           else if (reply.result) pending.resolve(reply.result);
           else pending.reject(new Error("Desktop worker returned no result"));
@@ -172,6 +181,7 @@ export class PortalDesktop {
     this.displayId = this.permission = undefined;
     this.sessionCreatedAt = undefined;
     this.opening = undefined;
+    this.activity = undefined;
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
     this.observing = undefined;
@@ -203,8 +213,14 @@ export class PortalDesktop {
     // it. A retry must not send another capture or overwrite its correlation ID.
     // Starting a fresh capture invalidates the old image even if capture fails.
     this.observationId = undefined;
-    this.observing ??= this.call({ action: "observe" });
-    const capture = this.observing;
+    const capture = this.observing ?? (() => {
+      this.activity = "viewing";
+      const pending = this.call({ action: "observe" }).finally(() => {
+        if (this.activity === "viewing") this.activity = undefined;
+      });
+      this.observing = pending;
+      return pending;
+    })();
     const expired = new HostSpanError("DEADLINE_EXCEEDED", "Screen capture is still processing. Observe this same session again.", true,
       { reason: "desktop_observation_timeout", retry_after_ms: 1000 });
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -315,13 +331,26 @@ export class PortalDesktop {
       // Commit ambiguity before sending: a crash at any later point cannot cause duplicate input.
       this.operations.setState(input.idempotency_key, "unknown", { dispatched: "unknown" });
       this.observationId = undefined;
+      this.activity = "controlling";
       try {
         await this.call(input);
       } catch (error) {
+        if (error instanceof HostSpanError && error.code === "TARGET_NOT_READY"
+          && error.details.reason === "macos_desktop_locked") {
+          this.captureError = error;
+          if (error.details.dispatched === false) {
+            const rejected = new HostSpanError(error.code, error.message, true,
+              { ...error.details, next_action: this.status().next_action });
+            this.operations.setState(input.idempotency_key, "failed", undefined, rejected);
+            throw rejected;
+          }
+        }
         return { state: "unknown", dispatched: "unknown", observation_required: true,
           error: error instanceof Error ? error.message : "Desktop input failed",
           message: "Input delivery is uncertain. Inspect the screen; do not resend automatically.",
           next_action: this.status().next_action };
+      } finally {
+        if (this.activity === "controlling") this.activity = undefined;
       }
       const receipt = { ...this.desktopTarget(), state: "completed", dispatched: true, outcome_verified: false, session_id: this.sessionId,
         ...(input.action === "text" ? { clipboard_modified: true } : {}) };

@@ -1,6 +1,7 @@
 import type { HostSpanError } from "../errors.js";
 import { HOSTSPAN_OAUTH_SCOPES } from "../auth/oauth-scopes.js";
 import { argumentHash } from "../state/operations-repo.js";
+import { UuidV7Schema } from "../tools/schemas.js";
 
 const SAFE_ERROR_REASONS = new Set([
   "admin_config_mutation_denied",
@@ -76,9 +77,16 @@ export function auditErrorDiagnostics(error: Pick<HostSpanError, "code" | "retry
   return metadata;
 }
 
+// Safe even before authentication/schema validation; never retain arbitrary caller strings.
+export function auditInvocationIdentifiers(input: unknown): { idempotency_key?: string } {
+  const value = input && typeof input === "object" ? (input as Record<string, unknown>).idempotency_key : undefined;
+  const parsed = UuidV7Schema.safeParse(value);
+  return parsed.success ? { idempotency_key: parsed.data } : {};
+}
+
 // Record bounds and outcomes, never file/command/clipboard bodies or arbitrary error strings.
 export function auditRequestDiagnostics(input: Record<string, unknown>): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
+  const result: Record<string, unknown> = { ...auditInvocationIdentifiers(input) };
   for (const key of ["start_line", "end_line", "start_byte", "max_bytes", "max_entries", "max_matches", "wait_ms", "deadline_ms", "stdout_cursor", "stderr_cursor", "limit"]) {
     if (typeof input[key] === "number") result[key] = input[key];
   }

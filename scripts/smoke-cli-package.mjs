@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -109,13 +109,32 @@ try {
   console.log("[package-smoke] exercising installed CLI entrypoint and local admin flow");
   const bin = join(installDir, "node_modules", ".bin", process.platform === "win32" ? "hostspan.cmd" : "hostspan");
   if (!existsSync(bin)) throw new Error(`Installed HostSpan bin not found: ${bin}`);
-  const helper = join(installDir, "node_modules", "hostspan", "dist", "src", "computer", "portal-worker.py");
-  if (!readFileSync(helper).equals(readFileSync(join(root, "src", "computer", "portal-worker.py")))) {
-    throw new Error("Installed desktop helper does not match the candidate source");
+  for (const helperName of ["portal-worker.py", "native-windows.ps1"]) {
+    const helper = join(installDir, "node_modules", "hostspan", "dist", "src", "computer", helperName);
+    if (!readFileSync(helper).equals(readFileSync(join(root, "src", "computer", helperName)))) {
+      throw new Error(`Installed ${helperName} does not match the candidate source`);
+    }
   }
   const version = run(bin, ["--version"]);
   if (version !== packageJson.version) {
     throw new Error(`Installed CLI version ${version} does not match package.json ${packageJson.version}`);
+  }
+  const verbose = JSON.parse(run(bin, ["--version", "--verbose"]));
+  const installedReceipt = JSON.parse(readFileSync(join(installDir, "node_modules", "hostspan", "dist", "src", "build-identity.json"), "utf8"));
+  if (verbose.server_version !== packageJson.version || JSON.stringify(verbose.build) !== JSON.stringify(installedReceipt)) {
+    throw new Error("Installed CLI build identity differs from the packaged receipt");
+  }
+  if (process.env.GITHUB_ACTIONS === "true" && !verbose.build.build_id) {
+    throw new Error("CI-built CLI must retain a known Git source identity");
+  }
+  // An installed receipt matching itself is insufficient: compare with the actual build checkout.
+  if (!option("--tarball") || process.env.GITHUB_ACTIONS === "true") {
+    const sourceCommit = run("git", ["rev-parse", "--verify", "HEAD"], { cwd: root });
+    const sourceTree = run("git", ["rev-parse", "--verify", "HEAD^{tree}"], { cwd: root });
+    const sourceObjectFormat = run("git", ["rev-parse", "--show-object-format"], { cwd: root });
+    if (verbose.build.commit !== sourceCommit || verbose.build.tree !== sourceTree || verbose.build.object_format !== sourceObjectFormat) {
+      throw new Error("Installed build receipt does not identify this source checkout");
+    }
   }
   const help = run(bin, ["--help"]);
   if (!help.includes("Commands:")) throw new Error("Installed CLI help output is incomplete");
@@ -171,9 +190,42 @@ try {
   if (doctor.ok !== true) throw new Error(`Installed CLI doctor failed: ${JSON.stringify(doctor.checks)}`);
   const workflow = JSON.parse(run(bin, ["smoke", "--target", "package-smoke"], { env, timeout: 180_000 }));
   if (workflow.ok !== true) throw new Error(`Installed CLI full smoke failed: ${JSON.stringify(workflow.steps)}`);
+  console.log("[package-smoke] verifying packaged private-token CLI lifecycle");
+  const credentialPath = join(scratch, "package-token.credential");
+  const created = JSON.parse(run(bin, [
+    "access", "token", "create", "--name", "package-smoke", "--scopes", "hostspan.read", "--output", credentialPath,
+  ], { env }));
+  const tokenId = created.token?.token_id;
+  if (created.ok !== true || !/^pt_[0-9a-f]{32}$/.test(tokenId) || created.credential_file !== credentialPath) {
+    throw new Error("Installed CLI private token creation failed");
+  }
+  const firstSecret = readFileSync(credentialPath, "utf8").trim();
+  if (!/^hsp_[A-Za-z0-9_-]{43}$/.test(firstSecret) || JSON.stringify(created).includes(firstSecret)) {
+    throw new Error("Installed CLI did not deliver an opaque token only to its credential file");
+  }
+  if (process.platform !== "win32" && (statSync(credentialPath).mode & 0o777) !== 0o600) {
+    throw new Error("Installed CLI credential file must be mode 0600");
+  }
+  const rotatedPath = join(scratch, "package-token-rotated.credential");
+  const rotated = JSON.parse(run(bin, ["access", "token", "rotate", tokenId, "--output", rotatedPath], { env }));
+  const secondSecret = readFileSync(rotatedPath, "utf8").trim();
+  if (rotated.ok !== true || rotated.token?.token_id !== tokenId ||
+      !/^hsp_[A-Za-z0-9_-]{43}$/.test(secondSecret) || firstSecret === secondSecret ||
+      JSON.stringify(rotated).includes(secondSecret)) {
+    throw new Error("Installed CLI private token rotation failed");
+  }
+  const revoked = JSON.parse(run(bin, ["access", "token", "revoke", tokenId], { env }));
+  const listed = JSON.parse(run(bin, ["access", "token", "list"], { env }));
+  if (revoked.revoked !== true || listed.tokens?.find((token) => token.token_id === tokenId)?.revoked_at == null) {
+    throw new Error("Installed CLI private token revocation failed");
+  }
+
   const snapshot = JSON.parse(run(bin, ["admin", "snapshot", "--recent", "1"], { env }));
   if (snapshot.server_version !== packageJson.version) {
     throw new Error(`Installed admin snapshot version ${snapshot.server_version} does not match package.json ${packageJson.version}`);
+  }
+  if (JSON.stringify(snapshot.build) !== JSON.stringify(verbose.build)) {
+    throw new Error("Installed admin snapshot and --version --verbose disagree on source identity");
   }
 
   console.log(`HostSpan CLI package smoke passed: ${process.platform}/${process.arch} ${packageJson.version}`);

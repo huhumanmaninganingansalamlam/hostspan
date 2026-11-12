@@ -11,6 +11,7 @@ import { writeConfigAtomic } from "../../src/config/writer.js";
 import type { ProcessWriteToolInput } from "../../src/tools/schemas.js";
 import { PolicyEvaluator } from "../../src/policy/evaluator.js";
 import { PtySessionManager } from "../../src/processes/pty-session.js";
+import { withTransientSegmentReadRetry } from "../../src/processes/output-spool-store.mjs";
 import { ptySocketPath } from "../../src/processes/pty-ipc.js";
 import { recoverProcesses } from "../../src/processes/recovery.js";
 import { ProcessSupervisor } from "../../src/processes/supervisor.js";
@@ -18,6 +19,33 @@ import { claimRuntimeGeneration, openDatabase, runtimeGeneration } from "../../s
 import { OperationsRepo } from "../../src/state/operations-repo.js";
 import { ProcessesRepo } from "../../src/state/processes-repo.js";
 import { TargetRegistry } from "../../src/targets/registry.js";
+
+describe("Windows spool segment read sharing violations", () => {
+  it("retries transient Windows access errors without masking missing files or Unix failures", () => {
+    for (const code of ["EPERM", "EBUSY", "EACCES"]) {
+      let attempts = 0;
+      const result = withTransientSegmentReadRetry(() => {
+        attempts += 1;
+        if (attempts === 1) throw Object.assign(new Error("transient lock"), { code });
+        return 7;
+      }, "win32");
+      expect(result).toBe(7);
+      expect(attempts).toBe(2);
+    }
+    let missing = 0;
+    expect(() => withTransientSegmentReadRetry(() => {
+      missing += 1;
+      throw Object.assign(new Error("missing segment"), { code: "ENOENT" });
+    }, "win32")).toThrow("missing segment");
+    expect(missing).toBe(1);
+    let unix = 0;
+    expect(() => withTransientSegmentReadRetry(() => {
+      unix += 1;
+      throw Object.assign(new Error("denied"), { code: "EPERM" });
+    }, "linux")).toThrow("denied");
+    expect(unix).toBe(1);
+  });
+});
 
 const roots: string[] = [];
 const sessions: Array<{ terminal: PtySessionManager; session: string }> = [];
@@ -55,7 +83,9 @@ afterEach(async () => {
         rmSync(root, { recursive: true, force: true });
         break;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EPERM" || attempt === 39) throw error;
+        const code = (error as NodeJS.ErrnoException).code;
+        const retryable = code === "EPERM" || (process.platform === "win32" && (code === "EBUSY" || code === "EACCES"));
+        if (!retryable || attempt === 39) throw error;
         await sleep(25);
       }
     }

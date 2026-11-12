@@ -1,26 +1,32 @@
 import { HostSpanError } from "../errors.js";
+import type { HostSpanAuthMode } from "../config/schema.js";
+import type { PrivateTokenStore, VerifiedPrivateToken } from "../auth/private-token.js";
 import { errorResult, requestId } from "./result.js";
 import { createMcpFastifyApp } from "@modelcontextprotocol/fastify";
 import { toNodeHandler, type NodeIncomingMessageLike } from "@modelcontextprotocol/node";
 import {
   bearerAuthChallengeResponse,
+  classifyInboundRequest,
   createMcpHandler,
   McpServer,
   OAuthError,
   OAuthErrorCode,
+  SUPPORTED_PROTOCOL_VERSIONS,
   verifyBearerToken,
   type OAuthTokenVerifier,
 } from "@modelcontextprotocol/server";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { isIP } from "node:net";
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   OAuthAuthorizationRedirectError,
   OAuthHttpError,
   type OAuthService,
 } from "../auth/oauth-service.js";
 import { splitOAuthScopes } from "../auth/oauth-scopes.js";
-import { SERVER_VERSION } from "../version.js";
-import { TOOL_DEFINITIONS, TOOL_NAMES, registerHostSpanTools, type HostSpanToolAuthorization, type HostSpanToolHandlers, type ResponseContextProvider, type ToolCaller } from "./registry.js";
+import { auditInvocationIdentifiers } from "../observability/error-diagnostics.js";
+import { PROTOCOL_VERSION, SERVER_VERSION } from "../version.js";
+import { TOOL_DEFINITIONS, TOOL_NAMES, listedTools, registerHostSpanTools, type HostSpanToolAuthorization, type HostSpanToolHandlers, type ResponseContextProvider, type ToolCaller } from "./registry.js";
 
 // GHSA-46jr-4wx8-v453: bound schema-validation allocations, including our pre-handler diagnostics.
 const MAX_TOOL_INPUT_ELEMENTS = 10_000;
@@ -49,6 +55,9 @@ export interface HostSpanHttpServerOptions {
   allowed_hosts?: string[];
   max_inflight_mcp_requests?: number;
   oauth?: OAuthService;
+  authenticationMode?: HostSpanAuthMode;
+  privateTokens?: PrivateTokenStore;
+  protected_transport?: "encrypted_private_network";
   authorization?: HostSpanToolAuthorization;
   handlers: HostSpanToolHandlers;
   responseContext: ResponseContextProvider;
@@ -72,6 +81,18 @@ function normalizeAllowedHost(host: string): string {
   return isIP(trimmed) === 6 ? `[${trimmed.toLowerCase()}]` : trimmed.toLowerCase();
 }
 
+function requestedProtocol(value: unknown): string | null {
+  if (value === undefined) return null;
+  return typeof value === "string" && (value === PROTOCOL_VERSION || SUPPORTED_PROTOCOL_VERSIONS.includes(value))
+    ? value : "unrecognized";
+}
+
+function observedMediaType(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  const media = typeof value === "string" ? value.split(";", 1)[0]?.trim().toLowerCase() : undefined;
+  return media === "application/json" || media === "text/event-stream" ? media : "other";
+}
+
 export function resolveAllowedHosts(listenHost: string, configured: string[] = []): string[] {
   if (configured.length) return [...new Set(configured.map(normalizeAllowedHost))];
   if (["0.0.0.0", "::"].includes(listenHost)) {
@@ -87,6 +108,7 @@ export function createMcpServer(
   handlers: HostSpanToolHandlers,
   responseContext: ResponseContextProvider,
   authorization?: HostSpanToolAuthorization,
+  mode: HostSpanAuthMode = "none",
 ): McpServer {
   const server = new McpServer(
     { name: "hostspan", version: SERVER_VERSION },
@@ -105,14 +127,30 @@ export function createMcpServer(
         "A cursor behind retention resumes at the earliest retained output with explicit loss metadata. Poll for completion; human PTY attachments receive recent history and live output.",
     },
   );
-  registerHostSpanTools(server, handlers, responseContext, authorization);
+  registerHostSpanTools(server, handlers, responseContext, authorization, mode);
+  // SDK 2's high-level registration omits canonical securitySchemes. Keep discovery
+  // on its public handler API; tool invocation still uses the original SDK handlers.
+  server.server.setRequestHandler("tools/list", () => ({ tools: listedTools(mode) }));
   return server;
 }
 
 export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): FastifyInstance {
   const loopback = ["127.0.0.1", "localhost", "::1"].includes(options.listen_host.toLowerCase());
-  if (!loopback && !options.oauth) {
-    throw new Error("Non-loopback HostSpan HTTP serving requires OAuth.");
+  const mode = options.authenticationMode ?? (options.oauth ? "oauth" : "none");
+  if (mode === "oauth" && (!options.oauth || options.privateTokens)) {
+    throw new Error("OAuth mode requires OAuth only.");
+  }
+  if (mode === "private_token" && (!options.privateTokens || options.oauth)) {
+    throw new Error("private_token mode requires a private token store and no OAuth.");
+  }
+  if (mode === "none" && (options.oauth || options.privateTokens || !loopback)) {
+    throw new Error("Non-loopback HostSpan HTTP serving requires OAuth or private_token; local none must not have authentication services.");
+  }
+  if (mode === "private_token" && !loopback) {
+    if (!isIP(options.listen_host) || ["0.0.0.0", "::"].includes(options.listen_host) ||
+        !options.allowed_hosts?.length || options.protected_transport !== "encrypted_private_network") {
+      throw new Error("Remote private_token requires exact IP bind, explicit allowed_hosts, and approved encrypted private transport.");
+    }
   }
   const allowedHosts = resolveAllowedHosts(options.listen_host, options.allowed_hosts);
   const app = createMcpFastifyApp({ host: options.listen_host, allowedHosts, allowedOrigins: allowedHosts });
@@ -123,19 +161,68 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
   const reportTransportError = (error: Error) => {
     options.trace?.("transport.error", { message: error.message });
   };
+  type Observation = { transport_request_id: string; idempotency_key?: string; request_id?: string; response_source?: "sdk" | "fastify"; response_status?: number; response_media?: string | null; response_auth_challenge?: boolean };
+  const observations = new WeakMap<object, Observation>();
+  const servingRequest = new AsyncLocalStorage<Observation>();
   const mcpHandler = createMcpHandler(
-    () => createMcpServer(options.handlers, options.responseContext, options.authorization),
+    (context) => {
+      const invocation = servingRequest.getStore();
+      if (invocation) options.trace?.("transport.sdk_selected", {
+        transport_request_id: invocation.transport_request_id, ...auditInvocationIdentifiers(invocation), sdk_era: context.era,
+      });
+      return createMcpServer(options.handlers, options.responseContext, options.authorization, mode);
+    },
     {
       onerror: reportTransportError,
       responseMode: "auto",
     },
   );
-  const nodeHandler = toNodeHandler(mcpHandler, { onerror: reportTransportError });
+  const nodeHandler = toNodeHandler({ fetch: async (request, context) => {
+    const response = await mcpHandler.fetch(request, context);
+    const observation = servingRequest.getStore();
+    if (observation) {
+      // Supported fetch Response headers; leave its body/stream and all headers unchanged.
+      observation.response_source = "sdk";
+      observation.response_status = response.status;
+      observation.response_media = observedMediaType(response.headers.get("content-type"));
+      observation.response_auth_challenge = response.headers.has("www-authenticate");
+    }
+    return response;
+  } }, { onerror: reportTransportError });
   const maxInflightMcpRequests = options.max_inflight_mcp_requests ?? 128;
   let inflightMcpRequests = 0;
   app.addHook("onRequest", async (request, reply) => {
     const path = request.url.split("?", 1)[0];
     if (path !== "/mcp") return;
+    const observation: Observation = { transport_request_id: request.id };
+    observations.set(request, observation);
+    let observed = false;
+    const observeResponse = (outcome: "finished" | "closed_before_finish") => {
+      if (observed) return;
+      observed = true;
+      const body = request.body as { params?: { arguments?: unknown; _meta?: Record<string, unknown> } } | undefined;
+      const id = reply.raw.getHeader("x-hostspan-request-id") ?? observation.request_id;
+      const type = reply.raw.getHeader("content-type");
+      const media = type !== undefined ? observedMediaType(type) : "unobserved";
+      options.trace?.("transport.response", {
+        transport_request_id: request.id, ...auditInvocationIdentifiers(body?.params?.arguments),
+        ...(typeof id === "string" && /^req_[0-9a-f]{32}$/i.test(id) ? { request_id: id } : {}),
+        requested_protocol_header: requestedProtocol(request.headers["mcp-protocol-version"]),
+        requested_protocol_envelope: requestedProtocol(body?.params?._meta?.["io.modelcontextprotocol/protocolVersion"]),
+        selected_protocol_version: "unobserved", response_envelope_validity: "unobserved",
+        outcome, headers_sent: reply.raw.headersSent, writable_finished: reply.raw.writableFinished,
+        http_status: reply.raw.headersSent ? reply.raw.statusCode : null,
+        content_type: reply.raw.headersSent ? media : null,
+        http_auth_challenge_present: reply.raw.headersSent ? (reply.raw.hasHeader("www-authenticate") ? true : "unobserved") : null,
+        prepared_response_source: observation.response_source ?? "unobserved",
+        prepared_response_status: observation.response_status ?? "unobserved",
+        prepared_response_content_type: observation.response_media === undefined ? "unobserved" : observation.response_media,
+        prepared_response_http_auth_challenge_present: observation.response_auth_challenge ?? "unobserved",
+        mcp_auth_challenge_present: "unobserved",
+      });
+    };
+    reply.raw.once("finish", () => observeResponse("finished"));
+    reply.raw.once("close", () => observeResponse("closed_before_finish"));
     if (inflightMcpRequests >= maxInflightMcpRequests) {
       return reply
         .code(503)
@@ -156,10 +243,24 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
     reply.raw.once("finish", release);
     reply.raw.once("close", release);
   });
+  app.addHook("onSend", async (request, reply, payload) => {
+    const observation = observations.get(request);
+    if (observation) {
+      observation.response_source = "fastify";
+      observation.response_status = reply.statusCode;
+      observation.response_media = observedMediaType(reply.getHeader("content-type"));
+      observation.response_auth_challenge = reply.hasHeader("www-authenticate");
+      const id = reply.getHeader("x-hostspan-request-id");
+      if (typeof id === "string" && /^req_[0-9a-f]{32}$/i.test(id)) observation.request_id = id;
+    }
+    return payload;
+  });
   app.addHook("preHandler", async (request) => {
     const traceUrl = request.url.split("?", 1)[0];
-    const body = request.body as { method?: unknown; params?: { name?: unknown } } | undefined;
+    const body = request.body as { method?: unknown; params?: { name?: unknown; arguments?: unknown } } | undefined;
     options.trace?.("transport.request", {
+      transport_request_id: request.id,
+      ...auditInvocationIdentifiers(body?.params?.arguments),
       method: request.method,
       url: traceUrl,
       rpc_method: typeof body?.method === "string" && ["initialize", "tools/list", "tools/call", "server/discover"].includes(body.method) ? body.method : undefined,
@@ -174,6 +275,8 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
   });
   if (options.oauth) registerOAuthRoutes(app, options.oauth, options.trace);
   app.all("/mcp", async (request, reply) => {
+    const body = request.body as { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: { name?: unknown; arguments?: unknown } } | undefined;
+    const invocation = auditInvocationIdentifiers(body?.params?.arguments);
     let caller: ToolCaller = { caller_mode: "local" };
     if (options.oauth && oauthVerifier) {
       try {
@@ -189,8 +292,8 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
         const response = bearerAuthChallengeResponse(error, {
           resourceMetadataUrl: options.oauth.resourceMetadataUrl,
         });
-        const body = request.body as { params?: { name?: unknown } } | undefined;
         options.trace?.("authorization.rejected", {
+          transport_request_id: request.id, ...invocation,
           request_id: id, stage: "authentication", http_status: response.status,
           error_code: error instanceof OAuthError ? error.code : "server_error",
           tool: TOOL_NAMES.find((name) => name === body?.params?.name),
@@ -202,10 +305,40 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
         );
       }
     }
-    const body = request.body as { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: { name?: unknown; arguments?: unknown } } | undefined;
+    if (mode === "private_token" && options.privateTokens) {
+      let verified: VerifiedPrivateToken | undefined;
+      try {
+        verified = options.privateTokens.verifyAuthorizationHeader(request.headers.authorization);
+      } catch {
+        // Store failures must never grant local authority or expose credential details.
+        return reply.code(503).header("cache-control", "no-store").send({ error: "authentication_unavailable" });
+      }
+      if (!verified) {
+        const id = requestId();
+        options.trace?.("authorization.rejected", {
+          transport_request_id: request.id, ...invocation,
+          request_id: id, stage: "authentication", http_status: 401,
+          error_code: "invalid_token",
+          tool: TOOL_NAMES.find((name) => name === body?.params?.name),
+        });
+        return reply.code(401).header("cache-control", "no-store").header("x-hostspan-request-id", id)
+          .send({ error: "unauthorized" });
+      }
+      Object.assign(request.raw, {
+        auth: { token: "redacted", clientId: `private_token:${verified.token_id}`, scopes: verified.scopes },
+      });
+      caller = { caller_mode: "private_token", private_token_id: verified.token_id };
+    }
     if (request.method === "POST" && body?.jsonrpc === "2.0" && (typeof body.id === "string" || typeof body.id === "number") && body.method === "tools/call") {
       const tool = TOOL_DEFINITIONS.find((entry) => entry.name === body.params?.name);
-      if (tool) {
+      const route = classifyInboundRequest({
+        httpMethod: request.method,
+        ...(request.headers["mcp-protocol-version"] !== undefined ? { protocolVersionHeader: request.headers["mcp-protocol-version"].toString() } : {}),
+        ...(request.headers["mcp-method"] !== undefined ? { mcpMethodHeader: request.headers["mcp-method"].toString() } : {}),
+        ...(request.headers["mcp-name"] !== undefined ? { mcpNameHeader: request.headers["mcp-name"].toString() } : {}),
+        body,
+      });
+      if (tool && route.kind !== "reject") {
         // SDK schema failures bypass tool handlers. Preserve their detail and correlate them in our audit.
         // Valid calls still pass through the SDK's protocol and schema checks.
         const args = body.params?.arguments ?? {};
@@ -215,13 +348,30 @@ export function createHostSpanHttpServer(options: HostSpanHttpServerOptions): Fa
           const issues = parsed ? parsed.error.issues.map((issue) => `${issue.path.join(".") || "arguments"}: ${issue.message}`)
             : [`arguments exceed the ${MAX_TOOL_INPUT_ELEMENTS} element validation budget`];
           const error = new HostSpanError("VALIDATION_FAILED", `Invalid ${tool.name} arguments: ${issues.join("; ")}`, false, { reason: "invalid_tool_arguments" });
-          options.authorization?.rejected?.(tool.name, {}, id, error, "validation", tool.name === "computer" ? caller : undefined);
-          return reply.send({ jsonrpc: "2.0", id: body.id ?? null, result: errorResult(options.responseContext(), error, id) });
+          options.authorization?.rejected?.(tool.name, invocation, id, error, "validation", tool.name === "computer" ? caller : undefined);
+          // Schema-owned top-level names only: nested record keys and issue messages can contain caller data.
+          const fields = new Set("shape" in tool.inputSchema ? Object.keys(tool.inputSchema.shape)
+            : tool.inputSchema.options.flatMap((option) => Object.keys(option.shape)));
+          const validationIssues = parsed ? parsed.error.issues.slice(0, 16).map(({ path, code }) => ({
+            field: typeof path[0] === "string" && fields.has(path[0]) ? path[0] : "arguments", code,
+          })) : [{ field: "arguments", code: "input_budget_exceeded" }];
+          options.trace?.("validation.rejected", { transport_request_id: request.id, ...invocation,
+            request_id: id, tool: tool.name, stage: "validation", error_code: error.code, reason: "invalid_tool_arguments",
+            validation_issues: validationIssues, validation_issue_count: parsed ? parsed.error.issues.length : 1 });
+          reply.header("x-hostspan-request-id", id);
+          // This direct reply bypasses the SDK's modern wire-result stamp.
+          return reply.send({ jsonrpc: "2.0", id: body.id ?? null, result: {
+            ...errorResult(options.responseContext(), error, id),
+            ...(route.kind === "modern" ? { resultType: "complete" } : {}),
+          } });
         }
       }
     }
     reply.hijack();
-    await nodeHandler(request.raw as unknown as NodeIncomingMessageLike, reply.raw, request.body);
+    const observation = observations.get(request) ?? { transport_request_id: request.id };
+    Object.assign(observation, invocation);
+    await servingRequest.run(observation, () =>
+      nodeHandler(request.raw as unknown as NodeIncomingMessageLike, reply.raw, request.body));
   });
   app.addHook("onClose", async () => {
     await mcpHandler.close();

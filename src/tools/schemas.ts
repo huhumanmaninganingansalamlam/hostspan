@@ -2,7 +2,7 @@ import { z } from "zod";
 
 const RelativePathSchema = z.string().min(1).max(4096);
 const Sha256HexSchema = z.string().regex(/^[0-9a-f]{64}$/i, "expected a 64-character SHA-256 hex digest");
-const UuidV7Schema = z
+export const UuidV7Schema = z
   .string()
   .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i, "expected a UUIDv7 idempotency key");
 

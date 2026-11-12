@@ -17,6 +17,7 @@ import { HostSpanLogger } from "../../src/observability/logger.js";
 import { buildSupportExport } from "../../src/observability/support-export.js";
 import { inspectWindowsAcl, protectWindowsFile, protectWindowsTree } from "../../src/security/windows-acl.js";
 import { openReadOnlyDatabase } from "../../src/state/database.js";
+import { BUILD_IDENTITY } from "../../src/version.js";
 
 const roots: string[] = [];
 
@@ -304,6 +305,7 @@ describe("security and operational boundaries", () => {
       expect(exported).not.toContain(runtime.targets.get("local").root_real);
       expect(exported).toContain("native_execution");
       expect(exported).toContain("sandboxed");
+      expect(JSON.parse(exported).build).toEqual(BUILD_IDENTITY);
     } finally {
       await runtime.close();
     }

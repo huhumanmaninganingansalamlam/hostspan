@@ -1,14 +1,16 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import process from "node:process";
-import koffi from "koffi";
+import { createRequire } from "node:module";
 import { resolveWindowsCommand } from "./windows-command.mjs";
 
 const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9;
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
 
 function lastErrorFunctions() {
+  const koffi = createRequire(import.meta.url)("koffi");
   const kernel32 = koffi.load("kernel32.dll");
   const HANDLE = koffi.pointer("HANDLE", koffi.opaque());
   return {
@@ -52,7 +54,42 @@ function resolveCommand(program, argv, cwd, env) {
   return resolveWindowsCommand(program, argv, cwd, env);
 }
 
-if (process.argv.includes("--probe")) {
+export function spawnWindowsJobWorker(input) {
+  if (process.platform !== "win32" || process.arch !== "x64") {
+    throw new Error(`Windows Job Object backend requires win32/x64, got ${process.platform}/${process.arch}`);
+  }
+  const dir = join(input.dataDir, "spools", "processes", input.processId);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const specPath = join(dir, `windows-job-${process.pid}.json`);
+  const readyPath = join(dir, "windows-job-ready.json");
+  rmSync(readyPath, { force: true });
+  writeFileSync(specPath, `${JSON.stringify({ cwd: input.cwd, argv: input.argv, env: input.env, readyPath })}\n`, { mode: 0o600 });
+  try { chmodSync(specPath, 0o600); } catch { /* Windows ACLs are authoritative. */ }
+  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "--spec", specPath], {
+    detached: true, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+    env: { ...process.env, ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}) },
+  });
+  const ready = (async () => {
+    const deadline = Date.now() + 5_000;
+    while (Date.now() <= deadline) {
+      let status;
+      try {
+        if (existsSync(readyPath)) status = JSON.parse(readFileSync(readyPath, "utf8"));
+      } catch { /* Atomic replacement can race a Windows reader. */ }
+      if (status?.state === "running" && status.target_pid && status.worker_pid) return { workerPid: status.worker_pid, targetPid: status.target_pid };
+      if (status?.state === "failed") throw new Error(status.reason ?? "Windows Job Object worker failed to launch the target process.");
+      if (child.exitCode !== null || child.signalCode !== null) {
+        throw new Error(`Windows Job Object worker exited before launch receipt (exit=${child.exitCode}, signal=${child.signalCode ?? "none"}).`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error("Windows Job Object worker did not produce a launch receipt.");
+  })();
+  return { child, ready };
+}
+
+const isEntrypoint = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isEntrypoint && process.argv.includes("--probe")) {
   createKillOnCloseJob();
   const child = spawn(process.execPath, ["-e", "setTimeout(()=>{},60000)"], {
     detached: true,
@@ -61,7 +98,7 @@ if (process.argv.includes("--probe")) {
   });
   child.unref();
   process.stdout.write(`job-object-ok child=${child.pid}\n`);
-} else {
+} else if (isEntrypoint) {
   const specIndex = process.argv.indexOf("--spec");
   const specPath = specIndex >= 0 ? process.argv[specIndex + 1] : undefined;
   if (!specPath) throw new Error("windows job worker requires --spec PATH");

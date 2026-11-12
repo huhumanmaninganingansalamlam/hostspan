@@ -1,4 +1,5 @@
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +23,7 @@ import { writeConfigAtomic } from "../../src/config/writer.js";
 import { AuditRepo } from "../../src/state/audit-repo.js";
 import { DB_SCHEMA_VERSION, openDatabase } from "../../src/state/database.js";
 import { ProcessesRepo } from "../../src/state/processes-repo.js";
+import { BUILD_IDENTITY, loadBuildIdentity } from "../../src/version.js";
 
 const roots: string[] = [];
 
@@ -70,6 +72,43 @@ function fixture() {
 }
 
 describe("local admin snapshot", () => {
+  it("loads a validated build receipt and rejects a tampered or missing file", () => {
+    const { root } = fixture();
+    const path = join(root, "build-identity.json");
+    const commit = "a".repeat(40);
+    const tree = "b".repeat(40);
+    const variant = "candidate";
+    const object_format = "sha1";
+    const dirty = false;
+    const build_id = `sha256:${createHash("sha256").update(JSON.stringify([1, variant, commit, tree, object_format, dirty])).digest("hex")}`;
+    const receipt = { schema_version: 1, build_id, commit, tree, object_format, variant, dirty };
+    writeFileSync(path, JSON.stringify(receipt));
+    expect(loadBuildIdentity(path)).toEqual(receipt);
+    writeFileSync(path, JSON.stringify({ ...receipt, tree: "c".repeat(40) }));
+    expect(loadBuildIdentity(path)).toMatchObject({ build_id: null, commit: null, variant: "development" });
+    const releaseDigest = (releaseDirty: boolean) => `sha256:${createHash("sha256").update(JSON.stringify([1, "release", commit, tree, object_format, releaseDirty])).digest("hex")}`;
+    const cleanRelease = { ...receipt, variant: "release", build_id: releaseDigest(false) };
+    writeFileSync(path, JSON.stringify(cleanRelease));
+    expect(loadBuildIdentity(path)).toEqual(cleanRelease);
+    // The digest is valid for the dirty release too: only the release-specific guard can reject it.
+    writeFileSync(path, JSON.stringify({ ...cleanRelease, dirty: true, build_id: releaseDigest(true) }));
+    expect(loadBuildIdentity(path)).toMatchObject({ build_id: null, commit: null, variant: "development" });
+    rmSync(path);
+    expect(loadBuildIdentity(path)).toMatchObject({ build_id: null, commit: null, dirty: null });
+  });
+
+  it("reports one build identity in runtime status and the admin snapshot", async () => {
+    const { configPath } = fixture();
+    const runtime = createRuntime(configPath);
+    try {
+      const status = await runtime.handlers.system_status({}, "req_build_identity");
+      expect(status).toMatchObject({ build: BUILD_IDENTITY });
+      expect(buildAdminSnapshot(configPath).build).toEqual(BUILD_IDENTITY);
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("defaults computer-use OFF and applies explicit ON/OFF only at the restart boundary", async () => {
     const { configPath } = fixture();
     expect(createInitialConfig().computer).toBeUndefined();

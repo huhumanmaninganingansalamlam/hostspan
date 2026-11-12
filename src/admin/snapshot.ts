@@ -12,7 +12,7 @@ import { DB_SCHEMA_VERSION, openReadOnlyDatabase, readTargetSnapshots } from "..
 import { ProcessesRepo } from "../state/processes-repo.js";
 import { targetConfigDigest, TargetRegistry } from "../targets/registry.js";
 import { daemonStatus, requestDaemonComputer } from "../daemon/control.js";
-import { PROTOCOL_VERSION, SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
+import { BUILD_IDENTITY, PROTOCOL_VERSION, SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
 
 export interface AdminSnapshotOptions {
   recent?: number;
@@ -236,6 +236,7 @@ export function buildAdminSnapshot(configPath: string, options: AdminSnapshotOpt
 
   return {
     server_version: SERVER_VERSION,
+    build: BUILD_IDENTITY,
     toolset_version: TOOLSET_VERSION,
     policy_epoch: config.policy_epoch,
     daemon,

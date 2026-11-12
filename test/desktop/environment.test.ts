@@ -4,6 +4,7 @@ import { delimiter, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { buildSystemdServiceUnit, serviceExecutionPath, systemdServiceInstalled } from "../../src/services/systemd.js";
 import {
+  desktopDaemonStartupTimeoutMs,
   desktopLaunchSpec,
   extractMarkedPath,
   isDesktopLoginLaunch,
@@ -84,6 +85,13 @@ describe("desktop environment", () => {
     expect(isDesktopLoginLaunch("darwin", ["HostSpan", "--hostspan-login"], false)).toBe(false);
   });
 
+  it("allows a bounded macOS login grace without changing manual start or other OS startup", () => {
+    expect(desktopDaemonStartupTimeoutMs("darwin", true)).toBe(20_000);
+    expect(desktopDaemonStartupTimeoutMs("darwin", false)).toBe(5_000);
+    expect(desktopDaemonStartupTimeoutMs("linux", true)).toBe(5_000);
+    expect(desktopDaemonStartupTimeoutMs("win32", true)).toBe(5_000);
+  });
+
   it("writes Linux autostart without a shell or PATH-dependent Electron shim", () => {
     const contents = linuxAutoStartContents({
       path: "/opt/Host Span/hostspan-desktop",
@@ -125,5 +133,18 @@ describe("desktop environment", () => {
     expect(unit).not.toMatch(/^PrivateTmp=/m);
     expect(unit).not.toMatch(/^NoNewPrivileges=/m);
     expect(unit).toContain(`Environment="PATH=${[runtimeDir, "/custom/bin", "/usr/bin"].join(delimiter)}"`);
+  });
+
+  it.runIf(process.platform === "linux")("preserves literal paths in systemd units", () => {
+    const unit = buildSystemdServiceUnit(
+      "/tmp/Host %u/$HOME/config.yaml",
+      "/tmp/Host %u/$HOME/cli.js",
+      "/opt/Node %u/$HOME/node",
+      "/usr/local/%u/bin:/usr/bin",
+    );
+    expect(unit).toContain('Environment="PATH=/opt/Node %%u/$HOME:/usr/local/%%u/bin:/usr/bin"');
+    expect(unit).toContain(
+      'ExecStart="/opt/Node %%u/$$HOME/node" "/tmp/Host %%u/$$HOME/cli.js" serve --config "/tmp/Host %%u/$$HOME/config.yaml"',
+    );
   });
 });

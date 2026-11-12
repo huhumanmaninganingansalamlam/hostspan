@@ -1,5 +1,5 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import process from "node:process";
@@ -12,6 +12,7 @@ const specIndex = args.indexOf("--spec");
 if (specIndex < 0 || !args[specIndex + 1]) throw new Error("pty worker requires --spec PATH");
 const specPath = args[specIndex + 1];
 const spec = JSON.parse(readFileSync(specPath, "utf8"));
+const native = spec.backend === "native";
 rmSync(specPath, { force: true });
 
 const sessionDir = join(spec.dataDir, "sessions", spec.session);
@@ -28,8 +29,10 @@ if (process.platform !== "win32") {
 rmSync(drainPath, { force: true });
 
 let ptyProcess;
+let nativePid;
 let outputBytes = spool.highWater("stdout");
 let terminationReason = null;
+let terminationDeadline = 0;
 let finished = false;
 let exitObserved = false;
 let columns = spec.columns;
@@ -82,7 +85,7 @@ function writeStatus(fields) {
     process_id: spec.processId,
     session: spec.session,
     worker_pid: process.pid,
-    pty_pid: ptyProcess?.pid ?? null,
+    pty_pid: nativePid ?? ptyProcess?.pid ?? null,
     columns,
     rows,
     output_bytes: outputBytes,
@@ -99,6 +102,10 @@ function writeStatus(fields) {
 function killProcessTree(signal) {
   if (!ptyProcess) return;
   if (process.platform === "win32") {
+    if (native) {
+      if (signal === "SIGKILL") ptyProcess.kill("SIGKILL");
+      return;
+    }
     if (signal === "SIGKILL" && ptyProcess.pid > 0) {
       const result = spawnSync("taskkill.exe", ["/PID", String(ptyProcess.pid), "/T", "/F"], {
         encoding: "utf8",
@@ -132,7 +139,8 @@ function terminate(reason, graceMs = 500) {
   if (finished) return;
   terminationReason ??= reason;
   killProcessTree("SIGTERM");
-  const hardDelay = process.platform === "win32" ? Math.max(500, graceMs) : Math.max(0, graceMs);
+  const hardDelay = process.platform === "win32" && !native ? Math.max(500, graceMs) : Math.max(0, graceMs);
+  terminationDeadline = Date.now() + hardDelay + 1_000;
   const timer = setTimeout(() => {
     if (!finished) killProcessTree("SIGKILL");
   }, hardDelay);
@@ -162,6 +170,11 @@ function appendOutput(data) {
     }
     socket.write(bytes);
   }
+}
+
+function appendNativeOutput(stream, chunk) {
+  spool.append(stream, chunk);
+  outputBytes = spool.highWater("stdout") + spool.highWater("stderr");
 }
 
 function controlBytes(keys) {
@@ -214,6 +227,10 @@ async function handleRequest(socket, request, rest) {
   const mutating = request.op === "write" || request.op === "terminate" || (request.op === "attach" && !request.read_only);
   if (mutating && !ownerGenerationIsCurrent(request.owner_generation)) {
     socket.end(`${JSON.stringify({ ok: false, error: "stale_owner" })}\n`);
+    return;
+  }
+  if (native && (request.op === "write" || request.op === "attach")) {
+    socket.end(`${JSON.stringify({ ok: false, error: "not_interactive" })}\n`);
     return;
   }
   if (request.op === "write") {
@@ -278,25 +295,27 @@ const server = createServer((socket) => parseRequest(socket, Buffer.alloc(0)));
 
 async function main() {
   writeStatus({ status: "starting", exit_code: null, signal: null, reason: null, started_at: new Date().toISOString() });
-  const pty = await import("node-pty");
   const program = spec.argv[0];
-  if (!program) throw new Error("interactive argv is empty");
+  if (!program) throw new Error("process argv is empty");
   const childEnv = spec.env;
   const command = resolvePtyCommand(program, spec.argv.slice(1), spec.cwd, childEnv);
-  ptyProcess = pty.spawn(command.program, command.ptyArgv ?? command.argv, {
-    name: childEnv.TERM || "xterm-256color",
-    cols: spec.columns,
-    rows: spec.rows,
-    cwd: spec.cwd,
-    env: childEnv,
-  });
-  ptyProcess.onData(appendOutput);
-  ptyProcess.onExit(({ exitCode, signal }) => {
+  const onExit = ({ exitCode, signal }) => {
     exitObserved = true;
-    const settle = setTimeout(() => {
+    const settle = setTimeout(async () => {
+      // Native close means both pipe readers reached EOF. Cancellation also
+      // needs the process group gone before publishing a confirmed result.
+      if (native && terminationReason) {
+        const deadline = terminationDeadline;
+        let alive = true;
+        while (alive && Date.now() < deadline) {
+          try { process.kill(process.platform === "win32" ? nativePid : -ptyProcess.pid, 0); }
+          catch (error) { alive = error.code === "EPERM"; }
+          if (alive) await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        if (alive) terminationReason = "termination_unconfirmed";
+      }
       finished = true;
-      // Unix forced cleanup is not proof that the PTY reached kernel EOF.
-      if (process.platform === "win32" || ptyProcess._outputDrained === true) {
+      if (native || process.platform === "win32" || ptyProcess._outputDrained === true) {
         writeFileSync(drainPath, "", { mode: 0o600 });
       }
       writeStatus({
@@ -311,9 +330,42 @@ async function main() {
       server.close(() => process.exit(0));
       const forceExit = setTimeout(() => process.exit(0), 250);
       forceExit.unref();
-    }, 75);
+    }, native ? 0 : 75);
     settle.unref();
-  });
+  };
+  if (native) {
+    let ready;
+    if (process.platform === "win32") {
+      const { spawnWindowsJobWorker } = await import("./windows-job-worker.mjs");
+      const launched = spawnWindowsJobWorker({ dataDir: spec.dataDir, processId: spec.processId, cwd: spec.cwd, argv: spec.argv, env: childEnv });
+      ptyProcess = launched.child;
+      ready = launched.ready.then((receipt) => { nativePid = receipt.targetPid; });
+    } else {
+      ptyProcess = spawn(command.program, command.argv, {
+        cwd: spec.cwd, env: childEnv, shell: false, detached: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      ready = new Promise((resolve, reject) => {
+        ptyProcess.once("spawn", resolve);
+        ptyProcess.once("error", reject);
+      });
+    }
+    ptyProcess.stdout.on("data", (chunk) => appendNativeOutput("stdout", chunk));
+    ptyProcess.stderr.on("data", (chunk) => appendNativeOutput("stderr", chunk));
+    ptyProcess.once("close", (exitCode, signal) => onExit({ exitCode, signal }));
+    await ready;
+  } else {
+    const pty = await import("node-pty");
+    ptyProcess = pty.spawn(command.program, command.ptyArgv ?? command.argv, {
+      name: childEnv.TERM || "xterm-256color",
+      cols: spec.columns,
+      rows: spec.rows,
+      cwd: spec.cwd,
+      env: childEnv,
+    });
+    ptyProcess.onData(appendOutput);
+    ptyProcess.onExit(onExit);
+  }
 
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -346,6 +398,7 @@ async function main() {
 
 main().catch((error) => {
   try {
+    killProcessTree("SIGKILL");
     finished = true;
     writeStatus({
       status: "failed",

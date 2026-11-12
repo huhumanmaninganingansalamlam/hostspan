@@ -1,6 +1,7 @@
 """Session-local Wayland capture/input. Private parent pipe; no listening service."""
 
 import base64
+import ctypes
 import json
 import os
 import select
@@ -15,7 +16,8 @@ import gi
 
 gi.require_version("Gst", "1.0")
 gi.require_version("Gtk", "3.0")
-from gi.repository import GLib, Gst, Gtk, Gdk
+gi.require_version("GdkX11", "3.0")
+from gi.repository import GLib, Gst, Gtk, Gdk, GdkX11, Pango
 
 DBusGMainLoop(set_as_default=True)
 Gst.init(None)
@@ -38,29 +40,108 @@ paste_wait = None
 paste_transferred = False
 activity_window = None
 activity_label = None
-activity_timer = None
+activity_icon = None
+activity_card = None
+# Input is posted before this dwell. Holding the acknowledgement prevents the
+# parent's automatic observation from replacing the controlling state too fast
+# for a person (or a display refresh) to see it.
+MINIMUM_CONTROLLING_VISIBLE_SECONDS = 0.25
 
 
-def activity(active=None):
-    """Local, noninteractive status; never display caller text or steal focus."""
-    global activity_window, activity_label, activity_timer
-    if activity_timer is not None:
-        GLib.source_remove(activity_timer)
-        activity_timer = None
-    if active is None:
+def enforce_x11_click_through(window):
+    """Fail closed unless XWayland's actual ShapeInput is empty.
+
+    Gdk.Window.set_pass_through(True) alone can report success while the X11
+    window still has a full-size input region (observed on Ubuntu XWayland).
+    Use XShape directly on this *own* GTK window and verify the server result.
+    No screen, portal grant, or other window is modified.
+    """
+    native = window.get_window()
+    if native is None:
+        raise RuntimeError("Screen access indicator has no native X11 window")
+    native.set_pass_through(True)
+    xid = int(GdkX11.X11Window.get_xid(native))
+    if not xid:
+        raise RuntimeError("Screen access indicator has no X11 window ID")
+
+    x11 = ctypes.CDLL("libX11.so.6")
+    xext = ctypes.CDLL("libXext.so.6")
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    x11.XFree.argtypes = [ctypes.c_void_p]
+    xext.XShapeQueryExtension.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)
+    ]
+    xext.XShapeQueryExtension.restype = ctypes.c_int
+    xext.XShapeCombineRectangles.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int
+    ]
+    xext.XShapeGetRectangles.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)
+    ]
+    xext.XShapeGetRectangles.restype = ctypes.c_void_p
+
+    display_name = os.environ.get("DISPLAY")
+    display = x11.XOpenDisplay(display_name.encode("utf-8") if display_name else None)
+    if not display:
+        raise RuntimeError("Cannot verify screen access indicator X11 input region")
+    try:
+        event = ctypes.c_int()
+        error = ctypes.c_int()
+        if not xext.XShapeQueryExtension(display, ctypes.byref(event), ctypes.byref(error)):
+            raise RuntimeError("X11 Shape extension is required for click-through")
+        # ShapeInput=2, ShapeSet=0, Unsorted=0: no area intercepts a click.
+        xext.XShapeCombineRectangles(display, xid, 2, 0, 0, None, 0, 0, 0)
+        x11.XSync(display, 0)
+        count = ctypes.c_int()
+        ordering = ctypes.c_int()
+        rectangles = xext.XShapeGetRectangles(
+            display, xid, 2, ctypes.byref(count), ctypes.byref(ordering)
+        )
+        if rectangles:
+            x11.XFree(rectangles)
+        if count.value != 0:
+            raise RuntimeError("Screen access indicator is not click-through")
+    finally:
+        x11.XCloseDisplay(display)
+
+
+def activity(state=None):
+    """Persistent, non-focusing and click-through screen access status strip."""
+    global activity_window, activity_label, activity_icon, activity_card
+    if state is None:
         if activity_window:
             activity_window.destroy()
-            activity_window = activity_label = None
+            activity_window = activity_label = activity_icon = activity_card = None
         return False
+    # A single sentence and a symbolic icon carry the state. The surface uses
+    # the desktop theme rather than reproducing a branded dashboard card.
+    states = {
+        "waiting": ("Waiting to share screen with HostSpan", "content-loading-symbolic"),
+        "ready": ("HostSpan has screen access", "video-display-symbolic"),
+        "viewing": ("HostSpan is viewing this screen", "view-reveal-symbolic"),
+        "controlling": ("HostSpan is controlling this screen", "input-mouse-symbolic"),
+    }
+    if state not in states:
+        raise ValueError("Unknown screen access indicator state")
     if activity_window is None:
         # Wayland toplevels cannot honor accept_focus=False. Use the existing
-        # XWayland display for this noninteractive badge; capture/input stay portal-native.
+        # XWayland display for this noninteractive status strip; capture/input stay portal-native.
         display_name = os.environ.get("DISPLAY")
         display = Gdk.Display.open(display_name) if display_name else None
         if display is None or display.get_name() != display_name:
             raise RuntimeError("The non-focusing activity indicator requires the desktop X11 display")
-        activity_window = Gtk.Window(title="HostSpan computer use")
-        activity_window.set_screen(display.get_default_screen())
+        screen = display.get_default_screen()
+        activity_window = Gtk.Window(title="HostSpan screen access")
+        activity_window.set_screen(screen)
+        activity_window.set_app_paintable(True)
+        visual = screen.get_rgba_visual()
+        if visual:
+            activity_window.set_visual(visual)
         activity_window.set_decorated(False)
         activity_window.set_accept_focus(False)
         activity_window.set_focus_on_map(False)
@@ -69,23 +150,82 @@ def activity(active=None):
         activity_window.set_skip_pager_hint(True)
         activity_window.set_type_hint(Gdk.WindowTypeHint.NOTIFICATION)
         activity_window.connect("realize", lambda window: window.get_window().set_pass_through(True))
-        activity_label = Gtk.Label()
-        activity_label.set_margin_start(14)
-        activity_label.set_margin_end(14)
-        activity_label.set_margin_top(8)
-        activity_label.set_margin_bottom(8)
-        activity_window.add(activity_label)
-    activity_label.set_text("● HostSpan · Using this computer" if active else "HostSpan · Activity finished")
-    activity_window.show_all()
+        activity_window.set_resizable(False)
+        activity_window.set_default_size(320, 40)
+        css = Gtk.CssProvider()
+        css.load_from_data(b"""
+          #hostspan-access-window { background-color: transparent; }
+          #hostspan-access-card {
+              background-color: @theme_bg_color;
+              color: @theme_fg_color;
+              border: 1px solid @borders;
+              border-radius: 8px;
+              box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+          }
+          #hostspan-access-icon { color: @theme_fg_color; }
+          #hostspan-access-status {
+              color: @theme_fg_color;
+              font-size: 13px;
+              font-weight: 500;
+          }
+        """)
+        Gtk.StyleContext.add_provider_for_screen(screen, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        activity_window.set_name("hostspan-access-window")
+
+        card = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        card.set_name("hostspan-access-card")
+        card.set_size_request(320, 40)
+        icon = Gtk.Image()
+        icon.set_name("hostspan-access-icon")
+        icon.set_pixel_size(18)
+        icon.set_margin_start(14)
+        icon.set_margin_end(12)
+        card.pack_start(icon, False, False, 0)
+
+        label = Gtk.Label()
+        label.set_name("hostspan-access-status")
+        label.set_xalign(0)
+        label.set_single_line_mode(True)
+        label.set_ellipsize(Pango.EllipsizeMode.END)
+        label.set_margin_end(14)
+        card.pack_start(label, True, True, 0)
+        activity_window.add(card)
+        activity_label = label
+        activity_icon = icon
+        activity_card = card
+    message, icon_name = states[state]
+    activity_window.set_title(message)
+    activity_icon.set_from_icon_name(icon_name, Gtk.IconSize.BUTTON)
+    activity_icon.set_pixel_size(18)
+    activity_label.set_text(message)
+    # Set ShapeInput before mapping as well as after; GTK/XWayland can reset
+    # the input shape while mapping or changing the displayed status.
+    try:
+        activity_window.realize()
+        enforce_x11_click_through(activity_window)
+        activity_window.show_all()
+        enforce_x11_click_through(activity_window)
+    except Exception:
+        activity(None)
+        raise
+    # Keep the strip inside the primary monitor's usable top-right corner.
+    screen = activity_window.get_screen()
+    primary = screen.get_primary_monitor()
+    monitor = primary if primary >= 0 else 0
+    if hasattr(screen, "get_monitor_workarea"):
+        area = screen.get_monitor_workarea(monitor)
+    else:
+        area = screen.get_monitor_geometry(monitor)
+    activity_window.move(area.x + area.width - 328, area.y + 8)
     activity_window.get_display().flush()
-    if not active:
-        def hide():
-            global activity_timer
-            activity_timer = None
-            activity_window.hide()
-            return False
-        activity_timer = GLib.timeout_add(1000, hide)
     return False
+
+def hold_controlling_visible():
+    """Paint the controlling state, then retain it for a human-visible interval."""
+    context = GLib.MainContext.default()
+    while context.pending():
+        context.iteration(False)
+    time.sleep(MINIMUM_CONTROLLING_VISIBLE_SECONDS)
 
 
 def selection_transfer(handle, mime, serial):
@@ -233,6 +373,9 @@ def open_session():
         if not Gst.ElementFactory.find(plugin):
             raise RuntimeError(f"Required GStreamer plugin is unavailable: {plugin}")
     try:
+        # Display the non-focusing, click-through waiting state while the actual
+        # operating-system portal remains the sole authority for consent.
+        activity("waiting")
         created = request(remote.CreateSession, phase="CreateSession", session_handle_token="hostspan_" + uuid.uuid4().hex)
         session = str(created["session_handle"])
         closed_match = bus.add_signal_receiver(
@@ -261,6 +404,9 @@ def open_session():
         # VoidSymbol has no key mapping, so it creates no application key or modifier.
         remote.NotifyKeyboardKeysym(session, options(), dbus.Int32(0xFFFFFF), dbus.UInt32(1))
         remote.NotifyKeyboardKeysym(session, options(), dbus.Int32(0xFFFFFF), dbus.UInt32(0))
+        # A successfully consented session must be visible even between calls.
+        # Failing to display the non-focusing badge closes the portal session.
+        activity("ready")
         return {"pipewire_node_id": int(stream), "backend": "wayland-portal", "text_supported": clipboard_enabled, "coordinate_width": stream_size[0],
                 "coordinate_height": stream_size[1]}
     except Exception:
@@ -418,19 +564,22 @@ def dispatch(command):
 
 
 def reply(command):
-    using_desktop = False
+    indicator_state = None
     try:
         if session and command.get("action") in ("observe", "move", "click", "key", "text", "scroll"):
-            activity(True)
-            using_desktop = True
-        result = {"id": command["id"], "result": dispatch(command)}
+            indicator_state = "viewing" if command.get("action") == "observe" else "controlling"
+            activity(indicator_state)
+        dispatch_result = dispatch(command)
+        if indicator_state == "controlling" and dispatch_result.get("dispatched") is True:
+            hold_controlling_visible()
+        result = {"id": command["id"], "result": dispatch_result}
     except Exception as error:
         result = {"id": command.get("id"), "error": str(error)}
         if isinstance(error, PortalRequestError):
             result["error_details"] = error.details
     finally:
-        if using_desktop and session:
-            activity(False)
+        if indicator_state and session:
+            activity("ready")
     print(json.dumps(result, ensure_ascii=True), flush=True)
     return False
 
