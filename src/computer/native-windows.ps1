@@ -8,6 +8,7 @@ Add-Type -ReferencedAssemblies System.Windows.Forms,System.Drawing -TypeDefiniti
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Drawing.Drawing2D;
 public static class HostSpanInput {
     [StructLayout(LayoutKind.Sequential)] struct Mouse { public int x,y; public uint data,flags,time; public UIntPtr extra; }
     [StructLayout(LayoutKind.Sequential)] struct Keyboard { public ushort key,scan; public uint flags,time; public UIntPtr extra; }
@@ -81,8 +82,11 @@ public sealed class HostSpanActivity : System.Windows.Forms.Form {
     static System.Threading.Thread thread;
     static readonly System.Threading.ManualResetEvent ready = new System.Threading.ManualResetEvent(false);
     readonly System.Windows.Forms.Label heading = new System.Windows.Forms.Label();
+    readonly System.Windows.Forms.Label statusPhase = new System.Windows.Forms.Label();
     readonly System.Windows.Forms.Label statusMarker = new System.Windows.Forms.Label();
     readonly System.Windows.Forms.Label statusText = new System.Windows.Forms.Label();
+    HostSpanActivityState currentState = HostSpanActivityState.Ready;
+
     protected override bool ShowWithoutActivation { get { return true; } }
     protected override System.Windows.Forms.CreateParams CreateParams {
         get { var p = base.CreateParams; p.ExStyle |= 0x08000000 | 0x20 | 0x80 | 0x80000; return p; }
@@ -91,25 +95,65 @@ public sealed class HostSpanActivity : System.Windows.Forms.Form {
         if (m.Msg == 0x84) { m.Result = new IntPtr(-1); return; }
         base.WndProc(ref m);
     }
+    static GraphicsPath RoundedRectangle(System.Drawing.Rectangle bounds, int radius) {
+        var p = new GraphicsPath();
+        int d = radius * 2;
+        p.AddArc(bounds.X, bounds.Y, d, d, 180, 90);
+        p.AddArc(bounds.Right - d, bounds.Y, d, d, 270, 90);
+        p.AddArc(bounds.Right - d, bounds.Bottom - d, d, d, 0, 90);
+        p.AddArc(bounds.X, bounds.Bottom - d, d, d, 90, 90);
+        p.CloseFigure();
+        return p;
+    }
+    protected override void OnSizeChanged(EventArgs e) {
+        base.OnSizeChanged(e);
+        if (Width < 28 || Height < 28) return;
+        using (var path = RoundedRectangle(new System.Drawing.Rectangle(0, 0, Width, Height), 14)) {
+            var previous = Region;
+            Region = new System.Drawing.Region(path);
+            if (previous != null) previous.Dispose();
+        }
+    }
+    protected override void OnPaint(System.Windows.Forms.PaintEventArgs e) {
+        base.OnPaint(e);
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var path = RoundedRectangle(new System.Drawing.Rectangle(1, 1, Width - 2, Height - 2), 13))
+        using (var outline = new System.Drawing.Pen(System.Drawing.Color.FromArgb(83, 108, 135), 1.0f))
+            e.Graphics.DrawPath(outline, path);
+        using (var accent = new System.Drawing.SolidBrush(Marker(currentState)))
+            e.Graphics.FillRectangle(accent, new System.Drawing.Rectangle(1, 16, 4, 36));
+    }
     HostSpanActivity() {
         Text = "HostSpan screen access";
         FormBorderStyle = System.Windows.Forms.FormBorderStyle.None;
-        ShowInTaskbar = false; TopMost = true; Opacity = 0.97;
+        ShowInTaskbar = false; TopMost = true; Opacity = 0.98;
+        SetStyle(System.Windows.Forms.ControlStyles.AllPaintingInWmPaint |
+                 System.Windows.Forms.ControlStyles.OptimizedDoubleBuffer |
+                 System.Windows.Forms.ControlStyles.UserPaint, true);
         StartPosition = System.Windows.Forms.FormStartPosition.Manual;
         var area = System.Windows.Forms.Screen.PrimaryScreen.WorkingArea;
-        Bounds = new System.Drawing.Rectangle(area.Right - 378, area.Top + 12, 366, 58);
+        Bounds = new System.Drawing.Rectangle(area.Right - 360, area.Top + 16, 344, 68);
+        BackColor = Background(HostSpanActivityState.Ready);
         ForeColor = System.Drawing.Color.White;
-        heading.Bounds = new System.Drawing.Rectangle(14, 8, 338, 19);
-        heading.Font = new System.Drawing.Font("Segoe UI", 10.0f, System.Drawing.FontStyle.Bold);
-        heading.Text = "HostSpan";
-        heading.ForeColor = System.Drawing.Color.White;
-        statusMarker.Bounds = new System.Drawing.Rectangle(14, 30, 12, 18);
-        statusMarker.Font = new System.Drawing.Font("Segoe UI", 9.0f, System.Drawing.FontStyle.Bold);
+        heading.Bounds = new System.Drawing.Rectangle(34, 10, 192, 19);
+        heading.Font = new System.Drawing.Font("Segoe UI", 9.5f, System.Drawing.FontStyle.Bold);
+        heading.Text = "HOSTSPAN";
+        heading.ForeColor = System.Drawing.Color.FromArgb(211, 224, 238);
+        heading.BackColor = System.Drawing.Color.Transparent;
+        statusPhase.Bounds = new System.Drawing.Rectangle(265, 10, 62, 19);
+        statusPhase.Font = new System.Drawing.Font("Segoe UI", 9.0f, System.Drawing.FontStyle.Bold);
+        statusPhase.TextAlign = System.Drawing.ContentAlignment.MiddleRight;
+        statusPhase.BackColor = System.Drawing.Color.Transparent;
+        statusMarker.Bounds = new System.Drawing.Rectangle(17, 33, 14, 20);
+        statusMarker.Font = new System.Drawing.Font("Segoe UI", 8.0f, System.Drawing.FontStyle.Bold);
         statusMarker.Text = "\u25CF";
-        statusText.Bounds = new System.Drawing.Rectangle(30, 30, 322, 18);
-        statusText.Font = new System.Drawing.Font("Segoe UI", 9.0f, System.Drawing.FontStyle.Regular);
+        statusMarker.BackColor = System.Drawing.Color.Transparent;
+        statusText.Bounds = new System.Drawing.Rectangle(34, 33, 293, 22);
+        statusText.Font = new System.Drawing.Font("Segoe UI", 10.5f, System.Drawing.FontStyle.Regular);
         statusText.ForeColor = System.Drawing.Color.White;
-        Controls.Add(heading); Controls.Add(statusMarker); Controls.Add(statusText);
+        statusText.BackColor = System.Drawing.Color.Transparent;
+        Controls.Add(heading); Controls.Add(statusPhase);
+        Controls.Add(statusMarker); Controls.Add(statusText);
         Shown += delegate { ready.Set(); };
     }
     public static string Message(HostSpanActivityState state) {
@@ -117,15 +161,18 @@ public sealed class HostSpanActivity : System.Windows.Forms.Form {
         if (state == HostSpanActivityState.Controlling) return "Controlling this screen";
         return "Screen access is on";
     }
+    public static string Phase(HostSpanActivityState state) {
+        if (state == HostSpanActivityState.Viewing) return "VIEW";
+        if (state == HostSpanActivityState.Controlling) return "INPUT";
+        return "READY";
+    }
     public static System.Drawing.Color Background(HostSpanActivityState state) {
-        if (state == HostSpanActivityState.Viewing) return System.Drawing.Color.FromArgb(25, 69, 150);
-        if (state == HostSpanActivityState.Controlling) return System.Drawing.Color.FromArgb(122, 46, 32);
-        return System.Drawing.Color.FromArgb(27, 39, 59);
+        return System.Drawing.Color.FromArgb(23, 33, 47);
     }
     public static System.Drawing.Color Marker(HostSpanActivityState state) {
-        if (state == HostSpanActivityState.Viewing) return System.Drawing.Color.FromArgb(142, 197, 255);
-        if (state == HostSpanActivityState.Controlling) return System.Drawing.Color.FromArgb(255, 192, 138);
-        return System.Drawing.Color.FromArgb(170, 180, 195);
+        if (state == HostSpanActivityState.Viewing) return System.Drawing.Color.FromArgb(99, 179, 255);
+        if (state == HostSpanActivityState.Controlling) return System.Drawing.Color.FromArgb(255, 175, 122);
+        return System.Drawing.Color.FromArgb(157, 175, 198);
     }
     public static void SetState(HostSpanActivityState state) {
         if (thread == null) {
@@ -140,10 +187,13 @@ public sealed class HostSpanActivity : System.Windows.Forms.Form {
         }
         if (startupError != null) throw new InvalidOperationException("Could not show HostSpan activity indicator", startupError);
         window.Invoke(new Action(delegate {
+            window.currentState = state;
             window.BackColor = Background(state);
             window.statusMarker.ForeColor = Marker(state);
+            window.statusPhase.ForeColor = Marker(state);
+            window.statusPhase.Text = Phase(state);
             window.statusText.Text = Message(state);
-            window.Show(); window.Update();
+            window.Show(); window.Invalidate(); window.Update();
         }));
     }
     public static void MovePointer(int x, int y) {

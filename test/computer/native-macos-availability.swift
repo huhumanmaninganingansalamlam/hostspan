@@ -19,8 +19,13 @@ struct DesktopAvailabilityTest {
             .map { "\($0.0),\($0.1),\($0.2)" }
         let markers = [waiting.marker, ready.marker, viewing.marker, controlling.marker]
             .map { "\($0.0),\($0.1),\($0.2)" }
-        precondition(Set(backgrounds).count == 4)
+        precondition(Set(backgrounds).count == 1)
+        precondition(backgrounds[0] == "23,33,47")
         precondition(Set(markers).count == 4)
+        precondition(DesktopWorker.activityTag(.waiting) == "WAIT")
+        precondition(DesktopWorker.activityTag(.ready) == "READY")
+        precondition(DesktopWorker.activityTag(.viewing) == "VIEW")
+        precondition(DesktopWorker.activityTag(.controlling) == "INPUT")
         let sessions: [[String: Any]?] = [nil, [:], ["CGSSessionScreenIsLocked": false]]
         for session in sessions {
             try DesktopWorker.requireUnlockedDesktop(session)

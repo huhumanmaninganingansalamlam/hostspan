@@ -197,14 +197,24 @@ class Widget:
         callback(SimpleNamespace(get_window=lambda: self))
     def get_display(self):
         return SimpleNamespace(flush=lambda: None)
+    def get_screen(self):
+        return SimpleNamespace(get_primary_monitor=lambda: 0,
+                               get_monitor_geometry=lambda i: SimpleNamespace(x=0, y=0, width=1366, height=768))
+    def get_style_context(self):
+        return self
 namespace = {"activity_window": None, "activity_label": None, "activity_marker": None,
-             "Gtk": SimpleNamespace(Window=Widget, Label=Widget, Box=Widget,
+             "activity_phase": None, "activity_accent": None,
+             "Gtk": SimpleNamespace(Window=Widget, Label=Widget, Box=Widget, CssProvider=Widget,
+                                    StyleContext=SimpleNamespace(add_provider_for_screen=lambda *args: None),
+                                    STYLE_PROVIDER_PRIORITY_APPLICATION=600,
                                     Orientation=SimpleNamespace(VERTICAL=1, HORIZONTAL=2),
                                     StateFlags=SimpleNamespace(NORMAL=0)),
              "Gdk": SimpleNamespace(WindowTypeHint=SimpleNamespace(NOTIFICATION=1),
                                     RGBA=lambda **values: SimpleNamespace(**values),
                                     Display=SimpleNamespace(open=lambda name: SimpleNamespace(
-                                        get_name=lambda: name, get_default_screen=lambda: "x11-screen"))),
+                                        get_name=lambda: name, get_default_screen=lambda: SimpleNamespace(
+                                            get_rgba_visual=lambda: None, get_primary_monitor=lambda: 0,
+                                            get_monitor_geometry=lambda i: SimpleNamespace(x=0, y=0, width=1366, height=768))))),
              "os": SimpleNamespace(environ={"DISPLAY": ":0"})}
 exec(activity_code, namespace)
 namespace["activity"]("waiting")
@@ -212,21 +222,28 @@ assert ("set_markup", ('<span foreground="#FFFFFF">Waiting for screen approval</
 namespace["activity"]("ready")
 assert ("set_accept_focus", (False,)) in events
 assert ("set_pass_through", (True,)) in events
-assert ("set_screen", ("x11-screen",)) in events
-assert ("set_default_size", (360, 58)) in events
+assert ("set_default_size", (344, 68)) in events
+assert ("set_accept_focus", (False,)) in events
+assert ("set_pass_through", (True,)) in events
+assert ("set_app_paintable", (True,)) in events
+assert ("move", (1006, 16)) in events
 assert ("set_markup", ('<span foreground="#FFFFFF">Screen access is on</span>',)) in events
 namespace["activity"]("viewing")
 assert ("set_markup", ('<span foreground="#FFFFFF">Viewing this screen</span>',)) in events
 namespace["activity"]("controlling")
 assert ("set_markup", ('<span foreground="#FFFFFF">Controlling this screen</span>',)) in events
-backgrounds = [args[1] for name, args in events if name == "override_background_color"]
-assert len(backgrounds) == 4
-assert len({(value.red, value.green, value.blue) for value in backgrounds}) == 4
+css = [args[0].decode("utf-8") for name, args in events if name == "load_from_data"]
+assert len(css) == 1 and "border-radius: 14px" in css[0]
+assert "rgba(23, 33, 47, 0.98)" in css[0]
+assert all("#hostspan-access-accent." + state in css[0]
+           for state in ("waiting", "ready", "viewing", "controlling"))
 markers = [args[0] for name, args in events if name == "set_markup" and "●" in args[0]]
-assert markers == ['<span foreground="#FCE17A">●</span>',
-                   '<span foreground="#AAB4C3">●</span>',
-                   '<span foreground="#8EC5FF">●</span>',
-                   '<span foreground="#FFC08A">●</span>']
+assert markers == ['<span foreground="#FAD47A">●</span>',
+                   '<span foreground="#9DAFC6">●</span>',
+                   '<span foreground="#63B3FF">●</span>',
+                   '<span foreground="#FFAF7A">●</span>']
+assert ("set_markup", ('<span foreground="#FFAF7A"><b>INPUT</b></span>',)) in events
+assert ("add_class", ("controlling",)) in events
 assert not any(name in ("hide", "destroy") for name, _ in events)
 namespace["activity"]()
 assert ("destroy", ()) in events and namespace["activity_window"] is None

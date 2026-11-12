@@ -39,6 +39,8 @@ paste_transferred = False
 activity_window = None
 activity_label = None
 activity_marker = None
+activity_phase = None
+activity_accent = None
 # Input is posted before this dwell. Holding the acknowledgement prevents the
 # parent's automatic observation from replacing the controlling state too fast
 # for a person (or a display refresh) to see it.
@@ -46,19 +48,20 @@ MINIMUM_CONTROLLING_VISIBLE_SECONDS = 0.25
 
 
 def activity(state=None):
-    """Persistent, non-focusing indicator for the lifetime of an approved screen session."""
-    global activity_window, activity_label, activity_marker
+    """Persistent, non-focusing and click-through screen access capsule."""
+    global activity_window, activity_label, activity_marker, activity_phase, activity_accent
     if state is None:
         if activity_window:
             activity_window.destroy()
-            activity_window = activity_label = activity_marker = None
+            activity_window = activity_label = activity_marker = activity_phase = activity_accent = None
         return False
+    # A steady neutral surface avoids alarming whole-window flashes; the
+    # accent, dot, and word (not color alone) convey each real capability.
     states = {
-        # Waiting is an instruction, never a claim that the OS granted access.
-        "waiting": ("Waiting for screen approval", (84, 65, 28), "#FCE17A"),
-        "ready": ("Screen access is on", (27, 39, 59), "#AAB4C3"),
-        "viewing": ("Viewing this screen", (25, 69, 150), "#8EC5FF"),
-        "controlling": ("Controlling this screen", (122, 46, 32), "#FFC08A"),
+        "waiting": ("Waiting for screen approval", "#FAD47A", "WAIT"),
+        "ready": ("Screen access is on", "#9DAFC6", "READY"),
+        "viewing": ("Viewing this screen", "#63B3FF", "VIEW"),
+        "controlling": ("Controlling this screen", "#FFAF7A", "INPUT"),
     }
     if state not in states:
         raise ValueError("Unknown screen access indicator state")
@@ -69,8 +72,13 @@ def activity(state=None):
         display = Gdk.Display.open(display_name) if display_name else None
         if display is None or display.get_name() != display_name:
             raise RuntimeError("The non-focusing activity indicator requires the desktop X11 display")
+        screen = display.get_default_screen()
         activity_window = Gtk.Window(title="HostSpan screen access")
-        activity_window.set_screen(display.get_default_screen())
+        activity_window.set_screen(screen)
+        activity_window.set_app_paintable(True)
+        visual = screen.get_rgba_visual()
+        if visual:
+            activity_window.set_visual(visual)
         activity_window.set_decorated(False)
         activity_window.set_accept_focus(False)
         activity_window.set_focus_on_map(False)
@@ -79,33 +87,84 @@ def activity(state=None):
         activity_window.set_skip_pager_hint(True)
         activity_window.set_type_hint(Gdk.WindowTypeHint.NOTIFICATION)
         activity_window.connect("realize", lambda window: window.get_window().set_pass_through(True))
-        activity_window.set_default_size(360, 58)
-        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        content.set_margin_start(16)
-        content.set_margin_end(16)
-        content.set_margin_top(9)
-        content.set_margin_bottom(9)
-        title = Gtk.Label()
-        title.set_xalign(0)
-        title.set_markup('<span foreground="#FFFFFF"><b>HostSpan</b></span>')
+        activity_window.set_default_size(344, 68)
+        css = Gtk.CssProvider()
+        css.load_from_data(b"""
+          #hostspan-access-window { background-color: transparent; }
+          #hostspan-access-card {
+              background-color: rgba(23, 33, 47, 0.98);
+              border: 1px solid rgba(83, 108, 135, 0.65);
+              border-radius: 14px;
+              box-shadow: 0 8px 20px rgba(0, 0, 0, 0.20);
+          }
+          #hostspan-access-heading {
+              color: #D3E0EE;
+              font-size: 10px;
+              font-weight: 700;
+          }
+          #hostspan-access-status {
+              color: #FFFFFF;
+              font-size: 12px;
+              font-weight: 500;
+          }
+          #hostspan-access-accent.waiting { background-color: #FAD47A; }
+          #hostspan-access-accent.ready { background-color: #9DAFC6; }
+          #hostspan-access-accent.viewing { background-color: #63B3FF; }
+          #hostspan-access-accent.controlling { background-color: #FFAF7A; }
+        """)
+        Gtk.StyleContext.add_provider_for_screen(screen, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        activity_window.set_name("hostspan-access-window")
+
+        card = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        card.set_name("hostspan-access-card")
+        card.set_size_request(344, 68)
+        accent = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        accent.set_name("hostspan-access-accent")
+        accent.set_size_request(4, 40)
+        accent.set_margin_top(14)
+        accent.set_margin_bottom(14)
+        card.pack_start(accent, False, False, 0)
+
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        body.set_margin_start(29)
+        body.set_margin_end(16)
+        body.set_margin_top(8)
+        body.set_margin_bottom(8)
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        heading = Gtk.Label(label="HOSTSPAN")
+        heading.set_name("hostspan-access-heading")
+        heading.set_xalign(0)
+        header.pack_start(heading, True, True, 0)
+        phase = Gtk.Label()
+        phase.set_xalign(1)
+        header.pack_end(phase, False, False, 0)
+        body.pack_start(header, False, False, 0)
+
         status = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         activity_marker = Gtk.Label()
-        activity_marker.set_xalign(0)
         activity_label = Gtk.Label()
+        activity_label.set_name("hostspan-access-status")
         activity_label.set_xalign(0)
         status.pack_start(activity_marker, False, False, 0)
-        status.pack_start(activity_label, False, False, 0)
-        content.pack_start(title, False, False, 0)
-        content.pack_start(status, False, False, 0)
-        activity_window.add(content)
-    message, background, marker = states[state]
-    activity_window.override_background_color(
-        Gtk.StateFlags.NORMAL,
-        Gdk.RGBA(red=background[0] / 255, green=background[1] / 255,
-                 blue=background[2] / 255, alpha=0.97))
+        status.pack_start(activity_label, True, True, 0)
+        body.pack_start(status, True, True, 0)
+        card.pack_start(body, True, True, 0)
+        activity_window.add(card)
+        activity_phase = phase
+        activity_accent = accent
+    message, marker, phase = states[state]
     activity_marker.set_markup(f'<span foreground="{marker}">●</span>')
+    activity_phase.set_markup(f'<span foreground="{marker}"><b>{phase}</b></span>')
     activity_label.set_markup(f'<span foreground="#FFFFFF">{message}</span>')
+    for name in states:
+        activity_accent.get_style_context().remove_class(name)
+    activity_accent.get_style_context().add_class(state)
     activity_window.show_all()
+    # Keep the small badge visible in the primary monitor's top-right corner.
+    screen = activity_window.get_screen()
+    primary = screen.get_primary_monitor()
+    area = screen.get_monitor_geometry(primary if primary >= 0 else 0)
+    activity_window.move(area.x + area.width - 360, area.y + 16)
     activity_window.get_display().flush()
     return False
 
