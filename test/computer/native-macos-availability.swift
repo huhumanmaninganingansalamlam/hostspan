@@ -7,25 +7,17 @@ struct DesktopAvailabilityTest {
     static func main() throws {
         DesktopWorker.opened = true
         let waiting = DesktopWorker.activityAppearance(.waiting)
-        precondition(waiting.message == "Waiting for screen approval")
         let ready = DesktopWorker.activityAppearance(.ready)
         let viewing = DesktopWorker.activityAppearance(.viewing)
         let controlling = DesktopWorker.activityAppearance(.controlling)
-        precondition(ready.message == "Screen access is on")
-        precondition(viewing.message == "Viewing this screen")
-        precondition(controlling.message == "Controlling this screen")
+        precondition(waiting.message == "Waiting to share screen with HostSpan")
+        precondition(ready.message == "HostSpan has screen access")
+        precondition(viewing.message == "HostSpan is viewing this screen")
+        precondition(controlling.message == "HostSpan is controlling this screen")
         precondition(DesktopWorker.minimumControllingVisibilityNanoseconds == 250_000_000)
-        let backgrounds = [waiting.background, ready.background, viewing.background, controlling.background]
-            .map { "\($0.0),\($0.1),\($0.2)" }
-        let markers = [waiting.marker, ready.marker, viewing.marker, controlling.marker]
-            .map { "\($0.0),\($0.1),\($0.2)" }
-        precondition(Set(backgrounds).count == 1)
-        precondition(backgrounds[0] == "23,33,47")
-        precondition(Set(markers).count == 4)
-        precondition(DesktopWorker.activityTag(.waiting) == "WAIT")
-        precondition(DesktopWorker.activityTag(.ready) == "READY")
-        precondition(DesktopWorker.activityTag(.viewing) == "VIEW")
-        precondition(DesktopWorker.activityTag(.controlling) == "INPUT")
+        let symbols = [waiting.symbol, ready.symbol, viewing.symbol, controlling.symbol]
+        precondition(symbols == ["hourglass", "display", "eye", "cursorarrow"])
+        precondition(Set(symbols).count == 4)
         let sessions: [[String: Any]?] = [nil, [:], ["CGSSessionScreenIsLocked": false]]
         for session in sessions {
             try DesktopWorker.requireUnlockedDesktop(session)
@@ -40,7 +32,7 @@ struct DesktopAvailabilityTest {
             precondition(details?["dispatched"] as? Bool == false)
             precondition(DesktopWorker.opened, "Desktop lock must preserve the session")
             precondition(DesktopWorker.activityPanel == nil)
-            precondition(DesktopWorker.activityMarker == nil)
+            precondition(DesktopWorker.activityIcon == nil)
         }
         try DesktopWorker.requireUnlockedDesktop(["CGSSessionScreenIsLocked": false])
         precondition(DesktopWorker.opened)

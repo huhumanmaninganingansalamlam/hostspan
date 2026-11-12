@@ -182,7 +182,7 @@ exec(hold_code, hold_namespace)
 hold_namespace["hold_controlling_visible"]()
 assert hold_events == [("iteration", False), ("sleep", 0.25)]
 
-# A request returns to a persistent, non-focusing session-open badge.
+# A request returns to a persistent, non-focusing session status strip.
 # Only an explicit session close (or helper teardown) removes it.
 activity_code = compile(ast.Module(body=[node for node in source.body
     if isinstance(node, ast.FunctionDef) and node.name == "activity"], type_ignores=[]),
@@ -202,12 +202,13 @@ class Widget:
                                get_monitor_geometry=lambda i: SimpleNamespace(x=0, y=0, width=1366, height=768))
     def get_style_context(self):
         return self
-namespace = {"activity_window": None, "activity_label": None, "activity_marker": None,
-             "activity_phase": None, "activity_accent": None,
-             "Gtk": SimpleNamespace(Window=Widget, Label=Widget, Box=Widget, CssProvider=Widget,
+namespace = {"activity_window": None, "activity_label": None, "activity_icon": None,
+             "activity_card": None,
+             "Gtk": SimpleNamespace(Window=Widget, Label=Widget, Image=Widget, Box=Widget, CssProvider=Widget,
                                     StyleContext=SimpleNamespace(add_provider_for_screen=lambda *args: None),
                                     STYLE_PROVIDER_PRIORITY_APPLICATION=600,
                                     Orientation=SimpleNamespace(VERTICAL=1, HORIZONTAL=2),
+                                    IconSize=SimpleNamespace(BUTTON=1),
                                     StateFlags=SimpleNamespace(NORMAL=0)),
              "Gdk": SimpleNamespace(WindowTypeHint=SimpleNamespace(NOTIFICATION=1),
                                     RGBA=lambda **values: SimpleNamespace(**values),
@@ -215,38 +216,36 @@ namespace = {"activity_window": None, "activity_label": None, "activity_marker":
                                         get_name=lambda: name, get_default_screen=lambda: SimpleNamespace(
                                             get_rgba_visual=lambda: None, get_primary_monitor=lambda: 0,
                                             get_monitor_geometry=lambda i: SimpleNamespace(x=0, y=0, width=1366, height=768))))),
+             "Pango": SimpleNamespace(EllipsizeMode=SimpleNamespace(END=3)),
              "os": SimpleNamespace(environ={"DISPLAY": ":0"})}
 exec(activity_code, namespace)
 namespace["activity"]("waiting")
-assert ("set_markup", ('<span foreground="#FFFFFF">Waiting for screen approval</span>',)) in events
+assert ("set_text", ("Waiting to share screen with HostSpan",)) in events
 namespace["activity"]("ready")
 assert ("set_accept_focus", (False,)) in events
 assert ("set_pass_through", (True,)) in events
-assert ("set_default_size", (344, 68)) in events
-assert ("set_accept_focus", (False,)) in events
-assert ("set_pass_through", (True,)) in events
+assert ("set_default_size", (320, 40)) in events
+assert ("set_resizable", (False,)) in events
 assert ("set_app_paintable", (True,)) in events
-assert ("move", (1006, 16)) in events
-assert ("set_markup", ('<span foreground="#FFFFFF">Screen access is on</span>',)) in events
+assert ("move", (1038, 8)) in events
+assert ("set_text", ("HostSpan has screen access",)) in events
 namespace["activity"]("viewing")
-assert ("set_markup", ('<span foreground="#FFFFFF">Viewing this screen</span>',)) in events
+assert ("set_text", ("HostSpan is viewing this screen",)) in events
 namespace["activity"]("controlling")
-assert ("set_markup", ('<span foreground="#FFFFFF">Controlling this screen</span>',)) in events
+assert ("set_text", ("HostSpan is controlling this screen",)) in events
 css = [args[0].decode("utf-8") for name, args in events if name == "load_from_data"]
-assert len(css) == 1 and "border-radius: 14px" in css[0]
-assert "rgba(23, 33, 47, 0.98)" in css[0]
-assert all("#hostspan-access-accent." + state in css[0]
-           for state in ("waiting", "ready", "viewing", "controlling"))
-markers = [args[0] for name, args in events if name == "set_markup" and "●" in args[0]]
-assert markers == ['<span foreground="#FAD47A">●</span>',
-                   '<span foreground="#9DAFC6">●</span>',
-                   '<span foreground="#63B3FF">●</span>',
-                   '<span foreground="#FFAF7A">●</span>']
-assert ("set_markup", ('<span foreground="#FFAF7A"><b>INPUT</b></span>',)) in events
-assert ("add_class", ("controlling",)) in events
+assert len(css) == 1 and "border-radius: 8px" in css[0]
+assert "@theme_bg_color" in css[0] and "@theme_fg_color" in css[0]
+assert "rgba(23, 33, 47" not in css[0]
+assert "hostspan-access-accent" not in css[0]
+icons = [args[0] for name, args in events if name == "set_from_icon_name"]
+assert icons == ["content-loading-symbolic", "video-display-symbolic",
+                 "view-reveal-symbolic", "input-mouse-symbolic"]
+assert not any(name == "set_markup" for name, _ in events)
 assert not any(name in ("hide", "destroy") for name, _ in events)
 namespace["activity"]()
 assert ("destroy", ()) in events and namespace["activity_window"] is None
+assert namespace["activity_label"] is None and namespace["activity_icon"] is None
 
 # The waiting badge must be visible before portal consent, with the approved
 # session badge shown only after actual OS approval. Exception cleanup removes

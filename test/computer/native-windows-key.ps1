@@ -3,11 +3,11 @@ $ErrorActionPreference = 'Stop'
 $tokens=$null; $errors=$null
 $source=Join-Path $PSScriptRoot '../../src/computer/native-windows.ps1'
 $sourceText=[System.IO.File]::ReadAllText((Resolve-Path $source))
-foreach ($expected in @('Screen access is on','Viewing this screen','Controlling this screen','HostSpanActivityState.Viewing','HostSpanActivityState.Controlling','FromArgb(23, 33, 47)','FromArgb(99, 179, 255)','FromArgb(255, 175, 122)','RoundedRectangle','HostSpanActivityState.Viewing','return "INPUT"','MinimumControllingVisibilityMilliseconds = 250','Thread]::Sleep($MinimumControllingVisibilityMilliseconds)')) {
+foreach ($expected in @('HostSpan has screen access','HostSpan is viewing this screen','HostSpan is controlling this screen','HostSpanActivityState.Viewing','HostSpanActivityState.Controlling','HostSpanStateIcon','SystemColors.Window','SystemInformation.HighContrast','AccessibleRole.Graphic','new Rectangle(area.Right - 328, area.Top + 8, 320, 40)','RoundedRectangle','MinimumControllingVisibilityMilliseconds = 250','Thread]::Sleep($MinimumControllingVisibilityMilliseconds)')) {
     if (-not $sourceText.Contains($expected)) { throw "Missing indicator contract: $expected" }
 }
-foreach ($forbidden in @('SESSION OPEN','IN USE - Agent','Screen access available','Computer access')) {
-    if ($sourceText.Contains($forbidden)) { throw "Old indicator wording remains: $forbidden" }
+foreach ($forbidden in @('SESSION OPEN','IN USE - Agent','Screen access available','Computer access','Screen access is on','statusPhase','statusMarker','heading.Text = "HOSTSPAN"','return "INPUT"','FromArgb(23, 33, 47)','FillRectangle(accent')) {
+    if ($sourceText.Contains($forbidden)) { throw "Rejected indicator structure remains: $forbidden" }
 }
 $ast=[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $source),[ref]$tokens,[ref]$errors)
 if ($errors.Count) { throw ($errors | Out-String) }
@@ -128,4 +128,4 @@ try { $null = Dispatch ([pscustomobject]@{ action = 'open' }) }
 catch { if ($_.Exception.Message -notmatch 'badge-unavailable') { throw }; $caught = $true }
 if (-not $caught -or $script:opened) { throw 'Badge failure left a session open' }
 
-'PASS: Windows chords, guard and ready/viewing/controlling indicator contract; no OS input'
+'PASS: Windows chords, guard and one-line ready/viewing/controlling indicator contract; no OS input'

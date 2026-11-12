@@ -24,42 +24,33 @@ struct DesktopWorker {
     static var capture: DisplayCapture?
     @MainActor static var activityPanel: NSPanel?
     @MainActor static var activityLabel: NSTextField?
-    @MainActor static var activityMarker: NSView?
-    @MainActor static var activityAccent: NSView?
-    @MainActor static var activityPhase: NSTextField?
+    @MainActor static var activityIcon: NSImageView?
     @MainActor static var accessMonitor: Timer?
 
-    // The surface stays calm and neutral; only the thin accent, dot, and
-    // uppercase phase change. "Ready" is access available, not active input.
+    // One plain sentence carries the state. The symbol is redundant with the
+    // wording so the distinction never depends on color alone.
     static func activityAppearance(_ state: ActivityState) -> (
-        message: String, background: (Int, Int, Int), marker: (Int, Int, Int)
+        message: String, symbol: String
     ) {
-        let surface = (23, 33, 47)
         switch state {
-        case .waiting: return ("Waiting for screen approval", surface, (250, 212, 122))
-        case .ready: return ("Screen access is on", surface, (157, 175, 198))
-        case .viewing: return ("Viewing this screen", surface, (99, 179, 255))
-        case .controlling: return ("Controlling this screen", surface, (255, 175, 122))
+        case .waiting: return ("Waiting to share screen with HostSpan", "hourglass")
+        case .ready: return ("HostSpan has screen access", "display")
+        case .viewing: return ("HostSpan is viewing this screen", "eye")
+        case .controlling: return ("HostSpan is controlling this screen", "cursorarrow")
         }
     }
 
-    static func activityTag(_ state: ActivityState) -> String {
+    static func activityTint(_ state: ActivityState) -> NSColor {
         switch state {
-        case .waiting: return "WAIT"
-        case .ready: return "READY"
-        case .viewing: return "VIEW"
-        case .controlling: return "INPUT"
+        case .waiting: return .systemYellow
+        case .ready: return .secondaryLabelColor
+        case .viewing: return .systemBlue
+        case .controlling: return .systemOrange
         }
     }
 
     static func activityMessage(_ state: ActivityState) -> String {
         activityAppearance(state).message
-    }
-
-    static func activityColor(_ components: (Int, Int, Int), alpha: CGFloat = 1) -> NSColor {
-        NSColor(deviceRed: CGFloat(components.0) / 255,
-                green: CGFloat(components.1) / 255,
-                blue: CGFloat(components.2) / 255, alpha: alpha)
     }
 
     @MainActor
@@ -68,15 +59,13 @@ struct DesktopWorker {
             activityPanel?.orderOut(nil)
             activityPanel = nil
             activityLabel = nil
-            activityMarker = nil
-            activityAccent = nil
-            activityPhase = nil
+            activityIcon = nil
             return
         }
         if activityPanel == nil {
             let screen = NSScreen.screens.first { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == displayID }
             let area = screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
-            let panel = NSPanel(contentRect: NSRect(x: area.maxX - 360, y: area.maxY - 84, width: 344, height: 68),
+            let panel = NSPanel(contentRect: NSRect(x: area.maxX - 328, y: area.maxY - 48, width: 320, height: 40),
                                 styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             panel.title = "HostSpan screen access"
             panel.level = .statusBar
@@ -87,53 +76,38 @@ struct DesktopWorker {
             panel.backgroundColor = .clear
             panel.hasShadow = true
 
-            let surface = panel.contentView
-            surface?.wantsLayer = true
-            surface?.layer?.cornerRadius = 14
-            surface?.layer?.masksToBounds = true
-            surface?.layer?.borderWidth = 1
-            surface?.layer?.borderColor = activityColor((76, 95, 116), alpha: 0.55).cgColor
+            let surface = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 320, height: 40))
+            surface.material = .popover
+            surface.blendingMode = .behindWindow
+            surface.state = .active
+            surface.wantsLayer = true
+            surface.layer?.cornerRadius = 8
+            surface.layer?.masksToBounds = true
+            surface.layer?.borderWidth = 0.5
+            surface.layer?.borderColor = NSColor.separatorColor.cgColor
+            panel.contentView = surface
 
-            let accent = NSView(frame: NSRect(x: 0, y: 14, width: 4, height: 40))
-            accent.wantsLayer = true
-
-            let heading = NSTextField(labelWithString: "HOSTSPAN")
-            heading.frame = NSRect(x: 34, y: 42, width: 160, height: 17)
-            heading.font = NSFont.boldSystemFont(ofSize: 10)
-            heading.textColor = activityColor((211, 224, 238))
-
-            let phase = NSTextField(labelWithString: "")
-            phase.frame = NSRect(x: 266, y: 42, width: 61, height: 17)
-            phase.font = NSFont.boldSystemFont(ofSize: 10)
-            phase.alignment = .right
-
-            let marker = NSView(frame: NSRect(x: 17, y: 20, width: 8, height: 8))
-            marker.wantsLayer = true
-            marker.layer?.cornerRadius = 4
+            let icon = NSImageView(frame: NSRect(x: 14, y: 11, width: 18, height: 18))
+            icon.imageScaling = .scaleProportionallyDown
 
             let label = NSTextField(labelWithString: "")
-            label.frame = NSRect(x: 34, y: 14, width: 293, height: 20)
-            label.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-            label.textColor = .white
+            label.frame = NSRect(x: 44, y: 10, width: 262, height: 20)
+            label.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+            label.textColor = .labelColor
+            label.lineBreakMode = .byTruncatingTail
+            label.cell?.usesSingleLineMode = true
 
-            surface?.addSubview(accent)
-            surface?.addSubview(heading)
-            surface?.addSubview(phase)
-            surface?.addSubview(marker)
-            surface?.addSubview(label)
+            surface.addSubview(icon)
+            surface.addSubview(label)
             activityPanel = panel
             activityLabel = label
-            activityMarker = marker
-            activityAccent = accent
-            activityPhase = phase
+            activityIcon = icon
         }
         let appearance = activityAppearance(state)
-        activityPanel?.contentView?.layer?.backgroundColor = activityColor(appearance.background, alpha: 0.98).cgColor
-        let markerColor = activityColor(appearance.marker)
-        activityMarker?.layer?.backgroundColor = markerColor.cgColor
-        activityAccent?.layer?.backgroundColor = markerColor.cgColor
-        activityPhase?.textColor = markerColor
-        activityPhase?.stringValue = activityTag(state)
+        activityPanel?.title = appearance.message
+        activityIcon?.image = NSImage(systemSymbolName: appearance.symbol,
+                                      accessibilityDescription: appearance.message)
+        activityIcon?.contentTintColor = activityTint(state)
         activityLabel?.stringValue = appearance.message
         activityPanel?.orderFrontRegardless()
         activityPanel?.displayIfNeeded()
