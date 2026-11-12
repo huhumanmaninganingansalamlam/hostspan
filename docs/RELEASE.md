@@ -4,7 +4,17 @@ Entries describe versioned behavior. Publication is established by the correspon
 
 ## Unreleased (dev)
 
-- Increase the default completed-process output expiry to 24 hours for new profiles and omitted settings. Existing explicit TTLs are unchanged. Preserve per-process caps, the 1 GiB spool budget and early-eviction loss metadata; operation-result compaction and idempotency tombstones remain separate. This is not a minimum retention guarantee.
+- No unreleased changes have been designated after v0.13.0.
+
+## 0.13.0
+
+- Add scoped private MCP bearer tokens for separately operated nodes on approved protected private networks, including create/rotate/revoke, host/authority checks and explicit rejection of unprotected public no-auth binds. Public HTTPS/OAuth and loopback modes remain separate; existing tokens and profiles are not silently migrated.
+- Preserve HostSpan-owned native/PTY process workers across daemon restarts where supported, expose process discovery and build identity in operator diagnostics, and change the default completed-output expiry for new or omitted settings to 24 hours. Explicit existing expiry values remain unchanged, and early eviction under pressure remains possible.
+- Improve GUI-owned daemon startup on macOS and Windows, reject unavailable or locked desktop input, and clarify Computer Use screen-approval, available, viewing and controlling states with a persistent nonactivating 320×40 native indicator. On Linux XWayland, enforce an empty input shape so the indicator cannot intercept clicks.
+- Fail closed when macOS screen-recording or accessibility authorization ends and when the GNOME portal stops screen sharing. Stale sessions cannot continue to observe or control; permission prompts and OS decisions remain user-owned. Acceptance used real macOS screen permission revocation and an owned AppKit click receiver, Ubuntu GNOME approval/stop-sharing and an owned GTK click receiver, and Windows interactive-session indicator/input lifecycle.
+- Harden Linux distributable and installed file modes, including upgrades over previously writable directories, without following symlinks. Retain exact build identity and platform-installed CLI/PTY smoke in release qualification.
+- **Distribution limitation:** Current GitHub Actions desktop installers are unsigned and macOS builds are not notarized. macOS Gatekeeper and Windows SmartScreen may warn or block launch. HostSpan never bypasses these OS protections; see docs/DISTRIBUTION.md. Linux desktop control requires the normal portal runtime; macOS 14+ requires screen-recording and accessibility grants; Windows requires the active interactive console.
+
 
 ## 0.12.0
 
