@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-export const SERVER_VERSION = "0.13.0";
+export const SERVER_VERSION = "0.13.1";
 export const PROTOCOL_VERSION = "2026-07-28";
 export const TOOLSET_VERSION = "hostspan-v3.5";
 

@@ -57,7 +57,12 @@ export function isDesktopLoginLaunch(platform: NodeJS.Platform, argv: string[], 
 }
 
 export function desktopDaemonStartupTimeoutMs(platform: NodeJS.Platform, loginLaunch: boolean): number {
-  return platform === "darwin" && loginLaunch ? 20_000 : 5_000;
+  return platform === "darwin" && loginLaunch ? 180_000 : 5_000;
+}
+
+/** Refresh live dashboards promptly, but do not poll an idle tray every two seconds. */
+export function desktopStatusRefreshIntervalMs(dashboardVisible: boolean): number | null {
+  return dashboardVisible ? 2_000 : null;
 }
 
 function desktopExecQuote(value: string): string {

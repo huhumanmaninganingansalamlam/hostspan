@@ -4,7 +4,15 @@ Entries describe versioned behavior. Publication is established by the correspon
 
 ## Unreleased (dev)
 
-- No unreleased changes have been designated after v0.13.0.
+- No unreleased changes have been designated after v0.13.1.
+
+## 0.13.1
+
+- Eliminate the idle desktop tray's two-second polling loop. Refresh on demand, on dashboard visibility changes and at a bounded interval only while the dashboard is visible. Local daemon-control screen status no longer routes through the external `system_status` MCP handler, so its refresh does not append request/response audit rows or perform unrelated readiness probes. External MCP calls remain audited.
+- Set operational JSONL and security audit JSONL to **at most 1 MiB each** with **zero rotated archives**; discard historical archive files and trim oversized active files on startup. Oversized individual events are replaced with redacted fixed-size diagnostics. Database audit retention defaults to **1,000 events** for new configurations. Existing explicit retention values are not silently changed by the source upgrade; operators who requested cleanup must update those values and delete their old audit rows.
+- Keep the macOS tray responsive during delayed user-login startup, use a bounded 180-second startup window instead of a 20-second cold-boot cutoff, and report an actual subprocess exit promptly rather than masking an unavailable daemon. Existing OS permission decisions and settings remain unchanged.
+- Upgrade transitive `@hono/node-server` to 2.1.8 and `hono` to 4.13.18 to resolve newly disclosed security advisories without changing MCP package interfaces or the fixed toolset.
+- Packaging and distribution remain unsigned and unnotarized; see `docs/DISTRIBUTION.md`.
 
 ## 0.13.0
 

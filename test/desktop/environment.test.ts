@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { buildSystemdServiceUnit, serviceExecutionPath, systemdServiceInstalled } from "../../src/services/systemd.js";
 import {
   desktopDaemonStartupTimeoutMs,
+  desktopStatusRefreshIntervalMs,
   desktopLaunchSpec,
   extractMarkedPath,
   isDesktopLoginLaunch,
@@ -86,10 +87,15 @@ describe("desktop environment", () => {
   });
 
   it("allows a bounded macOS login grace without changing manual start or other OS startup", () => {
-    expect(desktopDaemonStartupTimeoutMs("darwin", true)).toBe(20_000);
+    expect(desktopDaemonStartupTimeoutMs("darwin", true)).toBe(180_000);
     expect(desktopDaemonStartupTimeoutMs("darwin", false)).toBe(5_000);
     expect(desktopDaemonStartupTimeoutMs("linux", true)).toBe(5_000);
     expect(desktopDaemonStartupTimeoutMs("win32", true)).toBe(5_000);
+  });
+
+  it("uses a slower idle tray refresh without slowing an open dashboard", () => {
+    expect(desktopStatusRefreshIntervalMs(false)).toBeNull();
+    expect(desktopStatusRefreshIntervalMs(true)).toBe(2_000);
   });
 
   it("writes Linux autostart without a shell or PATH-dependent Electron shim", () => {

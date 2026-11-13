@@ -139,7 +139,7 @@ export const HostSpanConfigSchema = z
         completed_process_output_ttl_minutes: z.number().int().positive().default(1_440),
         operation_result_days: z.number().int().positive().default(14),
         audit_days: z.number().int().positive().default(30),
-        max_audit_events: z.number().int().min(10_000).max(10_000_000).optional(),
+        max_audit_events: z.number().int().min(1_000).max(10_000_000).optional(),
         max_total_spool_bytes: z.number().int().positive().default(1_073_741_824),
       })
       .strict(),

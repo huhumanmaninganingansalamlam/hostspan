@@ -12,14 +12,14 @@ import {
   resolveTerminalSession,
   type AddWorkspaceInput,
 } from "../admin/snapshot.js";
-import { startDaemon, stopDaemon } from "../daemon/control.js";
+import { daemonStatus, startDaemon, stopDaemon } from "../daemon/control.js";
 import { runDoctor, type DoctorReport } from "../diagnostics/doctor.js";
 import { runServiceCommand, systemdServiceInstalled } from "../services/systemd.js";
 import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath } from "../config/paths.js";
 import { PtySessionManager } from "../processes/pty-session.js";
 import { protectWindowsFile, protectWindowsTree } from "../security/windows-acl.js";
-import { desktopDaemonStartupTimeoutMs, desktopLaunchSpec, isDesktopLoginLaunch, linuxAutoStartContents, linuxAutoStartPath, prepareDesktopEnvironment } from "./environment.js";
+import { desktopDaemonStartupTimeoutMs, desktopLaunchSpec, desktopStatusRefreshIntervalMs, isDesktopLoginLaunch, linuxAutoStartContents, linuxAutoStartPath, prepareDesktopEnvironment } from "./environment.js";
 import {
   installDashboardNavigationGuards,
   isTrustedDashboardIpc,
@@ -69,6 +69,18 @@ let refreshTimer: NodeJS.Timeout | undefined;
 let lastTrayMenuStateKey: string | undefined;
 let lastTrayTooltip: string | undefined;
 let quitting = false;
+
+function scheduleStatusRefresh(): void {
+  if (refreshTimer) clearTimeout(refreshTimer);
+  if (quitting) return;
+  const dashboardVisible = Boolean(window && !window.isDestroyed() && window.isVisible());
+  const intervalMs = desktopStatusRefreshIntervalMs(dashboardVisible);
+  if (intervalMs === null) return;
+  refreshTimer = setTimeout(() => {
+    void refreshUi().catch(() => undefined).finally(scheduleStatusRefresh);
+  }, intervalMs);
+  refreshTimer.unref();
+}
 
 function icon() {
   const name = process.platform === "darwin"
@@ -254,6 +266,11 @@ function createWindow(): BrowserWindow {
     webPreferences: { preload: preloadPath, contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   installDashboardNavigationGuards(window.webContents);
+  window.on("show", () => {
+    void refreshUi().catch(() => undefined);
+    scheduleStatusRefresh();
+  });
+  window.on("hide", scheduleStatusRefresh);
   void window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(dashboardHtml())}`);
   window.on("close", (event) => {
     if (!quitting) {
@@ -394,7 +411,9 @@ if (ownsSingleInstanceLock) void app.whenReady().then(async () => {
     if (process.platform === "darwin") app.dock?.hide();
     tray = new Tray(icon());
     if (process.platform === "win32") nativeTheme.on("updated", () => tray?.setImage(icon()));
+    tray.on("right-click", () => { void refreshUi().catch(() => undefined); });
     tray.on("click", () => {
+      void refreshUi().catch(() => undefined);
       const w = createWindow();
       if (w.isVisible()) w.hide();
       else {
@@ -408,19 +427,28 @@ if (ownsSingleInstanceLock) void app.whenReady().then(async () => {
       process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin,
     );
     if (loginLaunch) {
-      try {
-        const startupTimeoutMs = desktopDaemonStartupTimeoutMs(process.platform, loginLaunch);
-        const result = await daemonAction("start", startupTimeoutMs);
-        if ("running" in result && !result.running) {
-          throw new Error(`HostSpan daemon did not start within ${startupTimeoutMs / 1000} seconds.`);
+      // Do not block tray initialization behind a cold macOS desktop login.
+      // Permit a bounded boot grace without pretending the daemon is ready.
+      void (async () => {
+        try {
+          const startupTimeoutMs = desktopDaemonStartupTimeoutMs(process.platform, loginLaunch);
+          const result = await daemonAction("start", startupTimeoutMs);
+          if ("running" in result && !result.running) {
+            throw new Error(`HostSpan daemon did not start within ${startupTimeoutMs / 1000} seconds.`);
+          }
+        } catch (error) {
+          // A slow detached worker may have started just after the deadline.
+          // Never show a false failure for an already-running daemon.
+          if (!daemonStatus(configPath).running) {
+            dialog.showErrorBox("HostSpan daemon could not start", error instanceof Error ? error.message : String(error));
+          }
+        } finally {
+          await refreshUi().catch(() => undefined);
         }
-      } catch (error) {
-        dialog.showErrorBox("HostSpan daemon could not start", error instanceof Error ? error.message : String(error));
-      }
+      })();
     }
     await refreshUi();
-    refreshTimer = setInterval(() => void refreshUi().catch(() => undefined), 2_000);
-    refreshTimer.unref();
+    scheduleStatusRefresh();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     dialog.showErrorBox("HostSpan could not start", message);
@@ -430,5 +458,5 @@ if (ownsSingleInstanceLock) void app.whenReady().then(async () => {
 
 app.on("before-quit", () => {
   quitting = true;
-  if (refreshTimer) clearInterval(refreshTimer);
+  if (refreshTimer) clearTimeout(refreshTimer);
 });
