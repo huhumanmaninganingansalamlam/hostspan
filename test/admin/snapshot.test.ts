@@ -109,6 +109,33 @@ describe("local admin snapshot", () => {
     }
   });
 
+  it("keeps authenticated tray status off the MCP audit path while retaining external tool auditing", async () => {
+    const { configPath } = fixture();
+    const runtime = createRuntime(configPath);
+    writeDaemonPid(configPath);
+    const control = await startDaemonControlServer(configPath, () => {}, async (input) => {
+      if (input.action !== "status") throw new Error("Unexpected computer action.");
+      return { structuredContent: runtime.desktopComputerStatus() };
+    });
+    const count = () => (runtime.db.prepare("SELECT count(*) AS count FROM audit_events").get() as { count: number }).count;
+    try {
+      const initial = count();
+      for (let i = 0; i < 12; i++) {
+        expect(await computerRuntimeState(configPath)).toMatchObject({ enabled: false, state: "disabled" });
+      }
+      expect(count()).toBe(initial);
+      const remote = await runtime.handlers.system_status({}, "req_external_system_status");
+      expect(runtime.desktopComputerStatus().backends.computer).toEqual(
+        (remote.backends as { computer: Record<string, unknown> }).computer,
+      );
+      expect(count()).toBe(initial + 2);
+    } finally {
+      await control.close();
+      removeDaemonPid(configPath);
+      await runtime.close();
+    }
+  });
+
   it("defaults computer-use OFF and applies explicit ON/OFF only at the restart boundary", async () => {
     const { configPath } = fixture();
     expect(createInitialConfig().computer).toBeUndefined();

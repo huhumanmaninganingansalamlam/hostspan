@@ -18,7 +18,7 @@ export function createInitialConfig(): HostSpanConfig {
       search_queue_timeout_ms: 1_000,
     },
     retention: {
-      max_audit_events: 500_000,
+      max_audit_events: 1_000,
     },
     terminal: {},
     targets: {},

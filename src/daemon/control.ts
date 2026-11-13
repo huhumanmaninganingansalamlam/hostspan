@@ -290,7 +290,9 @@ export async function startDaemon(
     },
   });
   let launchError: NodeJS.ErrnoException | undefined;
+  let exitedBeforeReady: { code: number | null; signal: NodeJS.Signals | null } | undefined;
   child.once("error", (error) => { launchError = error as NodeJS.ErrnoException; });
+  child.once("exit", (code, signal) => { exitedBeforeReady = { code, signal }; });
   child.unref();
   const deadline = Date.now() + startupTimeoutMs;
   while (Date.now() < deadline) {
@@ -300,6 +302,11 @@ export async function startDaemon(
       throw new HostSpanError("TARGET_NOT_READY", "HostSpan daemon executable could not start.", false, {
         reason: "daemon_spawn_failed",
         ...(launchError.code ? { os_code: launchError.code } : {}),
+      });
+    }
+    if (exitedBeforeReady) {
+      throw new HostSpanError("TARGET_NOT_READY", "HostSpan daemon exited before becoming ready. Check the daemon configuration and local logs.", false, {
+        reason: "daemon_exited_during_startup",
       });
     }
     await sleep(50);

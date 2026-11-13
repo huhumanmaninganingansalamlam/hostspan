@@ -75,6 +75,8 @@ export interface HostSpanRuntime {
   searchLimiter: BoundedConcurrencyLimiter;
   searchBackendReady(): boolean;
   terminalBackendReady(): boolean;
+  /** Local daemon-control status: never an externally exposed MCP tool or audit event. */
+  desktopComputerStatus(): { backends: { computer: Record<string, unknown> } };
   oauthRepo: OAuthRepo;
   oauth?: OAuthService;
   handlers: HostSpanToolHandlers;
@@ -170,7 +172,7 @@ export function createRuntime(
   const transactions = new TransactionsRepo(db);
   const audit = new AuditRepo(db, {
     maxAgeDays: config.retention.audit_days,
-    maxEvents: config.retention.max_audit_events ?? 500_000,
+    maxEvents: config.retention.max_audit_events ?? 1_000,
   });
   const oauthRepo = new OAuthRepo(db);
   const logger = new HostSpanLogger(config.server.data_dir);
@@ -348,6 +350,27 @@ export function createRuntime(
     }
   };
 
+  // Desktop tray status travels through the authenticated local daemon-control
+  // socket. It is not a caller's MCP tool invocation and must not create
+  // audit rows, append logs, or re-probe expensive backend readiness.
+  const computerBackendStatus = (): Record<string, unknown> => {
+    const current = computer?.status();
+    return {
+      name: config.computer?.backend ?? desktopBackend(),
+      configured: Boolean(computer),
+      ...(computerSession?.session_id === current?.session_id ? { session_activity: computerSession } : {}),
+      project_attribution: "unavailable",
+      supported_session: supportedDesktopSession(),
+      scope: "daemon_desktop",
+      display_selection: config.computer?.backend === "native" ? "primary_display" : "OS_consent",
+      remote_ssh_desktop: false,
+      display_enumeration: false,
+      ...(current ?? { state: "disabled", message: "Desktop control is off. Use hostspan computer enable to configure it." }),
+    };
+  };
+
+  const desktopComputerStatus = () => ({ backends: { computer: computerBackendStatus() } });
+
   const handlers: HostSpanToolHandlers = {
     computer: (input, requestId, caller = { caller_mode: "local" }) => traced("computer", input, requestId, async () => {
       if (!computer) throw new HostSpanError("SCOPE_DENIED", "Desktop control is off. Run hostspan computer enable with the intended --config, then explicitly restart that daemon to apply it.");
@@ -383,13 +406,7 @@ export function createRuntime(
               ready: processReady,
             },
             terminal: { name: "hostspan_pty", ready: terminalReady, configured: Boolean(config.terminal) },
-            computer: { name: config.computer?.backend ?? desktopBackend(), configured: Boolean(computer),
-              ...(computerSession?.session_id === computer?.status().session_id ? { session_activity: computerSession } : {}),
-              project_attribution: "unavailable",
-              supported_session: supportedDesktopSession(),
-              scope: "daemon_desktop", display_selection: config.computer?.backend === "native" ? "primary_display" : "OS_consent",
-              remote_ssh_desktop: false, display_enumeration: false,
-              ...(computer ? computer.status() : { state: "disabled", message: "Desktop control is off. Use hostspan computer enable to configure it." }) },
+            computer: computerBackendStatus(),
             search_concurrency: searchLimiter.snapshot(),
           },
           active_process_count: processes.activeCount(),
@@ -484,6 +501,7 @@ export function createRuntime(
     searchLimiter,
     searchBackendReady,
     terminalBackendReady,
+    desktopComputerStatus,
     oauthRepo,
     ...(oauth ? { oauth } : {}),
     handlers,

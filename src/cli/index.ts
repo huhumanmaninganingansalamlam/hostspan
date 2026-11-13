@@ -402,7 +402,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
           const id = requestId();
           const context = { toolset_hash: toolsetHash(runtime.authenticationMode), policy_epoch: runtime.config.policy_epoch };
           try {
-            const result = input.action === "status" ? await runtime.handlers.system_status({}, id)
+            const result = input.action === "status" ? runtime.desktopComputerStatus()
               : await runtime.handlers.computer(input, id, { caller_mode: "local" });
             return successResult(context, result, id, true);
           } catch (error) {
