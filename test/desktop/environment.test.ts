@@ -11,10 +11,35 @@ import {
   isDesktopLoginLaunch,
   linuxAutoStartContents,
   linuxAutoStartPath,
+  macOSDaemonHasLoginSupervisor,
   mergePathValues,
+  shouldStartLoginDaemon,
 } from "../../src/desktop/environment.js";
 
 describe("desktop environment", () => {
+  it("uses a single supervisor for a macOS login daemon even before the Tailscale interface is ready", () => {
+    const root = mkdtempSync(join(tmpdir(), "hostspan-launchd-"));
+    const profile = "/Users/sanghun/.config/hostspan/private-direct-5200553.yaml";
+    try {
+      const xml = [
+        "<plist><dict><key>RunAtLoad</key><true/>",
+        "<key>ProgramArguments</key><array><string>/bin/zsh</string><string>-c</string>",
+        `<string>exec HostSpan serve --config "${profile}"</string></array></dict></plist>`,
+      ].join("");
+      writeFileSync(join(root, "io.hostspan.private-direct.plist"), xml);
+      expect(macOSDaemonHasLoginSupervisor(profile, root)).toBe(true);
+      expect(macOSDaemonHasLoginSupervisor("/unrelated/profile.yaml", root)).toBe(false);
+      expect(shouldStartLoginDaemon("darwin", true, true)).toBe(false);
+      expect(shouldStartLoginDaemon("darwin", true, false)).toBe(true);
+      expect(shouldStartLoginDaemon("linux", true, true)).toBe(true);
+      expect(shouldStartLoginDaemon("darwin", false, true)).toBe(false);
+      writeFileSync(join(root, "io.hostspan.private-direct.plist"), xml.replace("RunAtLoad", "OtherKey"));
+      expect(macOSDaemonHasLoginSupervisor(profile, root)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("resolves Linux autostart within XDG config home while preserving the default", () => {
     const root = mkdtempSync(join(tmpdir(), "hostspan-autostart-"));
     try {
