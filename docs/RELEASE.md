@@ -4,7 +4,13 @@ Entries describe versioned behavior. Publication is established by the correspon
 
 ## Unreleased (dev)
 
-- No unreleased changes have been designated after v0.13.1.
+- No unreleased changes have been designated after v0.13.2.
+
+## 0.13.2
+
+- Fix macOS login startup contention: when a user-owned HostSpan LaunchAgent already starts the selected daemon profile, the GUI no longer spawns the same daemon concurrently. Login-window status remains visible in the tray/dashboard.
+- Avoid a stale, blocking macOS startup error popup for background login failures; report the issue via stderr and running daemon status rather than leaving an alert that can outlive later recovery. Manual start failures still remain visible.
+- No changes to authentication, daemon data, user permissions, MCP toolset, or other platform startup paths.
 
 ## 0.13.1
 

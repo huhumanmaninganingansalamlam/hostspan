@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 
@@ -54,6 +55,29 @@ export function desktopLaunchSpec(input: {
 
 export function isDesktopLoginLaunch(platform: NodeJS.Platform, argv: string[], wasOpenedAtLogin: boolean): boolean {
   return platform === "darwin" ? wasOpenedAtLogin : argv.includes("--hostspan-login");
+}
+
+/**
+ * macOS LaunchAgents may own the daemon independently of the GUI login item.
+ * Never start it a second time from Electron during desktop login. The agent
+ * is installed per user, has RunAtLoad, and refers to the selected profile.
+ */
+export function macOSDaemonHasLoginSupervisor(configPath: string, launchAgentDir: string): boolean {
+  try {
+    return readdirSync(launchAgentDir).some((name) => {
+      if (!/^io\.hostspan\.[a-z0-9.-]+\.plist$/i.test(name)) return false;
+      const content = readFileSync(join(launchAgentDir, name), "utf8");
+      return content.includes("<key>RunAtLoad</key>") &&
+        content.includes(configPath) &&
+        (content.includes("serve --config") || content.includes("<string>serve</string>"));
+    });
+  } catch {
+    return false;
+  }
+}
+
+export function shouldStartLoginDaemon(platform: NodeJS.Platform, loginLaunch: boolean, supervised: boolean): boolean {
+  return loginLaunch && !(platform === "darwin" && supervised);
 }
 
 export function desktopDaemonStartupTimeoutMs(platform: NodeJS.Platform, loginLaunch: boolean): number {

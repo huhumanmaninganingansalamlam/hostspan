@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, type IpcMainInvokeEvent, Menu, nativeImage, nativeTheme, Tray } from "electron";
 import {
@@ -19,7 +20,7 @@ import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath } from "../config/paths.js";
 import { PtySessionManager } from "../processes/pty-session.js";
 import { protectWindowsFile, protectWindowsTree } from "../security/windows-acl.js";
-import { desktopDaemonStartupTimeoutMs, desktopLaunchSpec, desktopStatusRefreshIntervalMs, isDesktopLoginLaunch, linuxAutoStartContents, linuxAutoStartPath, prepareDesktopEnvironment } from "./environment.js";
+import { desktopDaemonStartupTimeoutMs, desktopLaunchSpec, desktopStatusRefreshIntervalMs, isDesktopLoginLaunch, linuxAutoStartContents, linuxAutoStartPath, macOSDaemonHasLoginSupervisor, prepareDesktopEnvironment, shouldStartLoginDaemon } from "./environment.js";
 import {
   installDashboardNavigationGuards,
   isTrustedDashboardIpc,
@@ -426,7 +427,9 @@ if (ownsSingleInstanceLock) void app.whenReady().then(async () => {
       process.argv,
       process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin,
     );
-    if (loginLaunch) {
+    const launchdManaged = process.platform === "darwin" &&
+      macOSDaemonHasLoginSupervisor(configPath, join(homedir(), "Library", "LaunchAgents"));
+    if (shouldStartLoginDaemon(process.platform, loginLaunch, launchdManaged)) {
       // Do not block tray initialization behind a cold macOS desktop login.
       // Permit a bounded boot grace without pretending the daemon is ready.
       void (async () => {
@@ -440,7 +443,14 @@ if (ownsSingleInstanceLock) void app.whenReady().then(async () => {
           // A slow detached worker may have started just after the deadline.
           // Never show a false failure for an already-running daemon.
           if (!daemonStatus(configPath).running) {
-            dialog.showErrorBox("HostSpan daemon could not start", error instanceof Error ? error.message : String(error));
+            const message = error instanceof Error ? error.message : String(error);
+            // A background login failure belongs in the dashboard, not in a
+            // modal that can remain open after the daemon later becomes ready.
+            if (process.platform === "darwin") {
+              process.stderr.write(`HostSpan login daemon start failed: ${message}\n`);
+            } else {
+              dialog.showErrorBox("HostSpan daemon could not start", message);
+            }
           }
         } finally {
           await refreshUi().catch(() => undefined);
