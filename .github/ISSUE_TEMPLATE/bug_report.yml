@@ -1,31 +1,39 @@
 name: HostSpan bug report
-description: Report a HostSpan defect or ChatGPT/MCP compatibility issue
-title: "[bug] "
+description: Reproducible HostSpan defect or MCP/ChatGPT compatibility issue
 labels: [bug]
 body:
   - type: markdown
     attributes:
       value: |
-        Do not paste secrets, raw private keys, or unreviewed process output. Prefer a reviewed `hostspan support-export` bundle.
+        Do not post tokens, private keys, screenshots with sensitive data, raw private process output, or unreviewed support bundles.
+        Include a sanitized `hostspan support-export` only after reviewing its contents.
   - type: input
     id: version
     attributes:
-      label: HostSpan version
-      placeholder: Output of hostspan --version
+      label: HostSpan version and build identity (when available)
+      description: From hostspan --version --verbose or system_status.
+      placeholder: "0.13.2, development build_id: ..."
     validations:
-      required: true
+      required: false
   - type: input
     id: toolset
     attributes:
-      label: toolset_hash
-      description: From `hostspan print-toolset` or `system_status`.
+      label: toolset_hash (when available)
+      description: From hostspan print-toolset or system_status; useful for client metadata mismatches.
     validations:
-      required: true
+      required: false
   - type: input
     id: platform
     attributes:
-      label: Platform
-      placeholder: Ubuntu 24.04 x64 / Windows 11 x64 / macOS 14 x64
+      label: Operating system and runtime
+      placeholder: "Ubuntu 24.04 x64 / Windows 11 x64 / macOS 14 arm64"
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Observed behavior
+      description: Include sanitized error code/state, request_id/process_id and whether a side effect may have run.
     validations:
       required: true
   - type: textarea
@@ -35,10 +43,10 @@ body:
     validations:
       required: true
   - type: textarea
-    id: actual
+    id: reproduction
     attributes:
-      label: Actual behavior
-      description: Include structured error code/state and request_id/process_id when available.
+      label: Steps to reproduce
+      description: Include command/profile mode and minimal arguments. Never include credentials or private target contents.
     validations:
       required: true
   - type: dropdown
@@ -46,21 +54,15 @@ body:
     attributes:
       label: Did the request reach HostSpan?
       options:
-        - "Yes - transport/request trace exists"
+        - "Yes - matching request/transport trace exists"
         - "No - no matching HostSpan request trace"
         - "Unknown"
     validations:
       required: true
   - type: textarea
-    id: doctor
+    id: diagnostics
     attributes:
-      label: hostspan doctor summary
-      render: text
+      label: Sanitized diagnostics (optional)
+      description: Relevant Doctor checks, redacted trace or logs; an entire Doctor dump is not mandatory.
     validations:
-      required: true
-  - type: textarea
-    id: reproduction
-    attributes:
-      label: Reproduction steps
-    validations:
-      required: true
+      required: false

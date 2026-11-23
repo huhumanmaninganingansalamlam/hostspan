@@ -1,6 +1,6 @@
 # HostSpan MCP v4 contract design
 
-Status: design target for the next breaking MCP contract. This document does not change the active versioned contract.
+**PROPOSAL — NOT SHIPPED.** This document describes a possible future `hostspan-v4` contract; it does **not** describe the current 0.13.2 / `hostspan-v3.5` implementation. See [current architecture](ARCHITECTURE.md) and the [shipped registry](../src/mcp/registry.ts).
 
 ## Goals
 

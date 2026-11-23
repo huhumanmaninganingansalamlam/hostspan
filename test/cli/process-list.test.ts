@@ -65,7 +65,7 @@ it("discovers original handles then polls them without execution, cross-path lea
     expect(JSON.stringify(first)).not.toContain("must-not-leak-command");
     const polled = await cli("poll", "--process", next.processes[0].process_id);
     expect(polled).toMatchObject({ process_id: id(1), state: "failed", exit_code: 7 });
-    for (const args of [["--active-only", "yes"], ["--limit", "501"], ["--cursor", "invalid"], ["--cwd"], ["--target", "again"]]) {
+    for (const args of [["--active-only", "yes"], ["--limit", "501"], ["--cursor", "invalid"], ["--cwd"], ["--target", "again"], ["--unknown", "value"]]) {
       await expect(cli("list", "--target", "local", ...args)).rejects.toMatchObject({ code: "VALIDATION_FAILED" });
     }
     await expect(cli("list", "--target", "missing")).rejects.toMatchObject({ code: "TARGET_NOT_FOUND" });

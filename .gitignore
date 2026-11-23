@@ -5,3 +5,6 @@ out/
 assets/icons/
 *.tsbuildinfo
 .hostspan-state/
+
+# Keep release/QA evidence in the workspace-level artifacts/hostspan-release-qa/ archive.
+artifacts/

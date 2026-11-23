@@ -1,65 +1,39 @@
 # Contributing to HostSpan
 
-Thanks for helping improve HostSpan.
+HostSpan is a terminal-first MCP execution gateway. Current package `0.13.2` advertises 12 tools under `hostspan-v3.5`; `v3.3` and `v3.4` describe historical releases, not the current registry. The [architecture map](docs/ARCHITECTURE.md), [agent navigation](AGENTS.md) and source/tests are the current technical references.
 
-## Before you start
-
-HostSpan is intentionally a small, terminal-first MCP execution gateway. Tool lists are versioned contracts, not permanent numeric limits. v0.9.5 provided ten `hostspan-v3.3` tools; the GUI extension adds `computer` in `hostspan-v3.4`. Keep tools purposeful and avoid redundant entry points; approved capabilities may extend the versioned MCP surface.
-
-For security-sensitive issues, follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
+Report vulnerabilities privately following [SECURITY.md](SECURITY.md). For public bugs, include the observed and expected result, reproduction steps, OS/runtime, version/build and a sanitized error/request ID **when available**; never paste tokens, private files, raw process output or unreviewed support bundles. Public GitHub issues cover user bugs and features. Internal implementation Tasks are tracked by the workspace repoctl records, not by a second GitHub Task issue template.
 
 ## Branch and release model
 
-- `main` is the last qualified release baseline. Do not use it as the normal feature-development branch.
-- `dev` is the integration branch for ongoing development. Changes land there before release promotion to `main`; contributors may use reviewed pull requests.
-- Promotion from `dev` to `main` is a release-candidate action: the full native CI matrix, installed/package smoke, audit, and release notes must already be green.
-- Release tags are immutable, must point to a commit contained in `main`, and must use a new version. The release workflow refuses to overwrite an existing GitHub Release.
-- HostSpan is still in active development and intentionally supports only the current config/state formats. Do not add silent backward-data migration or guessing logic unless a future compatibility policy explicitly requires it.
+- `main` is the last qualified release baseline, not a feature-development branch. Changes are promoted through pull requests after the candidate satisfies the current CI matrix, installer/CLI smoke, dependency audit, security/recovery review and release notes. Use **squash merge** for coherent history; do not bypass required checks or directly push/force-push/delete `main`.
+- `dev` integrates reviewed work. Small changes may follow the existing **non-force direct integration** flow; focused topic branches and PRs are welcome. Never force-push or rewrite collaborators' `dev` history. Do not impose `main`-style PR-only gates on `dev` without a tested replacement.
+- Release tags must match a new `package.json` version, point to a commit on `main`, and must not overwrite an existing release. [Distribution](docs/DISTRIBUTION.md) covers unsigned builds, OS signing and notarization; [Release notes](docs/RELEASE.md) owns historical qualification.
+- A solo maintainer need not manufacture another review approval; **passing automated checks and concrete verification evidence** matter more than an empty checkbox.
 
-## Development setup
+## Local setup and verification
 
-Requirements:
-
-- Node.js 22 or newer
-- Corepack and pnpm 12.4.2
-- Git
-- ripgrep
+Use Node.js 22+, Corepack, pnpm 12.4.2 and the native prerequisites for the target operating system:
 
 ```bash
 corepack enable
 pnpm install --frozen-lockfile
 pnpm check
+git diff --check
 ```
 
-For desktop packaging:
+Run focused tests for changed boundaries before the full check, e.g. `pnpm exec vitest run test/process`. For a CLI/package change run `pnpm package:smoke`. For an Electron/package change run `pnpm desktop:dir` and `pnpm desktop:smoke` on the target OS. **The desktop build cleans `out/`**; preserve any valuable previous binaries first. CI runs native Linux x64, Windows x64 and macOS arm64/x64 jobs; see the exact current job names and gates in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
-```bash
-pnpm icons
-pnpm desktop:make
-pnpm desktop:smoke
-```
+A local Linux PASS does not imply native Windows/macOS GUI permission, installer, package signing or hardware QA. Record actual commands, outcomes, test skips and blocked external gates in the PR description. Do not claim unrun jobs passed.
 
-## Pull requests
+## PR description
 
-Keep changes focused and explain:
+Explain the problem and user impact, the exact code boundary changed and why it owns the behavior, the verification actually performed (including failures fixed), compatibility/security/recovery effects, and any Task/issue, rollout or rollback plan. Do **not** reproduce the CI status as checkboxes. Changes to the public MCP tool name/schema/description or authority must have explicit version and policy review.
 
-1. the problem being solved;
-2. the user-visible behavior before and after;
-3. security or recovery implications;
-4. tests added or updated;
-5. whether the MCP tool name/schema/description metadata changes.
+## Design invariants
 
-Breaking tool-contract changes must use a new toolset version rather than silently changing the published contract.
-
-Run `pnpm check` and `git diff --check` before submitting changes. CI runs the core gate and audit on pushes and pull requests across Linux x64, Windows x64, macOS arm64, and macOS x64. Pull requests additionally run CLI package smoke, unpacked desktop smoke, and a separate nonpublishing installer job: Windows x64 NSIS installs into `RUNNER_TEMP`; macOS arm64/x64 DMGs are mounted read-only and copied there before installed-runtime smoke. Direct `dev` pushes also qualify the fresh installed CLI on Windows; desktop packaging remains limited to pull requests and releases. This adds pre-release installer coverage; it does not replace the tagged release gates or qualify signing/notarization or an interactive OS launch. Verify the relevant native packages before promoting `dev` to `main`.
-
-## Design principles
-
-- Never report an unprovable side effect as success.
-- Keep target and capability boundaries explicit.
-- Native and terminal execution are not OS sandboxes.
-- Preserve durable idempotency and crash-recovery semantics.
-- Keep resource use bounded under bursty/multi-agent workloads.
-- Distinguish ChatGPT/client-side tool injection failures from HostSpan server failures.
-
-By contributing, you agree that your contributions are licensed under the repository's Apache-2.0 license.
+- No successful response for an unproven side effect. Preserve durable idempotency, byte cursors, unknown/orphaned states and process-tree/stdio termination rules.
+- Native process execution is **not** OS sandboxing. Target/policy authority, OAuth/private-token scopes, and OS GUI consent are independent.
+- Do not weaken request validation, exact Host allowlists, Windows ACLs, trusted Electron IPC or private data redaction for convenience.
+- Retain old QA evidence and release history, and do not add a new framework, giant helper, stale copied command page or unused configuration switch to make a refactor look tidier.
+- Keep changes independently reviewable. Avoid tests that sleep through races or mock away actual lifecycle boundaries.
