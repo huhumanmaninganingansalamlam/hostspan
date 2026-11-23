@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createOAuthSetup, rotateOAuthApprovalSecret } from "../auth/oauth-service.js";
 import { parsePrivateTokenScopes, PrivateTokenStore } from "../auth/private-token.js";
-import { addLocalWorkspace, buildAdminSnapshot, computerRuntimeState, removeLocalWorkspace, resolveTerminalSession, setComputerEnabled } from "../admin/snapshot.js";
+import { buildAdminSnapshot } from "../admin/snapshot.js";
 import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath, oauthApprovalSecretPath } from "../config/paths.js";
 import { createInitialConfig } from "../config/defaults.js";
@@ -14,7 +14,6 @@ import { TOOLSET_HASH, toolsetDocument, toolsetHash } from "../mcp/registry.js";
 import { createHostSpanHttpServer } from "../mcp/server.js";
 import { buildSupportExport, writeSupportExportAtomic } from "../observability/support-export.js";
 import { protectWindowsFile } from "../security/windows-acl.js";
-import { PtySessionManager } from "../processes/pty-session.js";
 import { AuditRepo } from "../state/audit-repo.js";
 import { openDatabase, openMemoryDatabase, openReadOnlyDatabase } from "../state/database.js";
 import { OAuthRepo } from "../state/oauth-repo.js";
@@ -22,13 +21,16 @@ import { ProcessesRepo } from "../state/processes-repo.js";
 import { TargetRegistry } from "../targets/registry.js";
 import { BUILD_IDENTITY, PROTOCOL_VERSION, SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
 import { runDoctor } from "../diagnostics/doctor.js";
-import { daemonStatus, removeDaemonPid, requestDaemonComputer, startDaemon, startDaemonControlServer, stopDaemon, writeDaemonPid } from "../daemon/control.js";
+import { daemonStatus, removeDaemonPid, startDaemonControlServer, writeDaemonPid } from "../daemon/control.js";
 import { installSystemdService, runServiceCommand } from "../services/systemd.js";
 import { runSmoke } from "./smoke.js";
 import { runProcessCommand } from "./commands/process.js";
+import { runComputerCommand } from "./commands/computer.js";
+import { runDaemonCommand } from "./commands/daemon.js";
+import { runTerminalCommand } from "./commands/terminal.js";
+import { runPolicyValidateCommand, runTargetsCommand } from "./commands/targets.js";
 import type { CliCommandContext } from "./context.js";
 import { createRuntime, runtimeReadiness } from "../runtime/create-runtime.js";
-import { ComputerInputSchema, supportedDesktopSession } from "../computer/portal.js";
 import { errorResult, requestId, successResult } from "../mcp/result.js";
 
 function flag(args: string[], name: string): string | undefined {
@@ -137,65 +139,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     entryModuleUrl: import.meta.url,
   };
   if (command === "process") return runProcessCommand(context);
-  if (command === "computer") {
-    const action = argv[1] ?? "status";
-    if (action === "inspect") {
-      print(await requestDaemonComputer(configPath, { action: "status" }));
-      return 0;
-    }
-    if (action === "call") {
-      const raw = flag(argv, "--input");
-      let input: unknown;
-      try { input = JSON.parse(raw ?? ""); }
-      catch { throw cliValidationError("computer call requires --input JSON"); }
-      const parsed = ComputerInputSchema.safeParse(input);
-      if (!parsed.success) throw cliValidationError("Invalid computer arguments.");
-      const result = await requestDaemonComputer(configPath, parsed.data);
-      print(result);
-      return result.isError ? 1 : 0;
-    }
-    if (!["status", "enable", "disable"].includes(action)) throw cliValidationError("computer requires status, enable, disable, inspect, or call");
-    const config = loadConfig(configPath);
-    const changed = action !== "status" && Boolean(config.computer) !== (action === "enable");
-    if (changed) {
-      setComputerEnabled(configPath, action === "enable");
-    }
-    const running = daemonStatus(configPath).running;
-    const configured = action === "status" ? Boolean(config.computer) : action === "enable";
-    const runtime = await computerRuntimeState(configPath);
-    const restartRequired = running && (runtime.enabled === null || runtime.enabled !== configured);
-    const supported = typeof runtime.supported_session === "boolean" ? runtime.supported_session : supportedDesktopSession();
-    const message = changed ? `Desktop control ${configured ? "enabled" : "disabled"} in this profile.`
-      : `Desktop control is ${configured ? "configured" : "off"}.`;
-    const next = restartRequired ? "Restart this daemon explicitly when safe to apply the change. Existing work was not interrupted."
-      : configured && running ? "Computer-use is ON in the running daemon. Existing OS permissions and session state still apply."
-      : configured ? "Start HostSpan in your logged-in desktop. Ask your MCP assistant to open computer, complete any OS permission dialog, then observe and act."
-      : "Run hostspan computer enable with the same --config to enable desktop control.";
-    const result = { configured, enabled_by_default: false, runtime, restart_required: restartRequired,
-      supported_session: supported, changed, daemon_running: running,
-      message, next, config_path: configPath,
-      runtime_note: "This describes saved configuration, not an active desktop grant. Remote callers also need hostspan.computer.",
-      ...(!supported && configured ? { limitation: "This session does not provide a supported interactive desktop." } : {}) };
-    if (has(argv, "--json")) print(result);
-    else process.stdout.write(`${message}\nRunning computer-use: ${runtime.enabled === null ? "UNKNOWN" : runtime.enabled ? "ON" : "OFF"}${restartRequired ? " (restart required to apply saved setting)" : ""}\n${next}\n${result.runtime_note}\n${result.limitation ?? ""}\nProfile: ${configPath}\n`);
-    return 0;
-  }
-  if (command === "daemon") {
-    const action = argv[1];
-    if (action === "start") {
-      print(await startDaemon(configPath));
-      return 0;
-    }
-    if (action === "stop") {
-      print(await stopDaemon(configPath));
-      return 0;
-    }
-    if (action === "status") {
-      print(daemonStatus(configPath));
-      return 0;
-    }
-    throw cliValidationError("daemon requires start, stop, or status");
-  }
+  if (command === "computer") return runComputerCommand(context);
+  if (command === "daemon") return runDaemonCommand(context);
   if (command === "init") {
     if (existsSync(configPath)) throw cliValidationError(`config already exists: ${configPath}`);
     writeConfigAtomic(configPath, createInitialConfig());
@@ -459,26 +404,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     print(buildAdminSnapshot(configPath, { recent: Number.isFinite(recent) ? recent : 30 }));
     return 0;
   }
-  if (command === "terminal") {
-    const action = argv[1];
-    if (action === "list") {
-      print({ sessions: buildAdminSnapshot(configPath, { recent: 200 }).terminal.sessions });
-      return 0;
-    }
-    if (action === "attach") {
-      const processId = flag(argv, "--process") ?? argv[2];
-      if (!processId) throw cliValidationError("terminal attach requires --process PROCESS_ID");
-      if (!process.stdin.isTTY || !process.stdout.isTTY) throw new HostSpanError("TERMINAL_NOT_INTERACTIVE", "terminal attach requires an interactive local terminal.");
-      const config = loadConfig(configPath);
-      if (!config.terminal) throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "terminal support is not configured.");
-      const session = resolveTerminalSession(configPath, processId);
-      if (!session) throw new HostSpanError("PROCESS_NOT_FOUND", `interactive process not found: ${processId}`, false, { process_id: processId });
-      const manager = new PtySessionManager(config.server.data_dir, config.terminal);
-      await manager.attach(session.session, has(argv, "--read-only"));
-      return 0;
-    }
-    throw cliValidationError("terminal requires list or attach");
-  }
+  if (command === "terminal") return runTerminalCommand(context);
   if (command === "smoke") {
     const targetId = flag(argv, "--target");
     if (!targetId) throw cliValidationError("smoke requires --target TARGET", { reason: "missing_argument", argument: "--target" });
@@ -494,48 +420,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       await runtime.close();
     }
   }
-  if (command === "targets") {
-    const action = argv[1];
-    const config = loadConfig(configPath);
-    if (action === "list") {
-      const registry = new TargetRegistry(config);
-      print({ targets: registry.list().map((target) => ({ target_id: target.target_id, label: target.label, root: target.root_real, capabilities: target.capabilities })) });
-      return 0;
-    }
-    if (action === "add") {
-      const targetId = flag(argv, "--id");
-      const root = flag(argv, "--root");
-      if (!targetId || !root) throw cliValidationError("targets add requires --id and --root");
-      const capabilities = (flag(argv, "--capabilities") ?? "read").split(",").filter(Boolean) as Array<"read" | "write" | "exec" | "terminal">;
-      const execProfile = flag(argv, "--exec-profile");
-      print(
-        addLocalWorkspace(configPath, {
-          target_id: targetId,
-          label: flag(argv, "--label") ?? targetId,
-          root,
-          capabilities,
-          ...(execProfile ? { exec_profile: execProfile } : {}),
-        }),
-      );
-      return 0;
-    }
-    if (action === "remove") {
-      const targetId = flag(argv, "--id") ?? argv[2];
-      if (!targetId) throw cliValidationError("targets remove requires an existing target id", { reason: "missing_argument", argument: "--id" });
-      if (!config.targets[targetId]) throw new HostSpanError("TARGET_NOT_FOUND", `Unknown target_id: ${targetId}`, false, { target_id: targetId });
-      print(removeLocalWorkspace(configPath, targetId));
-      return 0;
-    }
-    throw cliValidationError("targets requires list, add, or remove");
-  }
-  if (command === "policy" && argv[1] === "validate") {
-    const config = loadConfig(configPath);
-    for (const [targetId, target] of Object.entries(config.targets)) {
-      if (target.exec_profile && !config.exec_profiles[target.exec_profile]) throw cliValidationError(`target ${targetId} references missing exec profile ${target.exec_profile}`);
-    }
-    print({ ok: true, policy_epoch: config.policy_epoch, native_execution: true, sandboxed: false });
-    return 0;
-  }
+  if (command === "targets") return runTargetsCommand(context);
+  if (command === "policy" && argv[1] === "validate") return runPolicyValidateCommand(context);
   if (command === "support-export") {
     const config = loadConfig(configPath);
     const targets = new TargetRegistry(config);
