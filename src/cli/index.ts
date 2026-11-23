@@ -1,30 +1,28 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, realpathSync, unwatchFile, watchFile } from "node:fs";
-import { join, resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildAdminSnapshot } from "../admin/snapshot.js";
-import { loadConfig } from "../config/loader.js";
 import { defaultConfigPath } from "../config/paths.js";
-import { createInitialConfig } from "../config/defaults.js";
-import { writeConfigAtomic } from "../config/writer.js";
 import { asHostSpanError, HostSpanError } from "../errors.js";
 import { TOOLSET_HASH, toolsetDocument, toolsetHash } from "../mcp/registry.js";
 import { createHostSpanHttpServer } from "../mcp/server.js";
-import { buildSupportExport, writeSupportExportAtomic } from "../observability/support-export.js";
-import { AuditRepo } from "../state/audit-repo.js";
-import { openMemoryDatabase, openReadOnlyDatabase } from "../state/database.js";
-import { ProcessesRepo } from "../state/processes-repo.js";
-import { TargetRegistry } from "../targets/registry.js";
 import { BUILD_IDENTITY, PROTOCOL_VERSION, SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
-import { runDoctor } from "../diagnostics/doctor.js";
 import { daemonStatus, removeDaemonPid, startDaemonControlServer, writeDaemonPid } from "../daemon/control.js";
-import { installSystemdService, runServiceCommand } from "../services/systemd.js";
-import { runSmoke } from "./smoke.js";
 import { runProcessCommand } from "./commands/process.js";
 import { runAccessTokenCommand } from "./commands/access-token.js";
 import { runOAuthCommand } from "./commands/oauth.js";
 import { runComputerCommand } from "./commands/computer.js";
 import { runDaemonCommand } from "./commands/daemon.js";
+import {
+  runAdminSnapshotCommand,
+  runDoctorCommand,
+  runInitCommand,
+  runLogsCommand,
+  runSmokeCommand,
+  runStatusCommand,
+  runSupportExportCommand,
+} from "./commands/diagnostics.js";
+import { runServiceCliCommand } from "./commands/service.js";
 import { runTerminalCommand } from "./commands/terminal.js";
 import { runPolicyValidateCommand, runTargetsCommand } from "./commands/targets.js";
 import type { CliCommandContext } from "./context.js";
@@ -86,17 +84,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (command === "process") return runProcessCommand(context);
   if (command === "computer") return runComputerCommand(context);
   if (command === "daemon") return runDaemonCommand(context);
-  if (command === "init") {
-    if (existsSync(configPath)) throw cliValidationError(`config already exists: ${configPath}`);
-    writeConfigAtomic(configPath, createInitialConfig());
-    print({ ok: true, config_path: configPath, next: "hostspan targets add --id <target> --root <absolute-path>" });
-    return 0;
-  }
-  if (command === "doctor") {
-    const report = await runDoctor(configPath);
-    print(report);
-    return report.ok ? 0 : 1;
-  }
+  if (command === "init") return runInitCommand(context);
+  if (command === "doctor") return runDoctorCommand(context);
   if (command === "access") return runAccessTokenCommand(context);
   if (command === "oauth") return runOAuthCommand(context);
   if (command === "serve") {
@@ -202,116 +191,15 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     await shutdown();
     return 0;
   }
-  if (command === "status") {
-    const snapshot = buildAdminSnapshot(configPath, { recent: 20 });
-    print({
-      server_version: snapshot.server_version,
-      build: snapshot.build,
-      protocol_version: PROTOCOL_VERSION,
-      toolset_hash: TOOLSET_HASH,
-      toolset_version: snapshot.toolset_version,
-      policy_epoch: snapshot.policy_epoch,
-      daemon: snapshot.daemon,
-      computer: snapshot.computer,
-      listen_host: snapshot.listen.host,
-      listen_port: snapshot.listen.port,
-      native_execution: true,
-      sandboxed: false,
-      targets: snapshot.targets.map((target) => ({
-        target_id: target.target_id,
-        label: target.label,
-        ready: target.ready,
-        capabilities: target.capabilities,
-        ...(has(argv, "--verbose") ? { root: target.root } : {}),
-      })),
-      active_process_count: snapshot.active_process_count,
-      terminal_sessions: snapshot.terminal.sessions,
-    });
-    return 0;
-  }
-  if (command === "admin" && argv[1] === "snapshot") {
-    const recent = Number(flag(argv, "--recent") ?? "30");
-    print(buildAdminSnapshot(configPath, { recent: Number.isFinite(recent) ? recent : 30 }));
-    return 0;
-  }
+  if (command === "status") return runStatusCommand(context);
+  if (command === "admin" && argv[1] === "snapshot") return runAdminSnapshotCommand(context);
   if (command === "terminal") return runTerminalCommand(context);
-  if (command === "smoke") {
-    const targetId = flag(argv, "--target");
-    if (!targetId) throw cliValidationError("smoke requires --target TARGET", { reason: "missing_argument", argument: "--target" });
-    if (daemonStatus(configPath).running) {
-      throw cliValidationError("hostspan smoke requires the daemon to be stopped so validation cannot mutate live recovery state.", { reason: "daemon_running" });
-    }
-    const runtime = createRuntime(configPath);
-    try {
-      const report = await runSmoke(runtime, targetId);
-      print(report);
-      return report.ok ? 0 : 1;
-    } finally {
-      await runtime.close();
-    }
-  }
+  if (command === "smoke") return runSmokeCommand(context);
   if (command === "targets") return runTargetsCommand(context);
   if (command === "policy" && argv[1] === "validate") return runPolicyValidateCommand(context);
-  if (command === "support-export") {
-    const config = loadConfig(configPath);
-    const targets = new TargetRegistry(config);
-    const statePath = join(config.server.data_dir, "state.db");
-    const db = existsSync(statePath) ? openReadOnlyDatabase(statePath) : openMemoryDatabase();
-    try {
-      const positional = argv.slice(1).find((item) => !item.startsWith("--") && item !== flag(argv, "--config"));
-      const output = resolve(positional ?? `hostspan-support-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
-      writeSupportExportAtomic(
-        output,
-        buildSupportExport({
-          config,
-          targets,
-          audit: new AuditRepo(db),
-          processes: new ProcessesRepo(db),
-        }, TOOLSET_HASH),
-      );
-      print({ ok: true, path: output });
-    } finally {
-      db.close();
-    }
-    return 0;
-  }
-  if (command === "logs") {
-    const config = loadConfig(configPath);
-    const path = join(config.server.data_dir, "logs", "hostspan.jsonl");
-    if (existsSync(path)) process.stdout.write(readFileSync(path, "utf8"));
-    if (!has(argv, "--follow")) return 0;
-    let offset = existsSync(path) ? readFileSync(path).length : 0;
-    await new Promise<void>((resolveFollow) => {
-      watchFile(path, { interval: 500 }, () => {
-        if (!existsSync(path)) return;
-        const data = readFileSync(path);
-        if (data.length < offset) offset = 0;
-        if (data.length > offset) process.stdout.write(data.subarray(offset));
-        offset = data.length;
-      });
-      const stop = () => {
-        unwatchFile(path);
-        resolveFollow();
-      };
-      process.once("SIGINT", stop);
-      process.once("SIGTERM", stop);
-    });
-    return 0;
-  }
-  if (command === "service") {
-    const action = argv[1];
-    if (action === "install") {
-      const result = installSystemdService(configPath, fileURLToPath(import.meta.url));
-      print(result);
-      return result.ok ? 0 : 1;
-    }
-    if (["start", "stop", "restart", "status"].includes(action ?? "")) {
-      const result = runServiceCommand(action as "start" | "stop" | "restart" | "status");
-      print(result);
-      return result.ok ? 0 : 1;
-    }
-    throw cliValidationError("service requires install|start|stop|restart|status");
-  }
+  if (command === "support-export") return runSupportExportCommand(context);
+  if (command === "logs") return runLogsCommand(context);
+  if (command === "service") return runServiceCliCommand(context);
   throw cliValidationError(`unknown command: ${command}`, { reason: "unknown_command", command });
 }
 
