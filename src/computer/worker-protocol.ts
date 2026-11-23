@@ -32,11 +32,24 @@ const ClosedEvent = z.object({ event: z.literal("closed") }).strict();
 const ResultReply = z
 	.object({ id: RequestId, result: DesktopWorkerResultSchema })
 	.strict();
+export const DesktopWorkerErrorDetailsSchema = z
+	.object({
+		reason: z.string().optional(),
+		dispatched: z.boolean().optional(),
+		permission: z.string().optional(),
+		capture_phase: z.string().optional(),
+		retry_after_ms: z.number().int().nonnegative().optional(),
+	})
+	.passthrough();
+export type DesktopWorkerErrorDetails = z.infer<
+	typeof DesktopWorkerErrorDetailsSchema
+>;
+
 const ErrorReply = z
 	.object({
 		id: RequestId,
 		error: z.string().min(1),
-		error_details: z.record(z.string(), z.unknown()).optional(),
+		error_details: DesktopWorkerErrorDetailsSchema.optional(),
 	})
 	.strict();
 
@@ -57,7 +70,7 @@ export type DesktopWorkerReply =
 			kind: "error";
 			id: string;
 			error: string;
-			error_details?: Record<string, unknown>;
+			error_details?: DesktopWorkerErrorDetails;
 	  };
 
 export function parseDesktopWorkerReply(

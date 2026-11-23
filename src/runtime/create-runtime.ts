@@ -1,3 +1,4 @@
+import type { DesktopComputerBackendStatus } from "./tool-handlers.js";
 import { OAuthService } from "../auth/oauth-service.js";
 import type { PrivateTokenStore } from "../auth/private-token.js";
 import type { HostSpanAuthMode, HostSpanConfig } from "../config/schema.js";
@@ -50,7 +51,9 @@ export interface HostSpanRuntime {
 	searchBackendReady(): boolean;
 	terminalBackendReady(): boolean;
 	/** Local daemon-control status: never an externally exposed MCP tool or audit event. */
-	desktopComputerStatus(): { backends: { computer: Record<string, unknown> } };
+	desktopComputerStatus(): {
+		backends: { computer: DesktopComputerBackendStatus };
+	};
 	oauthRepo: OAuthRepo;
 	oauth?: OAuthService;
 	handlers: HostSpanToolHandlers;

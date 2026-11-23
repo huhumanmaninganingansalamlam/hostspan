@@ -1,7 +1,7 @@
 import { ComputerInputSchema, type ComputerInput } from "./input-schema.js";
 export { ComputerInputSchema } from "./input-schema.js";
 export type { ComputerInput } from "./input-schema.js";
-import { buildDesktopStatus } from "./session-state.js";
+import { buildDesktopStatus, type DesktopStatus, type DesktopTargetMetadata } from "./session-state.js";
 import { parseDesktopWorkerReply, mapDesktopWorkerError, parseDesktopWorkerCommand, type PendingDesktopRequest, type DesktopWorkerResult } from "./worker-protocol.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -38,7 +38,7 @@ export class PortalDesktop {
 
   constructor(private readonly operations: OperationsStore, private readonly backend = desktopBackend()) {}
 
-  private desktopTarget(): Record<string, unknown> {
+  private desktopTarget(): DesktopTargetMetadata {
     // The portal selects a monitor, not an application window or filesystem target.
     return { desktop_backend: this.backend === "native" ? process.platform === "darwin" ? "macos-native" : "windows-native" : "wayland-portal",
       desktop_scope: "monitor", window_attribution: "unavailable",
@@ -47,7 +47,7 @@ export class PortalDesktop {
       ...(this.size ? { coordinate_width: this.size.width, coordinate_height: this.size.height } : {}) };
   }
 
-  status(): Record<string, unknown> {
+  status(): DesktopStatus {
     return buildDesktopStatus({
       backend: this.backend,
       sessionId: this.sessionId,
@@ -212,7 +212,7 @@ export class PortalDesktop {
     this.busy = true;
     try {
       if (input.action === "open") {
-        if (this.sessionId) return this.status();
+        if (this.sessionId) return { ...this.status() };
         this.openError = undefined;
         this.captureError = undefined;
         const sessionId = randomUUID();

@@ -1,3 +1,7 @@
+import type {
+	DesktopStatus,
+	DesktopSessionPhase,
+} from "../computer/session-state.js";
 import {
 	desktopBackend,
 	supportedDesktopSession,
@@ -71,6 +75,34 @@ export interface RuntimeToolHandlerDependencies {
 	audit: AuditRepo;
 }
 
+export interface ComputerSessionActivity {
+	session_id: string;
+	initiated_at: string;
+	initiated_request_id: string;
+	initiated_by: ToolCaller;
+	last_request_id: string;
+	last_request_at: string;
+	last_action: string;
+}
+
+/** Finite local-daemon status surface. No arbitrary caller-provided keys. */
+export type DesktopComputerBackendStatus = Omit<
+	DesktopStatus,
+	"state" | "next_action"
+> & {
+	name: "native" | "wayland-portal";
+	configured: boolean;
+	project_attribution: "unavailable";
+	supported_session: boolean;
+	scope: "daemon_desktop";
+	display_selection: "primary_display" | "OS_consent";
+	remote_ssh_desktop: false;
+	display_enumeration: false;
+	state: DesktopSessionPhase | "disabled";
+	next_action?: DesktopStatus["next_action"];
+	session_activity?: ComputerSessionActivity;
+};
+
 export function createRuntimeToolHandlers({
 	config,
 	computer,
@@ -87,27 +119,17 @@ export function createRuntimeToolHandlers({
 	terminalBackendReady,
 	audit,
 }: RuntimeToolHandlerDependencies) {
-	let computerSession:
-		| {
-				session_id: string;
-				initiated_at: string;
-				initiated_request_id: string;
-				initiated_by: ToolCaller;
-				last_request_id: string;
-				last_request_at: string;
-				last_action: string;
-		  }
-		| undefined;
+	let computerSession: ComputerSessionActivity | undefined;
 
 	// Desktop tray status travels through the authenticated local daemon-control
 	// socket. It is not a caller's MCP tool invocation and must not create
 	// audit rows, append logs, or re-probe expensive backend readiness.
-	const computerBackendStatus = (): Record<string, unknown> => {
+	const computerBackendStatus = (): DesktopComputerBackendStatus => {
 		const current = computer?.status();
 		return {
 			name: config.computer?.backend ?? desktopBackend(),
 			configured: Boolean(computer),
-			...(computerSession?.session_id === current?.session_id
+			...(computerSession && computerSession.session_id === current?.session_id
 				? { session_activity: computerSession }
 				: {}),
 			project_attribution: "unavailable",

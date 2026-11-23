@@ -26,19 +26,37 @@ export interface DesktopSessionState {
 	activity: DesktopActivity | undefined;
 }
 
-export interface DesktopStatus {
+export interface DesktopTargetMetadata {
+	desktop_backend: "macos-native" | "windows-native" | "wayland-portal";
+	desktop_scope: "monitor";
+	window_attribution: "unavailable";
+	display_id?: string;
+	pipewire_node_id?: number;
+	coordinate_width?: number;
+	coordinate_height?: number;
+}
+
+export interface DesktopStatus extends Partial<DesktopTargetMetadata> {
 	state: DesktopSessionPhase;
 	message: string;
 	next_action: {
 		tool: "computer";
 		arguments: { action: "open" | "observe"; session_id?: string };
 	};
-	[key: string]: unknown;
+	error_details?: HostSpanError["details"];
+	session_id?: string;
+	session_created_at?: string | undefined;
+	worker_pid?: number | undefined;
+	lifetime?: "explicit_close_or_os_end_or_worker_exit";
+	required_os_permission?: DesktopPermission;
+	activity?: DesktopActivity;
+	frame_ready?: boolean;
+	retry_after_ms?: number;
 }
 
 export function buildDesktopStatus(
 	state: DesktopSessionState,
-	desktopTarget: Record<string, unknown>,
+	desktopTarget: DesktopTargetMetadata,
 ): DesktopStatus {
 	if (!state.sessionId)
 		return {
