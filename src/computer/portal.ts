@@ -1,43 +1,14 @@
+import { ComputerInputSchema, type ComputerInput } from "./input-schema.js";
+export { ComputerInputSchema } from "./input-schema.js";
+export type { ComputerInput } from "./input-schema.js";
+import { buildDesktopStatus } from "./session-state.js";
+import { parseDesktopWorkerReply, mapDesktopWorkerError, parseDesktopWorkerCommand, type PendingDesktopRequest, type DesktopWorkerResult } from "./worker-protocol.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
-import { z } from "zod";
 import { HostSpanError } from "../errors.js";
 import type { OperationsStore } from "../operations/store.js";
-
-const session = { session_id: z.string().uuid() };
-const mutation = {
-  ...session,
-  observation_id: z.string().uuid(),
-  idempotency_key: z.string().min(1).max(128),
-};
-const pointer = { x: z.number().finite().nonnegative(), y: z.number().finite().nonnegative() };
-const keyModifiers = process.platform === "win32"
-  ? z.array(z.enum(["Shift", "Alt", "Meta"])).max(3)
-    .refine((values) => new Set(values).size === values.length, "Duplicate modifiers")
-    .describe("Windows modifiers: Meta is the Windows key (KeyE+Meta opens Explorer; Tab+Alt switches apps).")
-  : z.array(z.literal("Shift")).max(1);
-export const ComputerInputSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("open") }).strict(),
-  z.object({ action: z.literal("observe"), ...session }).strict(),
-  z.object({ action: z.literal("close"), ...session }).strict(),
-  z.object({ action: z.literal("move"), ...mutation, ...pointer }).strict(),
-  z.object({ action: z.literal("click"), ...mutation, ...pointer,
-    button: z.enum(["left", "right", "middle"]).default("left") }).strict(),
-  z.object({ action: z.literal("text"), ...mutation,
-    text: z.string().min(1).max(4096).refine((text) => [...text].every((char) =>
-      char === "\n" || char === "\t" || (char.charCodeAt(0) >= 32 && char.charCodeAt(0) !== 127)),
-    "Unsupported control character") }).strict(),
-  z.object({ action: z.literal("key"), ...mutation,
-    key: z.enum(["Enter", "Tab", "Escape", "Backspace", "Delete", "Left", "Up", "Right", "Down", "Home", "End",
-      "KeyA", "KeyB", "KeyC", "KeyD", "KeyE", "KeyF", "KeyG", "KeyH", "KeyI", "KeyJ", "KeyK", "KeyL", "KeyM",
-      "KeyN", "KeyO", "KeyP", "KeyQ", "KeyR", "KeyS", "KeyT", "KeyU", "KeyV", "KeyW", "KeyX", "KeyY", "KeyZ"]),
-    modifiers: keyModifiers.optional() }).strict(),
-  z.object({ action: z.literal("scroll"), ...mutation,
-    dx: z.number().finite().min(-10000).max(10000), dy: z.number().finite().min(-10000).max(10000) }).strict(),
-]);
-export type ComputerInput = z.infer<typeof ComputerInputSchema>;
 
 export function desktopBackend(): "wayland-portal" | "native" {
   return process.platform === "darwin" || process.platform === "win32" ? "native" : "wayland-portal";
@@ -50,13 +21,13 @@ export function supportedDesktopSession(): boolean {
 /** One interactive desktop has one pointer/focus; requests never overlap. */
 export class PortalDesktop {
   private child: ChildProcessWithoutNullStreams | undefined;
-  private pending = new Map<string, { resolve(value: Record<string, unknown>): void; reject(error: Error): void }>();
-  private observing: Promise<Record<string, unknown>> | undefined;
+  private pending = new Map<string, PendingDesktopRequest>();
+  private observing: Promise<DesktopWorkerResult> | undefined;
   private sessionId: string | undefined;
   private observationId: string | undefined;
   private pipewireNodeId: number | undefined;
   private size: { width: number; height: number } | undefined;
-  private opening: Promise<Record<string, unknown>> | undefined;
+  private opening: Promise<DesktopWorkerResult> | undefined;
   private openError: Error | undefined;
   private captureError: Error | undefined;
   private busy = false;
@@ -77,32 +48,20 @@ export class PortalDesktop {
   }
 
   status(): Record<string, unknown> {
-    if (!this.sessionId) return {
-      state: this.openError ? "failed" : "closed",
-      message: this.openError ? `Desktop connection failed: ${this.openError.message}` : "Desktop control is closed.",
-      ...(this.openError instanceof HostSpanError ? { error_details: this.openError.details } : {}),
-      next_action: { tool: "computer", arguments: { action: "open" } },
-    };
-    return {
-      ...this.desktopTarget(), session_id: this.sessionId, session_created_at: this.sessionCreatedAt,
-      worker_pid: this.child?.pid, lifetime: "explicit_close_or_os_end_or_worker_exit",
-      state: this.opening ? this.backend === "native" && !this.permission ? "connecting" : "awaiting_consent" : this.pending.size || this.observing ? "processing" : this.captureError ? "unavailable" : "ready",
-      ...(this.permission ? { required_os_permission: this.permission } : {}),
-      ...(this.activity ? { activity: this.activity } : {}),
-      message: this.opening ? this.permission
-        ? `Allow HostSpan in macOS ${this.permission === "screen_recording" ? "Screen Recording" : "Accessibility"} settings. Close computer to cancel waiting.`
-        : this.backend === "native" ? "Connecting to this computer's logged-in desktop."
-        : "Select a screen and allow control in the desktop sharing dialog. You can close to cancel."
-        : this.activity === "viewing" ? "HostSpan is viewing this screen."
-        : this.activity === "controlling" ? "HostSpan is controlling this screen."
-        : this.pending.size || this.observing ? "A desktop action is processing. Wait before sending another input."
-        : this.captureError ? `Desktop capture unavailable: ${this.captureError.message}`
-        : "Desktop connected. Observe the screen before choosing where to act.",
-      frame_ready: !!this.observationId && !this.captureError && !this.observing,
-      ...(this.captureError instanceof HostSpanError ? { error_details: this.captureError.details } : {}),
-      next_action: { tool: "computer", arguments: { action: "observe", session_id: this.sessionId } },
-      ...(this.opening || this.pending.size || this.observing ? { retry_after_ms: 1000 } : {}),
-    };
+    return buildDesktopStatus({
+      backend: this.backend,
+      sessionId: this.sessionId,
+      sessionCreatedAt: this.sessionCreatedAt,
+      observationId: this.observationId,
+      workerPid: this.child?.pid,
+      permission: this.permission,
+      openError: this.openError,
+      captureError: this.captureError,
+      opening: Boolean(this.opening),
+      hasPending: this.pending.size > 0,
+      observing: Boolean(this.observing),
+      activity: this.activity,
+    }, this.desktopTarget());
   }
 
   private start(): void {
@@ -142,24 +101,20 @@ export class PortalDesktop {
         const line = buffered.slice(0, end);
         buffered = buffered.slice(end + 1);
         try {
-          const reply = JSON.parse(line) as { event?: string; permission?: string; id: string; result?: Record<string, unknown>; error?: string; error_details?: Record<string, unknown> };
-          if (reply.event === "permission_required" && (reply.permission === "screen_recording" || reply.permission === "accessibility")) {
+          const reply = parseDesktopWorkerReply(line);
+          if (reply.kind === "permission_required") {
             this.permission = reply.permission;
             continue;
           }
-          if (reply.event === "closed") {
+          if (reply.kind === "closed") {
             this.fail(new Error("Desktop sharing ended. Open computer again to select a screen."));
             return;
           }
           const pending = this.pending.get(reply.id);
           if (!pending) throw new Error("Unexpected desktop worker reply");
           this.pending.delete(reply.id);
-          if (reply.error) pending.reject(new HostSpanError(
-            reply.error_details?.reason === "portal_local_timeout" ? "DEADLINE_EXCEEDED"
-              : ["macos_gui_launch_required", "macos_desktop_locked"].includes(String(reply.error_details?.reason)) ? "TARGET_NOT_READY" : "INTERNAL_ERROR",
-            reply.error, false, reply.error_details));
-          else if (reply.result) pending.resolve(reply.result);
-          else pending.reject(new Error("Desktop worker returned no result"));
+          if (reply.kind === "error") pending.reject(mapDesktopWorkerError(reply));
+          else pending.resolve(reply.result);
         } catch (error) {
           this.fail(error instanceof Error ? error : new Error("Invalid desktop worker response"));
         }
@@ -189,7 +144,7 @@ export class PortalDesktop {
     child?.kill();
   }
 
-  private call(command: Record<string, unknown>): Promise<Record<string, unknown>> {
+  private call(command: ComputerInput | { action: "open" | "observe" | "close" }): Promise<DesktopWorkerResult> {
     this.start();
     const child = this.child;
     if (!child) throw new Error("Desktop worker did not start");
@@ -204,7 +159,8 @@ export class PortalDesktop {
         resolve: (result) => { clearTimeout(timer); resolve(result); },
         reject: (error) => { clearTimeout(timer); reject(error); },
       });
-      child.stdin.write(`${JSON.stringify({ ...command, id })}\n`);
+      const workerCommand = parseDesktopWorkerCommand({ ...command, id });
+      child.stdin.write(`${JSON.stringify(workerCommand)}\n`);
     });
   }
 
@@ -224,7 +180,7 @@ export class PortalDesktop {
     const expired = new HostSpanError("DEADLINE_EXCEEDED", "Screen capture is still processing. Observe this same session again.", true,
       { reason: "desktop_observation_timeout", retry_after_ms: 1000 });
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let frame: Record<string, unknown>;
+    let frame: DesktopWorkerResult;
     try {
       frame = await Promise.race([capture, new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(expired), 10_000);
