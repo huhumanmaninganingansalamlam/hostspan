@@ -11,11 +11,18 @@ vi.mock("node:child_process", async (original) => ({
 	spawn: vi.fn(),
 }));
 
+// Native macOS worker is compiled during packaging, not during unit tests.
+// Only that existence probe is simulated; the host OS and SQLite ABI remain real.
+vi.mock("node:fs", async (original) => {
+	const files = await original<typeof import("node:fs")>();
+	return {
+		...files,
+		existsSync: (path: import("node:fs").PathLike) =>
+			String(path).endsWith("native-macos") || files.existsSync(path),
+	};
+});
+
 it("fails closed on malformed desktop worker events and requires a fresh session", async () => {
-	// Exercise the one real consented worker protocol, not the test runner OS helper path.
-	// A CI macOS/Windows runner has no precompiled GUI helper at this test boundary.
-	const platform = Object.getOwnPropertyDescriptor(process, "platform");
-	Object.defineProperty(process, "platform", { value: "linux" });
 	vi.stubEnv("XDG_SESSION_TYPE", "wayland");
 	const db = openDatabase(":memory:");
 	const worker = Object.assign(new EventEmitter(), {
@@ -57,6 +64,5 @@ it("fails closed on malformed desktop worker events and requires a fresh session
 		desktop.dispose();
 		db.close();
 		vi.unstubAllEnvs();
-		if (platform) Object.defineProperty(process, "platform", platform);
 	}
 });
