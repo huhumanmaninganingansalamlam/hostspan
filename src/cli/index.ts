@@ -1,22 +1,18 @@
 #!/usr/bin/env node
-import { chmodSync, closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, readFileSync, realpathSync, unwatchFile, watchFile } from "node:fs";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createOAuthSetup, rotateOAuthApprovalSecret } from "../auth/oauth-service.js";
-import { parsePrivateTokenScopes, PrivateTokenStore } from "../auth/private-token.js";
 import { buildAdminSnapshot } from "../admin/snapshot.js";
 import { loadConfig } from "../config/loader.js";
-import { defaultConfigPath, oauthApprovalSecretPath } from "../config/paths.js";
+import { defaultConfigPath } from "../config/paths.js";
 import { createInitialConfig } from "../config/defaults.js";
 import { writeConfigAtomic } from "../config/writer.js";
 import { asHostSpanError, HostSpanError } from "../errors.js";
 import { TOOLSET_HASH, toolsetDocument, toolsetHash } from "../mcp/registry.js";
 import { createHostSpanHttpServer } from "../mcp/server.js";
 import { buildSupportExport, writeSupportExportAtomic } from "../observability/support-export.js";
-import { protectWindowsFile } from "../security/windows-acl.js";
 import { AuditRepo } from "../state/audit-repo.js";
-import { openDatabase, openMemoryDatabase, openReadOnlyDatabase } from "../state/database.js";
-import { OAuthRepo } from "../state/oauth-repo.js";
+import { openMemoryDatabase, openReadOnlyDatabase } from "../state/database.js";
 import { ProcessesRepo } from "../state/processes-repo.js";
 import { TargetRegistry } from "../targets/registry.js";
 import { BUILD_IDENTITY, PROTOCOL_VERSION, SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
@@ -25,6 +21,8 @@ import { daemonStatus, removeDaemonPid, startDaemonControlServer, writeDaemonPid
 import { installSystemdService, runServiceCommand } from "../services/systemd.js";
 import { runSmoke } from "./smoke.js";
 import { runProcessCommand } from "./commands/process.js";
+import { runAccessTokenCommand } from "./commands/access-token.js";
+import { runOAuthCommand } from "./commands/oauth.js";
 import { runComputerCommand } from "./commands/computer.js";
 import { runDaemonCommand } from "./commands/daemon.js";
 import { runTerminalCommand } from "./commands/terminal.js";
@@ -48,59 +46,6 @@ function print(value: unknown): void {
 
 function cliValidationError(message: string, details: Record<string, unknown> = {}): HostSpanError {
   return new HostSpanError("VALIDATION_FAILED", message, false, details);
-}
-
-function writeOAuthApprovalSecret(configPath: string, secret: string): string {
-  const path = oauthApprovalSecretPath(configPath);
-  const dir = dirname(path);
-  const temp = `${path}.tmp-${process.pid}`;
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  try {
-    writeFileSync(temp, `${secret}\n`, { mode: 0o600 });
-    chmodSync(temp, 0o600);
-    protectWindowsFile(temp);
-    renameSync(temp, path);
-    chmodSync(path, 0o600);
-    protectWindowsFile(path);
-  } finally {
-    rmSync(temp, { force: true });
-  }
-  return path;
-}
-
-function deliverPrivateToken(args: string[], secret: string): { credential_file?: string; shown_once?: boolean } {
-  const output = flag(args, "--output");
-  const show = has(args, "--show");
-  if (Boolean(output) === show) {
-    throw cliValidationError("Choose exactly one of --output FILE (automated) or --show (local trusted TTY).");
-  }
-  if (show) {
-    if (!process.stdout.isTTY || !process.stdin.isTTY) {
-      throw cliValidationError("--show requires an interactive trusted local terminal; use --output for automation.");
-    }
-    // Deliberate one-time display only at an operator-controlled TTY.
-    process.stdout.write(`HostSpan private token (shown once): ${secret}\n`);
-    return { shown_once: true };
-  }
-  if (!output) throw cliValidationError("--output requires a credential file path.");
-  const path = resolve(output);
-  const parent = dirname(path);
-  mkdirSync(parent, { recursive: true, mode: 0o700 });
-  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), 0o600);
-  try {
-    try {
-      writeFileSync(fd, `${secret}\n`);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    chmodSync(path, 0o600);
-    protectWindowsFile(path);
-  } catch (error) {
-    rmSync(path, { force: true });
-    throw error;
-  }
-  return { credential_file: path };
 }
 
 function isLoopbackHost(host: string): boolean {
@@ -152,123 +97,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     print(report);
     return report.ok ? 0 : 1;
   }
-  if (command === "access") {
-    if (argv[1] !== "token") throw cliValidationError("access requires token create|list|revoke|rotate");
-    const action = argv[2];
-    const config = loadConfig(configPath);
-    const store = new PrivateTokenStore(config.server.data_dir);
-    try {
-      if (action === "list") {
-        print({ tokens: store.list(), authentication_mode: config.authentication?.mode ?? (config.oauth ? "oauth" : "none") });
-        return 0;
-      }
-      if (action === "revoke") {
-        const tokenId = argv[3] ?? "";
-        if (!/^pt_[0-9a-f]{32}$/.test(tokenId) || !store.revoke(tokenId)) {
-          throw cliValidationError("Unknown or already revoked private token ID.");
-        }
-        print({ ok: true, token_id: tokenId, revoked: true });
-        return 0;
-      }
-      if (action === "create" || action === "rotate") {
-        const name = flag(argv, "--name");
-        const scopesFlag = flag(argv, "--scopes");
-        const tokenId = argv[3];
-        if (action === "create" && (!name || !scopesFlag)) {
-          throw cliValidationError("token create requires --name CLIENT and --scopes comma-separated scopes.");
-        }
-        if (action === "rotate" && (!tokenId || !/^pt_[0-9a-f]{32}$/.test(tokenId))) {
-          throw cliValidationError("token rotate requires a valid TOKEN_ID.");
-        }
-        // The output callback runs inside the store transaction: failed file writing preserves old credentials.
-        let outputFile: string | undefined;
-        let delivery: { credential_file?: string; shown_once?: boolean } = {};
-        try {
-          const receive = (secret: string) => {
-            delivery = deliverPrivateToken(argv, secret);
-            outputFile = delivery.credential_file;
-          };
-          const record = action === "create"
-            ? store.issue(name ?? "", parsePrivateTokenScopes(scopesFlag ?? ""), receive)
-            : store.rotate(tokenId ?? "", receive);
-          if (!record) throw cliValidationError("Unknown or revoked private token ID.");
-          print({ ok: true, token: record, ...delivery, warning: "Keep the private token outside source, logs, chat, and support exports." });
-          return 0;
-        } catch (error) {
-          // Only a file newly created by this exact CLI invocation is eligible for cleanup.
-          if (outputFile) rmSync(outputFile, { force: true });
-          throw error;
-        }
-      }
-      throw cliValidationError("access token requires create, list, revoke, or rotate");
-    } finally {
-      store.close();
-    }
-  }
-  if (command === "oauth") {
-    const action = argv[1];
-    const config = loadConfig(configPath);
-    if (action === "init") {
-      if (config.oauth) throw cliValidationError("OAuth is already configured. Use hostspan oauth rotate-secret to rotate credentials.");
-      if (config.authentication && config.authentication.mode !== "oauth") throw cliValidationError("Change authentication.mode to oauth explicitly before initializing OAuth.");
-      const publicUrl = flag(argv, "--public-url");
-      if (!publicUrl) throw cliValidationError("oauth init requires --public-url https://host/mcp");
-      const setup = createOAuthSetup(publicUrl);
-      const hostname = new URL(setup.config.public_mcp_url).hostname;
-      const allowedHosts = new Set(config.server.allowed_hosts ?? []);
-      allowedHosts.add(hostname);
-      config.server.allowed_hosts = [...allowedHosts];
-      config.oauth = setup.config;
-      config.policy_epoch += 1;
-      writeConfigAtomic(configPath, config);
-      const approvalSecretFile = writeOAuthApprovalSecret(configPath, setup.approval_secret);
-      print({
-        ok: true,
-        public_mcp_url: setup.config.public_mcp_url,
-        issuer: new URL(`${new URL(setup.config.public_mcp_url).origin}/`).href,
-        approval_secret_file: approvalSecretFile,
-        warning: "The OAuth approval secret is stored only in the local mode-0600 file. Do not copy it into logs or chat messages.",
-      });
-      return 0;
-    }
-    if (action === "status") {
-      print({
-        enabled: Boolean(config.oauth),
-        ...(config.oauth
-          ? {
-              public_mcp_url: config.oauth.public_mcp_url,
-              issuer: new URL(`${new URL(config.oauth.public_mcp_url).origin}/`).href,
-              approval_secret_file: oauthApprovalSecretPath(configPath),
-              access_token_ttl_minutes: config.oauth.access_token_ttl_minutes,
-              refresh_token_ttl_days: config.oauth.refresh_token_ttl_days,
-            }
-          : {}),
-      });
-      return 0;
-    }
-    if (action === "rotate-secret") {
-      if (!config.oauth) throw cliValidationError("OAuth is not configured. Run hostspan oauth init first.");
-      const rotated = rotateOAuthApprovalSecret(config.oauth);
-      config.oauth = rotated.config;
-      config.policy_epoch += 1;
-      writeConfigAtomic(configPath, config);
-      const approvalSecretFile = writeOAuthApprovalSecret(configPath, rotated.approval_secret);
-      const db = openDatabase(join(config.server.data_dir, "state.db"));
-      try {
-        new OAuthRepo(db).revokeAll(Math.floor(Date.now() / 1000));
-      } finally {
-        db.close();
-      }
-      print({
-        ok: true,
-        approval_secret_file: approvalSecretFile,
-        tokens_revoked: true,
-        warning: "The new OAuth approval secret is stored only in the local mode-0600 file. Existing access and refresh tokens were revoked.",
-      });
-      return 0;
-    }
-    throw cliValidationError("oauth requires init, status, or rotate-secret");
-  }
+  if (command === "access") return runAccessTokenCommand(context);
+  if (command === "oauth") return runOAuthCommand(context);
   if (command === "serve") {
     const existingDaemon = daemonStatus(configPath);
     if (existingDaemon.running && existingDaemon.pid !== process.pid) {
