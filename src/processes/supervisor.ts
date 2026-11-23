@@ -1,5 +1,12 @@
+import { completeProcess } from "./completion.js";
+import { terminateWorkerSession, terminateProcessTree, safeKillGroup, waitForGroupGone } from "./termination.js";
+import { TERMINAL_STATES } from "./state-machine.js";
+import { launchDirectNativeProcess } from "./direct-native-launch.js";
+import { launchWorkerBackedProcess } from "./worker-launch.js";
+import { resolveProcessAdmission } from "./admission.js";
+import { buildProcessSnapshot, type ProcessSnapshot } from "./snapshot.js";
 import { createHash } from "node:crypto";
-import { spawn, type ChildProcessByStdio } from "node:child_process";
+import type { ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 import { v7 as uuidv7 } from "uuid";
 import type { HostSpanConfig } from "../config/schema.js";
@@ -9,19 +16,15 @@ import type { OperationsStore } from "../operations/store.js";
 import type { HostSpanLogger } from "../observability/logger.js";
 import type { PolicyEvaluator } from "../policy/evaluator.js";
 import type { TargetRegistry } from "../targets/registry.js";
-import { resolveTargetPath } from "../targets/path.js";
 import type { ProcessesStore, ProcessState, ProcessRecord } from "./store.js";
-import { processEnvironment } from "./environment.js";
-import { OutputSpool, scanProcessSpools } from "./output-spool.js";
-import { processGroupAlive, signalProcessGroup } from "./recovery.js";
+import { OutputSpool } from "./output-spool.js";
+import { processGroupAlive, } from "./recovery.js";
 import type { InteractiveSessionManager } from "./interactive-session.js";
-import { spawnWindowsJobProcess, type WindowsJobReceipt } from "./windows-job-process.js";
 
-const TERMINAL_STATES = new Set<ProcessState>(["succeeded", "failed", "timed_out", "cancelled", "orphaned", "unknown"]);
 
-type SupervisedChild = ChildProcessByStdio<null, Readable, Readable>;
+export type SupervisedChild = ChildProcessByStdio<null, Readable, Readable>;
 
-interface RuntimeProcess {
+export interface RuntimeProcess {
   child: SupervisedChild;
   spool: OutputSpool;
   terminal: Promise<void>;
@@ -53,38 +56,6 @@ function digestArgv(argv: string[]): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitForGroupGone(pgid: number, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() <= deadline) {
-    if (!processGroupAlive(pgid)) return true;
-    await sleep(20);
-  }
-  return !processGroupAlive(pgid);
-}
-
-async function waitForWindowsProcessGone(pid: number | null, timeoutMs: number): Promise<boolean> {
-  if (process.platform !== "win32" || !pid || pid <= 0) return true;
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() <= deadline) {
-    try {
-      process.kill(pid, 0);
-    } catch {
-      return true;
-    }
-    await sleep(20);
-  }
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch {
-    return true;
-  }
-}
-
-function safeKillGroup(pgid: number | null, signal: NodeJS.Signals): void {
-  signalProcessGroup(pgid, signal);
 }
 
 export interface ProcessSupervisorOptions {
@@ -126,66 +97,8 @@ export class ProcessSupervisor {
     return new OutputSpool(this.options.config.server.data_dir, processId, maxOutputBytes);
   }
 
-  private checkSpoolBudget(requestedBytes: number, active: ProcessRecord[]): void {
-    const spoolUsage = scanProcessSpools(this.options.config.server.data_dir);
-    let projected = spoolUsage.total;
-    for (const record of active) {
-      projected += Math.max(0, (record.max_output_bytes ?? 0) - (spoolUsage.sizes.get(record.process_id) ?? 0));
-    }
-    const maximum = this.options.config.retention.max_total_spool_bytes;
-    const remaining = maximum - projected;
-    if (remaining < requestedBytes) {
-      throw new HostSpanError("SERVER_BUSY", "Process output retention budget cannot satisfy the requested output cap; retry after retained output expires.", true, {
-        resource: "process_output_spool",
-        reason: "capacity_saturated",
-        retained_and_reserved_bytes: projected,
-        requested_output_bytes: requestedBytes,
-        remaining_output_bytes: Math.max(0, remaining),
-        max_total_spool_bytes: maximum,
-      });
-    }
-  }
-
-  private finalize(
-    processId: string,
-    state: ProcessState,
-    exitCode: number | null,
-    signal: string | null,
-    reason: string | null,
-    endedAt?: string,
-  ): void {
-    const current = this.options.processes.get(processId);
-    if (!current || TERMINAL_STATES.has(current.state)) {
-      const runtime = this.runtimes.get(processId);
-      if (runtime?.deadlineTimer) clearTimeout(runtime.deadlineTimer);
-      runtime?.resolveTerminal();
-      this.runtimes.delete(processId);
-      return;
-    }
-    const expiresAt = this.expiresAt();
-    this.options.processes.markTerminal(processId, state, exitCode, signal, reason, expiresAt, endedAt);
-    const result = {
-      state,
-      process_id: processId,
-      exit_code: exitCode,
-      signal,
-      reason,
-      output_expires_at: expiresAt,
-      native_execution: true,
-      sandboxed: false,
-    };
-    this.options.operations.setState(current.idempotency_key, state, result);
-    this.options.logger?.info("process.completed", {
-      process_id: processId,
-      state,
-      exit_code: exitCode,
-      signal,
-      reason,
-    });
-    const runtime = this.runtimes.get(processId);
-    if (runtime?.deadlineTimer) clearTimeout(runtime.deadlineTimer);
-    runtime?.resolveTerminal();
-    this.runtimes.delete(processId);
+  private finalize(processId: string, state: ProcessState, exitCode: number | null, signal: string | null, reason: string | null, endedAt?: string): void {
+    completeProcess(this.options, this.runtimes, () => this.expiresAt(), processId, state, exitCode, signal, reason, endedAt);
   }
 
   async reconcileInteractiveProcesses(targetId?: string): Promise<void> {
@@ -194,39 +107,15 @@ export class ProcessSupervisor {
     }
   }
 
-  private async terminateSession(
-    processId: string,
-    state: "timed_out" | "cancelled" | "failed",
-    reason: string,
-    graceMs = 500,
+  private terminateSession(
+    processId: string, state: "timed_out" | "cancelled" | "failed", reason: string, graceMs = 500
   ): Promise<ProcessState> {
-    const record = this.options.processes.get(processId);
-    if (!record) throw new HostSpanError("PROCESS_NOT_FOUND", `Unknown process_id: ${processId}`);
-    if (TERMINAL_STATES.has(record.state)) return record.state;
-    const manager = this.sessionManager(record);
-    if (!manager || !record.backend_ref) {
-      this.finalize(processId, "unknown", record.exit_code, record.term_signal, "interactive_backend_unavailable");
-      return "unknown";
-    }
-    await manager.close(record.backend_ref, graceMs);
-    const settled = await manager.waitForExitStatus(record.backend_ref, 250);
-    if (!settled.exists) {
-      this.finalize(processId, "unknown", record.exit_code, record.term_signal, "interactive_session_missing_after_terminate");
-      return "unknown";
-    }
-    if (!settled.dead) {
-      this.finalize(processId, "unknown", record.exit_code, record.term_signal, "interactive_session_still_running_after_terminate");
-      return "unknown";
-    }
-    if (settled.reason === "termination_unconfirmed") {
-      this.finalize(processId, "unknown", settled.exit_code, settled.signal, settled.reason);
-      return "unknown";
-    }
-    this.finalize(processId, state, settled.exit_code, settled.signal, reason, settled.ended_at);
-    // Confirmed process death survives a failure to observe the final output.
-    await manager.waitForOutputDrain(processId);
-    this.syncOutput(record, manager);
-    return state;
+    return terminateWorkerSession({
+      options: this.options,
+      sessionManager: (record) => this.sessionManager(record),
+      finalize: (id, status, code, signal, why, endedAt) => this.finalize(id, status, code, signal, why, endedAt),
+      syncOutput: (record, manager) => this.syncOutput(record, manager),
+    }, processId, state, reason, graceMs);
   }
 
   private terminate(
@@ -237,77 +126,15 @@ export class ProcessSupervisor {
   ): Promise<ProcessState> {
     const existing = this.terminationInflight.get(processId);
     if (existing) return existing;
-    const operation = this.terminateOnce(processId, state, reason, graceMs).finally(() => {
+    const operation = terminateProcessTree({
+      options: this.options,
+      runtimes: this.runtimes,
+      finalize: (id, status, code, signal, why) => this.finalize(id, status, code, signal, why),
+    }, processId, state, reason, graceMs).finally(() => {
       if (this.terminationInflight.get(processId) === operation) this.terminationInflight.delete(processId);
     });
     this.terminationInflight.set(processId, operation);
     return operation;
-  }
-
-  private async terminateOnce(
-    processId: string,
-    state: "timed_out" | "cancelled" | "failed",
-    reason: string,
-    graceMs: number,
-  ): Promise<ProcessState> {
-    const record = this.options.processes.get(processId);
-    if (!record) throw new HostSpanError("PROCESS_NOT_FOUND", `Unknown process_id: ${processId}`);
-    if (TERMINAL_STATES.has(record.state)) return record.state;
-    const runtime = this.runtimes.get(processId);
-    if (runtime) runtime.terminating = true;
-    let gone: boolean;
-    try {
-      safeKillGroup(record.pgid, "SIGTERM");
-      gone = record.pgid ? await waitForGroupGone(record.pgid, graceMs) : true;
-      if (!gone) {
-        safeKillGroup(record.pgid, "SIGKILL");
-        gone = record.pgid ? await waitForGroupGone(record.pgid, 1_000) : true;
-      }
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code ?? "unknown";
-      this.finalize(processId, "unknown", record.exit_code, record.term_signal, `${reason}:termination_error:${code}`);
-      return "unknown";
-    }
-    if (runtime) {
-      // Process-tree death and Node stdio closure are separate facts. Do not
-      // return a terminal result while stdout/stderr callbacks can still touch
-      // durable state. A short grace normally observes `close`; if Node keeps
-      // the pipe handles alive after the OS process tree is gone, stop
-      // accepting output, destroy the pipes, and classify the boundary as
-      // unknown unless close is then observed.
-      await Promise.race([runtime.closed, sleep(2_000)]);
-      if (!runtime.closedObserved) {
-        runtime.acceptingOutput = false;
-        runtime.child.stdout.destroy();
-        runtime.child.stderr.destroy();
-        await Promise.race([runtime.closed, sleep(500)]);
-        if (!runtime.closedObserved) {
-          this.finalize(processId, "unknown", runtime.exitCode, runtime.exitSignal, `${reason}:stdio_close_unconfirmed`);
-          return "unknown";
-        }
-      }
-    }
-    const windowsTargetGone = await waitForWindowsProcessGone(record.pid, 1_500);
-    if (process.platform === "win32" && windowsTargetGone) {
-      // Job Object termination is kernel-owned, but process teardown can
-      // release cwd/file handles a moment after the target PID disappears.
-      // Do not return cancellation while ordinary follow-up file operations
-      // are still racing that teardown.
-      await sleep(100);
-    }
-    const refreshedRuntime = this.runtimes.get(processId);
-    const exitCode = refreshedRuntime?.exitCode ?? this.options.processes.get(processId)?.exit_code ?? null;
-    const signal = refreshedRuntime?.exitSignal ?? this.options.processes.get(processId)?.term_signal ?? null;
-    if (!gone) {
-      this.finalize(processId, "orphaned", exitCode, signal, `${reason}:process_group_still_alive`);
-      return "orphaned";
-    }
-    if (!windowsTargetGone) {
-      this.finalize(processId, "orphaned", exitCode, signal, `${reason}:windows_job_target_still_alive`);
-      return "orphaned";
-    }
-    this.finalize(processId, state, exitCode, signal, reason);
-    return state;
   }
 
   private async waitForTerminal(processId: string, waitMs: number): Promise<void> {
@@ -319,73 +146,10 @@ export class ProcessSupervisor {
     await Promise.race([runtime.terminal, sleep(waitMs)]);
   }
 
-  private snapshot(processId: string, stdoutCursor: number, stderrCursor: number, maxBytes: number): Record<string, unknown> {
+  private snapshot(processId: string, stdoutCursor: number, stderrCursor: number, maxBytes: number): ProcessSnapshot {
     const record = this.options.processes.get(processId);
     if (!record) throw new HostSpanError("PROCESS_NOT_FOUND", `Unknown process_id: ${processId}`);
-    const outputExpired = Boolean(record.output_expires_at && record.output_expires_at <= new Date().toISOString());
-    const interactive = record.backend === "pty";
-    const perStream = interactive ? maxBytes : Math.max(1, Math.floor(maxBytes / 2));
-    const spool = this.spool(processId, record.max_output_bytes ?? Number.MAX_SAFE_INTEGER);
-    const expiredRead = (stream: "stdout" | "stderr", cursor: number, latest: number) => {
-      if (cursor > latest) {
-        throw new HostSpanError("CURSOR_EXPIRED", "Requested process output cursor is beyond the available output.", false, {
-          stream,
-          earliest_cursor: latest,
-          latest_cursor: latest,
-        });
-      }
-      return { text: "", next_cursor: latest, earliest_cursor: latest, bytes_returned: 0, dropped_bytes: Math.max(0, latest - cursor) };
-    };
-    const stdout = outputExpired ? expiredRead("stdout", stdoutCursor, record.stdout_bytes) : spool.read("stdout", stdoutCursor, perStream);
-    const stderr = interactive
-      ? { text: "", next_cursor: stderrCursor, earliest_cursor: 0, bytes_returned: 0, dropped_bytes: 0 }
-      : outputExpired
-        ? expiredRead("stderr", stderrCursor, record.stderr_bytes)
-        : spool.read("stderr", stderrCursor, perStream);
-    const outputBytes = outputExpired ? 0 : spool.retainedBytes;
-    const outputBudget =
-      record.max_output_bytes !== null && record.max_output_bytes > 0
-        ? {
-            scope: "retained_output",
-            limit_bytes: record.max_output_bytes,
-            used_bytes: outputBytes,
-            remaining_bytes: Math.max(0, record.max_output_bytes - outputBytes),
-          }
-        : undefined;
-    return {
-      state: record.state,
-      process_id: processId,
-      target_id: record.target_id,
-      cwd: record.cwd_relative,
-      exit_code_scope: "spawned_command",
-      output_expired: outputExpired,
-      has_more_output: stdout.next_cursor < record.stdout_bytes || stderr.next_cursor < record.stderr_bytes,
-      stdout: stdout.text,
-      stderr: stderr.text,
-      next_stdout_cursor: stdout.next_cursor,
-      next_stderr_cursor: stderr.next_cursor,
-      stdout_dropped_bytes: stdout.dropped_bytes,
-      stderr_dropped_bytes: stderr.dropped_bytes,
-      stdout_earliest_cursor: stdout.earliest_cursor,
-      stderr_earliest_cursor: stderr.earliest_cursor,
-      exit_code: record.exit_code,
-      signal: record.term_signal,
-      reason: record.reason,
-      deadline_at: record.deadline_at,
-      output_expires_at: record.output_expires_at,
-      backend: record.backend,
-      interactive,
-      ...(outputBudget ? { output_budget: outputBudget } : {}),
-      ...(interactive && !TERMINAL_STATES.has(record.state) && record.backend_ref && this.options.terminal
-        ? {
-            terminal_session: record.backend_ref,
-            human_attach_command: this.options.terminal.humanAttachCommand(record.backend_ref, false),
-            human_attach_read_only_command: this.options.terminal.humanAttachCommand(record.backend_ref, true),
-          }
-        : {}),
-      native_execution: true,
-      sandboxed: false,
-    };
+    return buildProcessSnapshot(record, this.spool(processId, record.max_output_bytes ?? Number.MAX_SAFE_INTEGER), stdoutCursor, stderrCursor, maxBytes, this.options.terminal);
   }
 
   private async syncSessionState(processId: string): Promise<void> {
@@ -443,44 +207,8 @@ export class ProcessSupervisor {
   }
 
   async start(input: ProcessStartToolInput, requestId: string): Promise<Record<string, unknown>> {
-    const interactive = input.tty ?? false;
-    const responseBytes = input.max_bytes ?? 131_072;
-    const target = this.options.targets.get(input.target_id, interactive ? "terminal" : "exec");
-    const cwd = resolveTargetPath(target, input.cwd);
-    if (!cwd.exists) throw new HostSpanError("FILE_NOT_FOUND", `Process cwd does not exist: ${input.cwd}`);
-    const profile = interactive ? undefined : this.options.policy.validateExec(target, input.argv);
-    if (this.options.native || (interactive && this.options.terminal && this.options.config.terminal)) {
-      await this.reconcileInteractiveProcesses(input.target_id);
-    }
-    const sessionManager = interactive ? this.options.terminal : this.options.native;
-    const terminalConfig = this.options.config.terminal;
-    const backend = interactive ? "pty" : "native";
-    let effectiveMaxOutputBytes = input.max_output_bytes;
-    // Check capacity before accepting new work; no await separates admission and reservation.
-    if (this.options.operations.getState(input.idempotency_key) === undefined) {
-      let maxConcurrent: number;
-      let limitReason: string;
-      if (interactive) {
-        if (!sessionManager || !terminalConfig) {
-          throw new HostSpanError("TERMINAL_BACKEND_UNAVAILABLE", "Interactive terminal support is not configured.", true);
-        }
-        maxConcurrent = terminalConfig.max_concurrent_sessions;
-        limitReason = "max_concurrent_terminal_sessions";
-        effectiveMaxOutputBytes = Math.min(effectiveMaxOutputBytes, terminalConfig.max_output_bytes);
-      } else {
-        if (!profile) throw new HostSpanError("POLICY_UNENFORCEABLE", "Missing native exec profile.");
-        maxConcurrent = profile.max_concurrent_processes;
-        limitReason = "max_concurrent_processes";
-      }
-      const active = this.options.processes.active();
-      const activeForTarget = active.filter((record) => record.target_id === input.target_id && record.backend === backend).length;
-      if (activeForTarget >= maxConcurrent) {
-        throw new HostSpanError("SERVER_BUSY", `Target ${input.target_id} reached ${limitReason}.`, true, {
-          resource: "process", reason: limitReason, active: activeForTarget, max_concurrent: maxConcurrent,
-        });
-      }
-      this.checkSpoolBudget(effectiveMaxOutputBytes, active);
-    }
+    const { interactive, responseBytes, cwd, sessionManager, backend, effectiveMaxOutputBytes } =
+      await resolveProcessAdmission(this.options, input, (targetId) => this.reconcileInteractiveProcesses(targetId));
     const resolution = this.options.operations.resolve(input.idempotency_key, "process_start", input, input.target_id);
     if (resolution.kind !== "new") {
       const existing = this.options.processes.getByKey(input.idempotency_key);
@@ -532,179 +260,25 @@ export class ProcessSupervisor {
     });
 
     if (sessionManager && session) {
-      let started: { session: string; pid: number | null };
-      try {
-        started = await sessionManager.start({
-          processId,
-          cwd: cwd.absolute,
-          argv: input.argv,
-          env: input.env,
-          columns: input.columns ?? 120,
-          rows: input.rows ?? 40,
-          deadlineAt,
-          maxOutputBytes: effectiveMaxOutputBytes,
-        });
-      } catch (error) {
-        if (backend === "native" && asHostSpanError(error).code === "PROCESS_UNKNOWN") {
-          this.options.operations.setState(input.idempotency_key, "unknown", { state: "unknown", process_id: processId, reason: "native_worker_start_unconfirmed" });
-          throw new HostSpanError("PROCESS_UNKNOWN", "Native worker launch is not yet confirmed; recover the existing process_id instead of starting it again.", false, { process_id: processId });
-        }
-        this.options.processes.markTerminal(processId, "failed", null, null, `${backend}_start_failed`, this.expiresAt());
-        this.options.operations.setState(input.idempotency_key, "failed", { state: "failed", process_id: processId, reason: `${backend}_start_failed` }, error);
-        throw error;
-      }
-      const launchState = await sessionManager.inspect(session);
-      if (!launchState.exists) {
-        this.finalize(processId, "unknown", null, null, "interactive_session_missing_after_launch");
-        return this.snapshot(processId, 0, 0, responseBytes);
-      }
-      if (launchState.dead) {
-        await this.syncSessionState(processId);
-        return this.snapshot(processId, 0, 0, responseBytes);
-      }
-      if (!this.options.processes.markRunning(processId, started.pid, backend === "native" && process.platform !== "win32" ? started.pid : null)) {
-        const current = this.options.processes.get(processId);
-        // Reconciliation may already have accepted this exact child while start awaited its worker.
-        if (current?.state !== "running" || current.backend_ref !== session || current.pid !== started.pid) {
-          sessionManager.closeSync(session);
-          if (!current) throw new HostSpanError("PROCESS_UNKNOWN", "Process record disappeared during launch.");
-          return this.snapshot(processId, 0, 0, responseBytes);
-        }
-      }
-      this.options.operations.setState(input.idempotency_key, "running", { state: "running", process_id: processId, backend });
-      this.options.logger?.info("process.started", { request_id: requestId, process_id: processId, pid: started.pid, backend, session });
-      const beforeBytes = sessionManager.outputBytes(processId) + (backend === "native" ? sessionManager.outputBytes(processId, "stderr") : 0);
-      await sessionManager.waitForActivity(session, processId, beforeBytes, input.wait_ms);
-      await this.syncSessionState(processId);
-      return this.snapshot(processId, 0, 0, responseBytes);
+      return launchWorkerBackedProcess({
+        options: this.options, input, requestId, processId, session, sessionManager,
+        backend, cwd, effectiveMaxOutputBytes, deadlineAt, responseBytes,
+        expiresAt: () => this.expiresAt(),
+        finalize: (id, state, code, signal, reason, endedAt) => this.finalize(id, state, code, signal, reason, endedAt),
+        snapshot: (id, stdout, stderr, bytes) => this.snapshot(id, stdout, stderr, bytes),
+        syncSessionState: (id) => this.syncSessionState(id),
+      });
     }
 
-    let child: SupervisedChild;
-    let windowsReady: Promise<WindowsJobReceipt> | undefined;
-    try {
-      const env = processEnvironment(input.env);
-      const program = input.argv[0];
-      if (!program) throw new HostSpanError("SCOPE_DENIED", "Process argv must include a program.");
-      if (process.platform === "win32") {
-        const launched = spawnWindowsJobProcess({
-          dataDir: this.options.config.server.data_dir,
-          processId,
-          cwd: cwd.absolute,
-          argv: input.argv,
-          env,
-        });
-        child = launched.child;
-        windowsReady = launched.ready;
-      } else {
-        child = spawn(program, input.argv.slice(1), {
-          cwd: cwd.absolute,
-          env,
-          shell: false,
-          detached: true,
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-      }
-    } catch (error) {
-      this.options.processes.markTerminal(processId, "failed", null, null, "spawn_failed", this.expiresAt());
-      this.options.operations.setState(input.idempotency_key, "failed", { state: "failed", process_id: processId, reason: "spawn_failed" }, error);
-      throw error;
-    }
-
-    let resolveTerminal!: () => void;
-    const terminal = new Promise<void>((resolve) => {
-      resolveTerminal = resolve;
+    return launchDirectNativeProcess({
+      options: this.options, input, requestId, processId, cwd, effectiveMaxOutputBytes,
+      deadlineAt, responseBytes, runtimes: this.runtimes,
+      expiresAt: () => this.expiresAt(),
+      finalize: (id, state, code, signal, reason) => this.finalize(id, state, code, signal, reason),
+      terminate: (id, state, reason, grace) => this.terminate(id, state, reason, grace),
+      waitForTerminal: (id, wait) => this.waitForTerminal(id, wait),
+      snapshot: (id, stdout, stderr, bytes) => this.snapshot(id, stdout, stderr, bytes),
     });
-    let resolveClosed!: () => void;
-    const closed = new Promise<void>((resolve) => {
-      resolveClosed = resolve;
-    });
-    const runtime: RuntimeProcess = {
-      child,
-      spool: new OutputSpool(this.options.config.server.data_dir, processId, effectiveMaxOutputBytes),
-      terminal,
-      resolveTerminal,
-      closed,
-      resolveClosed,
-      terminating: false,
-      acceptingOutput: true,
-      closedObserved: false,
-      exitCode: null,
-      exitSignal: null,
-    };
-    this.runtimes.set(processId, runtime);
-
-    const onOutput = (stream: "stdout" | "stderr", chunk: Buffer): void => {
-      if (!runtime.acceptingOutput) return;
-      const current = this.options.processes.get(processId);
-      if (!current || TERMINAL_STATES.has(current.state)) return;
-      const written = runtime.spool.append(stream, chunk);
-      if (written > 0) this.options.processes.addBytes(processId, stream, written);
-    };
-    child.stdout.on("data", (chunk: Buffer) => onOutput("stdout", chunk));
-    child.stderr.on("data", (chunk: Buffer) => onOutput("stderr", chunk));
-
-    const markRunning = (pid: number, groupId: number): void => {
-      const current = this.options.processes.get(processId);
-      if (!current || TERMINAL_STATES.has(current.state)) return;
-      if (!this.options.processes.markRunning(processId, pid, groupId)) return;
-      this.options.operations.setState(input.idempotency_key, "running", { state: "running", process_id: processId });
-      this.options.logger?.info("process.started", { request_id: requestId, process_id: processId, pid, pgid: groupId });
-      if (input.deadline_ms !== undefined) {
-        runtime.deadlineTimer = setTimeout(() => {
-          void this.terminate(processId, "timed_out", "deadline_exceeded", process.platform === "win32" ? 0 : 1_000);
-        }, input.deadline_ms);
-        runtime.deadlineTimer.unref();
-      }
-    };
-
-    child.once("error", (error) => {
-      runtime.closedObserved = true;
-      runtime.resolveClosed();
-      if (runtime.terminating) return;
-      runtime.terminating = true;
-      this.finalize(processId, "failed", null, null, `spawn_error:${error.message}`);
-    });
-
-    child.once("close", (code, signal) => {
-      runtime.closedObserved = true;
-      runtime.exitCode = code;
-      runtime.exitSignal = signal;
-      runtime.resolveClosed();
-      if (runtime.terminating) return;
-      const state: ProcessState = code === 0 ? "succeeded" : "failed";
-      this.finalize(processId, state, code, signal, code === 0 ? null : "nonzero_exit");
-    });
-
-    if (windowsReady) {
-      try {
-        const receipt = await windowsReady;
-        markRunning(receipt.targetPid, receipt.workerPid);
-      } catch (error) {
-        runtime.terminating = true;
-        if (child.pid) {
-          try {
-            process.kill(child.pid, "SIGKILL");
-          } catch {
-            // The worker may already have exited after reporting launch failure.
-          }
-        }
-        const current = this.options.processes.get(processId);
-        if (current && !TERMINAL_STATES.has(current.state)) {
-          this.finalize(processId, "failed", null, null, `spawn_error:${error instanceof Error ? error.message : String(error)}`);
-        }
-        throw error;
-      }
-    } else if (child.pid) {
-      // spawn() already returned the OS PID; record it before wait_ms=0 can expose a cancellable process.
-      markRunning(child.pid, child.pid);
-    }
-
-    await this.waitForTerminal(processId, input.wait_ms);
-    const afterWait = this.options.processes.get(processId);
-    if (afterWait && !TERMINAL_STATES.has(afterWait.state) && deadlineAt !== null && deadlineAt <= new Date().toISOString()) {
-      await this.terminate(processId, "timed_out", "deadline_exceeded", process.platform === "win32" ? 0 : 1_000);
-    }
-    return this.snapshot(processId, 0, 0, responseBytes);
   }
 
   async poll(input: ProcessPollToolInput): Promise<Record<string, unknown>> {
