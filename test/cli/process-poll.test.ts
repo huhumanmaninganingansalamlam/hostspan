@@ -49,6 +49,8 @@ it("retrieves original native results through the owner channel with cursors, lo
     await expect(poll("--wait-ms", "10000")).rejects.toMatchObject({ code: "VALIDATION_FAILED", message: expect.stringMatching(/1500/) });
     await expect(poll("--stdout-cursor", "-1")).rejects.toMatchObject({ code: "VALIDATION_FAILED" });
     await expect(poll("--max-bytes")).rejects.toMatchObject({ code: "VALIDATION_FAILED" });
+    await expect(poll("--process", "proc_other")).rejects.toMatchObject({ code: "VALIDATION_FAILED" });
+    await expect(poll("--unknown", "value")).rejects.toMatchObject({ code: "VALIDATION_FAILED" });
     expect(calls).toHaveLength(2);
     const denied = await new Promise<string>((resolve, reject) => {
       const socket = createConnection(control.address);

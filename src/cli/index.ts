@@ -22,13 +22,14 @@ import { ProcessesRepo } from "../state/processes-repo.js";
 import { TargetRegistry } from "../targets/registry.js";
 import { BUILD_IDENTITY, PROTOCOL_VERSION, SERVER_VERSION, TOOLSET_VERSION } from "../version.js";
 import { runDoctor } from "../diagnostics/doctor.js";
-import { daemonStatus, removeDaemonPid, requestDaemonComputer, requestDaemonProcessList, requestDaemonProcessPoll, startDaemon, startDaemonControlServer, stopDaemon, writeDaemonPid } from "../daemon/control.js";
+import { daemonStatus, removeDaemonPid, requestDaemonComputer, startDaemon, startDaemonControlServer, stopDaemon, writeDaemonPid } from "../daemon/control.js";
 import { installSystemdService, runServiceCommand } from "../services/systemd.js";
 import { runSmoke } from "./smoke.js";
+import { runProcessCommand } from "./commands/process.js";
+import type { CliCommandContext } from "./context.js";
 import { createRuntime, runtimeReadiness } from "../runtime/create-runtime.js";
 import { ComputerInputSchema, supportedDesktopSession } from "../computer/portal.js";
 import { errorResult, requestId, successResult } from "../mcp/result.js";
-import { ProcessListInputSchema, ProcessPollInputSchema } from "../tools/schemas.js";
 
 function flag(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -127,46 +128,15 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   }
 
   const configPath = resolve(flag(argv, "--config") ?? defaultConfigPath());
-  if (command === "process") {
-    if (argv[1] === "list") {
-      const names: Record<string, string> = { "--target": "target_id", "--cwd": "cwd", "--active-only": "active_only",
-        "--limit": "limit", "--cursor": "cursor" };
-      const input: Record<string, unknown> = {};
-      for (let index = 2; index < argv.length; index += 2) {
-        const option = argv[index] ?? "";
-        const value = argv[index + 1];
-        const field = names[option];
-        if ((!field && option !== "--config") || value === undefined || value.startsWith("--") || (field && field in input)) {
-          throw cliValidationError(`Invalid or missing process list option: ${option}`);
-        }
-        if (field === "active_only") {
-          if (value !== "true" && value !== "false") throw cliValidationError("--active-only requires true or false");
-          input[field] = value === "true";
-        } else if (field) input[field] = field === "limit" ? Number(value) : value;
-      }
-      const parsed = ProcessListInputSchema.safeParse(input);
-      if (!parsed.success) throw cliValidationError(`Invalid process list arguments: ${parsed.error.message}`);
-      print(await requestDaemonProcessList(configPath, parsed.data));
-      return 0;
-    }
-    if (argv[1] !== "poll") throw cliValidationError("process requires list --target TARGET or poll --process PROCESS_ID");
-    const names: Record<string, string> = { "--process": "process_id", "--stdout-cursor": "stdout_cursor",
-      "--stderr-cursor": "stderr_cursor", "--wait-ms": "wait_ms", "--max-bytes": "max_bytes" };
-    const input: Record<string, unknown> = {};
-    for (let index = 2; index < argv.length; index += 2) {
-      const option = argv[index] ?? "";
-      const value = argv[index + 1];
-      const field = names[option];
-      if ((!field && option !== "--config") || value === undefined || value.startsWith("--") || (field && field in input)) {
-        throw cliValidationError(`Invalid or missing process poll option: ${option}`);
-      }
-      if (field) input[field] = field === "process_id" ? value : Number(value);
-    }
-    const parsed = ProcessPollInputSchema.safeParse(input);
-    if (!parsed.success) throw cliValidationError(`Invalid process poll arguments: ${parsed.error.message}`);
-    print(await requestDaemonProcessPoll(configPath, parsed.data));
-    return 0;
-  }
+  const context: CliCommandContext = {
+    argv,
+    command,
+    configPath,
+    stdout: process.stdout,
+    stderr: process.stderr,
+    entryModuleUrl: import.meta.url,
+  };
+  if (command === "process") return runProcessCommand(context);
   if (command === "computer") {
     const action = argv[1] ?? "status";
     if (action === "inspect") {
