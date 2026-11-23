@@ -1,0 +1,192 @@
+{
+  "schema_version": 1,
+  "domainRoots": [
+    "auth",
+    "computer",
+    "files",
+    "operations",
+    "policy",
+    "processes",
+    "targets",
+    "config",
+    "state",
+    "observability"
+  ],
+  "forbiddenImports": [
+    {
+      "from": [
+        "auth",
+        "computer",
+        "files",
+        "operations",
+        "policy",
+        "processes",
+        "targets",
+        "config",
+        "state",
+        "observability"
+      ],
+      "to": [
+        "cli",
+        "desktop",
+        "runtime",
+        "mcp",
+        "admin"
+      ],
+      "reason": "Domains and storage must depend on contracts, not on adapter/composition implementations."
+    },
+    {
+      "from": [
+        "mcp"
+      ],
+      "to": [
+        "cli",
+        "desktop",
+        "runtime",
+        "admin"
+      ],
+      "reason": "HTTP transport may use auth/config/tool contracts but not unrelated composition or UI implementation."
+    },
+    {
+      "from": [
+        "desktop"
+      ],
+      "to": [
+        "mcp"
+      ],
+      "reason": "Electron tray must use authenticated local admin interfaces, not MCP request internals."
+    }
+  ],
+  "maxNewTypeScriptLines": 400,
+  "fileBudgets": {
+    "src/desktop/main.ts": {
+      "maxLines": 150,
+      "owner": "desktop",
+      "reason": "Single-instance/lifecycle composition root, not behavior",
+      "reviewTrigger": "Any additional lifecycle owner"
+    },
+    "src/auth/oauth-service.ts": {
+      "maxLines": 463,
+      "owner": "auth",
+      "reason": "Current cohesive OAuth authorization flow pending evidence-backed split",
+      "reviewTrigger": "A new grant/token family or expansion"
+    },
+    "src/files/patch.ts": {
+      "maxLines": 539,
+      "owner": "files",
+      "reason": "Transactional patch journal and recovery must remain atomic",
+      "reviewTrigger": "Any new transaction state or path mutation"
+    },
+    "src/processes/pty-session.ts": {
+      "maxLines": 554,
+      "owner": "processes",
+      "reason": "PTY ownership and worker IPC lifecycle currently cohesive",
+      "reviewTrigger": "New session state or backend"
+    },
+    "src/processes/supervisor.ts": {
+      "maxLines": 512,
+      "owner": "processes",
+      "reason": "Remaining write/cancel idempotency and reconciliation facade are race-sensitive",
+      "reviewTrigger": "New supervisor entrypoint or state transition"
+    }
+  },
+  "functionBudgets": [
+    {
+      "path": "src/cli/index.ts",
+      "symbol": "main",
+      "maxLines": 60,
+      "owner": "cli"
+    },
+    {
+      "path": "src/runtime/create-runtime.ts",
+      "symbol": "createRuntime",
+      "maxLines": 180,
+      "owner": "runtime"
+    },
+    {
+      "path": "src/mcp/server.ts",
+      "symbol": "createHostSpanHttpServer",
+      "maxLines": 160,
+      "owner": "mcp"
+    },
+    {
+      "path": "src/processes/supervisor.ts",
+      "symbol": "ProcessSupervisor.start",
+      "maxLines": 100,
+      "owner": "processes"
+    }
+  ],
+  "boundaryTypeRules": [
+    {
+      "path": "src/processes/snapshot.ts",
+      "symbol": "ProcessSnapshot",
+      "kind": "type"
+    },
+    {
+      "path": "src/computer/session-state.ts",
+      "symbol": "DesktopStatus",
+      "kind": "interface"
+    },
+    {
+      "path": "src/computer/worker-protocol.ts",
+      "symbol": "DesktopWorkerReply",
+      "kind": "type"
+    },
+    {
+      "path": "src/runtime/tool-handlers.ts",
+      "symbol": "DesktopComputerBackendStatus",
+      "kind": "type"
+    },
+    {
+      "path": "src/runtime/create-runtime.ts",
+      "symbol": "HostSpanRuntime",
+      "kind": "interface"
+    },
+    {
+      "path": "src/mcp/authentication.ts",
+      "symbol": "validateHttpAuthenticationConfiguration",
+      "kind": "function"
+    }
+  ],
+  "doubleAssertionExceptions": [
+    {
+      "path": "src/mcp/server.ts",
+      "needle": "request.raw as unknown as NodeIncomingMessageLike",
+      "reason": "Fastify raw request to MCP SDK Node IncomingMessage compatibility seam",
+      "owner": "mcp",
+      "reviewTrigger": "SDK transport adapter update"
+    },
+    {
+      "path": "src/observability/performance-baseline.ts",
+      "needle": "as unknown as PerformanceAuditEvent[]",
+      "reason": "Typed read-only SQLite performance-audit projection",
+      "owner": "observability",
+      "reviewTrigger": "Audit repo result typing changes"
+    }
+  ],
+  "hygiene": {
+    "requiredGitignore": [
+      "node_modules/",
+      "dist/",
+      "coverage/",
+      "out/",
+      "assets/icons/",
+      "artifacts/"
+    ],
+    "forbiddenProductRootSuffixes": [
+      ".sqlite",
+      ".sqlite3",
+      ".db",
+      ".zip",
+      ".dmg",
+      ".deb",
+      ".exe",
+      ".appimage",
+      ".log",
+      ".tar.gz",
+      ".pdf",
+      ".png"
+    ],
+    "allowedRootFileNames": []
+  }
+}

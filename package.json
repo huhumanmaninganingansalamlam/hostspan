@@ -64,7 +64,9 @@
     "smoke": "node dist/src/cli/index.js smoke",
     "perf:baseline": "pnpm build && node scripts/performance-baseline.mjs",
     "lint": "biome lint src test",
-    "check": "pnpm typecheck && pnpm lint && pnpm check:workers && pnpm test && pnpm build"
+    "check:architecture": "node scripts/check-architecture.mjs",
+    "check:docs": "node scripts/check-docs.mjs",
+    "check": "pnpm check:architecture && pnpm check:docs && pnpm typecheck && pnpm lint && pnpm check:workers && pnpm test && pnpm build"
   },
   "dependencies": {
     "@modelcontextprotocol/fastify": "2.0.0",
