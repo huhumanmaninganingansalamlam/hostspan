@@ -12,6 +12,10 @@ vi.mock("node:child_process", async (original) => ({
 }));
 
 it("fails closed on malformed desktop worker events and requires a fresh session", async () => {
+	// Exercise the one real consented worker protocol, not the test runner OS helper path.
+	// A CI macOS/Windows runner has no precompiled GUI helper at this test boundary.
+	const platform = Object.getOwnPropertyDescriptor(process, "platform");
+	Object.defineProperty(process, "platform", { value: "linux" });
 	vi.stubEnv("XDG_SESSION_TYPE", "wayland");
 	const db = openDatabase(":memory:");
 	const worker = Object.assign(new EventEmitter(), {
@@ -52,5 +56,7 @@ it("fails closed on malformed desktop worker events and requires a fresh session
 	} finally {
 		desktop.dispose();
 		db.close();
+		vi.unstubAllEnvs();
+		if (platform) Object.defineProperty(process, "platform", platform);
 	}
 });

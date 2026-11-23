@@ -15,6 +15,8 @@ const mockedElectron = vi.hoisted(() => {
 		destroyed: vi.fn(),
 		showErrorBox: vi.fn(),
 		clipboardWrite: vi.fn(),
+		themeOn: vi.fn(),
+		themeOff: vi.fn(),
 	};
 });
 
@@ -48,7 +50,11 @@ vi.mock("electron", () => ({
 			return template;
 		}),
 	},
-	nativeTheme: { shouldUseDarkColorsForSystemIntegratedUI: false, on: vi.fn() },
+	nativeTheme: {
+		shouldUseDarkColorsForSystemIntegratedUI: false,
+		on: mockedElectron.themeOn,
+		off: mockedElectron.themeOff,
+	},
 	nativeImage: {
 		createFromPath: vi.fn(() => ({
 			isEmpty: () => false,
@@ -155,6 +161,37 @@ describe("desktop controllers", () => {
 		}
 		expect(mockedElectron.destroyed).toHaveBeenCalledOnce();
 		expect(daemonAction).not.toHaveBeenCalled();
+	});
+
+	it("removes the same Windows theme listener at tray disposal", () => {
+		const descriptor = Object.getOwnPropertyDescriptor(process, "platform");
+		Object.defineProperty(process, "platform", { value: "win32" });
+		const controller = createTrayController({
+			iconDir: "/tmp/hostspan-icons",
+			snapshot: vi.fn(async () => fakeSnapshot(false)) as never,
+			daemonAction: vi.fn(async () => ({ running: false })) as never,
+			restartDaemonWithConfirmation: vi.fn() as never,
+			getWindow: () => undefined,
+			createWindow: vi.fn() as never,
+			setAutoStart: vi.fn(),
+			isQuitting: () => false,
+			quit: vi.fn(),
+		});
+		try {
+			controller.startTray();
+			expect(mockedElectron.themeOn).toHaveBeenCalledExactlyOnceWith(
+				"updated",
+				expect.any(Function),
+			);
+		} finally {
+			controller.dispose();
+			if (descriptor) Object.defineProperty(process, "platform", descriptor);
+		}
+		expect(mockedElectron.themeOff).toHaveBeenCalledExactlyOnceWith(
+			"updated",
+			expect.any(Function),
+		);
+		// An ordinary Electron nativeTheme emitter has both on() and off(); the test double must too.
 	});
 
 	it("registers exactly 11 trusted IPC handlers and removes them on dispose", async () => {
